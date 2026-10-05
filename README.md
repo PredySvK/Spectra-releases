@@ -51,6 +51,12 @@ The installer is not code-signed yet, so Windows SmartScreen may warn — choose
 
 ![Order tracking with overall decomposition](img/order_tracking.png)
 
+## Gallery
+
+![Raw data](img/raw.png)
+![Spectrum](img/spectrum.png)
+![Overall Level](img/overall.png)
+
 ## Quick start
 
 1. Install and start Spectra, create a project (or open a recent one).
