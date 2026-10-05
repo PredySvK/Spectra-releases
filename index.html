@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Spectra — NVH analysis for rotating machinery</title>
+<style>
+:root{--bg:#0f1720;--fg:#e6edf3;--mut:#9aa7b4;--acc:#4ea1ff;--card:#17212c}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.55 system-ui,Segoe UI,sans-serif}
+header{text-align:center;padding:72px 20px 40px}h1{font-size:3rem;margin:0}
+header p{color:var(--mut);max-width:640px;margin:12px auto}
+.btn{display:inline-block;background:var(--acc);color:#04111f;padding:12px 24px;border-radius:8px;font-weight:600;text-decoration:none;margin-top:16px}
+main{max-width:1000px;margin:auto;padding:0 20px 60px}
+.f{display:grid;grid-template-columns:1fr 1.4fr;gap:28px;align-items:center;background:var(--card);border-radius:12px;padding:24px;margin:20px 0}
+.f:nth-child(even) figure{order:-1}
+.f h2{margin:0 0 6px;color:var(--acc)}.f p{margin:0;color:var(--mut)}em{font-size:.6em;border:1px solid var(--mut);border-radius:4px;padding:1px 6px;vertical-align:middle}
+figure{margin:0;min-height:180px;border-radius:8px;overflow:hidden}figure img{width:100%;display:block}
+figure.missing{display:none}.f:has(figure.missing){grid-template-columns:1fr}
+footer{text-align:center;color:var(--mut);padding:30px}a{color:var(--acc)}
+@media(max-width:700px){.f{grid-template-columns:1fr}.f:nth-child(even) figure{order:0}}
+</style></head><body>
+<header><h1>Spectra</h1>
+<p>NVH analysis for rotating machinery — spectra, spectrograms, order tracking and trending across large sets of measurements.</p>
+<a class="btn" href="https://github.com/PredySvK/Spectra-releases/releases/latest">Download for Windows</a>
+<p><small>First public alpha · reads .unv, .asc and MASTA results · installs per-user, no admin rights</small></p></header>
+<main>
+<section class="f"><div><h2>Raw data</h2><p>Plot time signals and tacho/RPM channels. Cursors, zoom, several channels in one graph.</p></div>
+<figure><img src="img/raw.png" alt="Raw data" onerror="this.parentNode.classList.add('missing')"></figure></section>
+<section class="f"><div><h2>Spectrum</h2><p>Averaged FFT with your choice of window, overlap and averaging; peak, RMS, PSD and dB amplitude formats.</p></div>
+<figure><img src="img/spectrum.png" alt="Spectrum" onerror="this.parentNode.classList.add('missing')"></figure></section>
+<section class="f"><div><h2>Spectrogram</h2><p>Frequency over time or RPM — see run-ups and run-downs at a glance.</p></div>
+<figure><img src="img/spectrogram.png" alt="Spectrogram" onerror="this.parentNode.classList.add('missing')"></figure></section>
+<section class="f"><div><h2>Overall Level</h2><p>Level of a frequency band versus RPM or time — one number per step that you can trend.</p></div>
+<figure><img src="img/overall.png" alt="Overall Level" onerror="this.parentNode.classList.add('missing')"></figure></section>
+<section class="f"><div><h2>Order tracking</h2><p>Order cuts that follow the tacho. Overall decomposition splits the Overall Level into the chosen orders plus the residual.</p></div>
+<figure><img src="img/orders.png" alt="Order tracking" onerror="this.parentNode.classList.add('missing')"></figure></section>
+<section class="f"><div><h2>Bulk computation</h2><p>Compute whole sets of measurements in the background. Results are cached in HDF5, so reopening is instant.</p></div>
+<figure><img src="img/bulk.png" alt="Bulk computation" onerror="this.parentNode.classList.add('missing')"></figure></section>
+<section class="f"><div><h2>Filtering</h2><p>Show or hide curves by channel, order, file, metadata and parameter set. Global or per-graph filter cards.</p></div>
+<figure><img src="img/filters.png" alt="Filtering" onerror="this.parentNode.classList.add('missing')"></figure></section>
+<section class="f"><div><h2>Metadata &amp; pairing</h2><p>Attach Excel metadata and pair channels, then filter and compare by your own columns.</p></div>
+<figure><img src="img/meta.png" alt="Metadata &amp; pairing" onerror="this.parentNode.classList.add('missing')"></figure></section>
+<section class="f"><div><h2>Evaluation tables</h2><p>Maximum, top-N peaks and dominant orders extracted into a table, exportable to CSV.</p></div>
+<figure><img src="img/eval.png" alt="Evaluation tables" onerror="this.parentNode.classList.add('missing')"></figure></section>
+<section class="f"><div><h2>Workflow <em>pre-alpha</em></h2><p>Build a calculation as a block diagram and run it over a whole selection.</p></div>
+<figure><img src="img/workflow.png" alt="Workflow <em>pre-alpha</em>" onerror="this.parentNode.classList.add('missing')"></figure></section>
+</main>
+<footer>Spectra 0.1 alpha · <a href="https://github.com/PredySvK/Spectra-releases/releases">Releases</a></footer>
+</body></html>
