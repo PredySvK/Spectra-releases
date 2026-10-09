@@ -64,3 +64,7 @@ The installer is not code-signed yet, so Windows SmartScreen may warn — choose
 3. Drag channels into a graph — raw signal first, then compute a spectrum,
    spectrogram or order tracking from the ribbon.
 4. Use the Filters panel to narrow the curves, and the Evaluation table to compare.
+
+## About this project
+
+Spectra is built with agent-driven development: AI coding agents write much of the code, under human direction and review. It is released under the Apache License 2.0 (see [LICENSE](LICENSE)).
