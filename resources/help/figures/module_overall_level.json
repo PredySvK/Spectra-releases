@@ -1,0 +1,18 @@
+{
+  "scenario": "module_overall_level",
+  "size": [1700, 900],
+  "elements": [
+    {"kind": "marker", "target": "RibbonGroupSpectrum", "text": {
+      "en": "Spectrum: block size and window of the FFT behind each point.",
+      "cs": "Spectrum: velikost bloku a okno FFT za každým bodem."}},
+    {"kind": "marker", "target": "RibbonGroupBand", "text": {
+      "en": "Band: F min and F max set the frequency band that is summed; Full Bandwidth goes up to Nyquist.",
+      "cs": "Band: F min a F max určují sčítané frekvenční pásmo; Full Bandwidth jde až po Nyquista."}},
+    {"kind": "marker", "target": "RibbonGroupTachoTracking", "text": {
+      "en": "Tacho Tracking: RPM Tracked (axis in rpm) or Free Run (axis in time), Step, Sweep, Hysteresis.",
+      "cs": "Tacho Tracking: RPM Tracked (osa v rpm) nebo Free Run (osa v čase), Step, Sweep, Hysteresis."}},
+    {"kind": "marker", "target": "WorkspaceTabs", "text": {
+      "en": "The curve: one point per step, the RMS of the whole band, against rpm or time.",
+      "cs": "Křivka: jeden bod na krok, RMS celého pásma, podle rpm nebo času."}}
+  ]
+}

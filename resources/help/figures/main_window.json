@@ -1,0 +1,21 @@
+{
+  "scenario": "main_window",
+  "size": [1600, 900],
+  "elements": [
+    {"kind": "marker", "target": "RibbonBar", "text": {
+      "en": "Ribbon: one tab per kind of analysis, plus Project and Settings.",
+      "cs": "Ribbon: záložka pro každý druh analýzy, plus Project a Settings."}},
+    {"kind": "marker", "target": "ExplorerDock", "text": {
+      "en": "Explorer: file browser and Data Pool with the measurements you added.",
+      "cs": "Explorer: prohlížeč souborů a Data Pool s přidanými měřeními."}},
+    {"kind": "marker", "target": "FilterDock", "text": {
+      "en": "Filters: narrow the Data Pool by metadata columns.",
+      "cs": "Filters: zúžení Data Poolu podle sloupců metadat."}},
+    {"kind": "marker", "target": "WorkspaceTabs", "text": {
+      "en": "Workspace: one tab per plot; drop channels here or double-click them in the Data Pool.",
+      "cs": "Workspace: jedna záložka na graf; kanály sem přetáhněte nebo na ně dvakrát klikněte v Data Poolu."}},
+    {"kind": "marker", "target": "BottomDock", "text": {
+      "en": "Output: system log, running jobs and the Evaluation tables.",
+      "cs": "Output: systémový log, běžící úlohy a tabulky Evaluation."}}
+  ]
+}

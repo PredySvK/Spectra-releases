@@ -1,0 +1,18 @@
+{
+  "scenario": "signal_generator_tacho",
+  "size": [1400, 860],
+  "elements": [
+    {"kind": "marker", "target": "TachoDirectionCombo", "text": {
+      "en": "Direction: Ramp Up, Ramp Down, or Ramp Up & Down (up in the first half, back down in the second).",
+      "cs": "Direction: Ramp Up, Ramp Down nebo Ramp Up & Down (v první polovině nahoru, ve druhé zpět dolů)."}},
+    {"kind": "marker", "target": "PlateausCheckbox", "text": {
+      "en": "Enable Plateaus: splits each ramp into Steps, each holding its speed for the Plateau Ratio.",
+      "cs": "Enable Plateaus: rozdělí každou rampu na kroky (Steps), z nichž každý drží otáčky po dobu Plateau Ratio."}},
+    {"kind": "marker", "target": "TachoNoiseCheckbox", "text": {
+      "en": "Tacho Noise: jitter and dropouts, applied only to the Tacho_Master column of the exported file.",
+      "cs": "Tacho Noise: kolísání a výpadky, použité jen na sloupec Tacho_Master exportovaného souboru."}},
+    {"kind": "marker", "target": "TachoProfilePlot", "text": {
+      "en": "The preview keeps the clean profile, so the noise is not visible here.",
+      "cs": "Náhled zůstává u čistého profilu, takže šum v něm vidět není."}}
+  ]
+}

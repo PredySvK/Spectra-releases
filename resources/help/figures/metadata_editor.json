@@ -1,0 +1,15 @@
+{
+  "scenario": "metadata_editor",
+  "size": [1000, 1020],
+  "elements": [
+    {"kind": "marker", "target": "MetadataFieldsHeader", "text": {
+      "en": "Per field: show it, rename it, offer it as a filter, set its Type.",
+      "cs": "U každého pole: zobrazit, přejmenovat, nabídnout jako filtr, nastavit Type."}},
+    {"kind": "marker", "target": "MetadataFieldsTable", "text": {
+      "en": "Level 1 is the raw metadata read from the measurement files; Level 2 holds the columns of your Excel sheet.",
+      "cs": "Level 1 jsou surová metadata přečtená ze souborů měření; Level 2 jsou sloupce vaší Excel tabulky."}},
+    {"kind": "marker", "target": "MetadataTabBar", "text": {
+      "en": "The Pairing tab assigns measured and simulated channels to each other.",
+      "cs": "Karta Pairing přiřazuje navzájem měřené a simulované kanály."}}
+  ]
+}

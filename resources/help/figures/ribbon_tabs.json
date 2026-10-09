@@ -1,0 +1,25 @@
+{
+  "scenario": "ribbon_tabs",
+  "size": [1600, 700],
+  "crop_to": "RibbonBar",
+  "elements": [
+    {"kind": "marker", "target": "RibbonTabs", "text": {
+      "en": "Tabs: Project, then one per analysis (Overall Level, Order Tracking, Spectrogram 2D, Spectrum 1D), Workflow and Settings.",
+      "cs": "Záložky: Project, pak jedna na každou analýzu (Overall Level, Order Tracking, Spectrogram 2D, Spectrum 1D), Workflow a Settings."}},
+    {"kind": "marker", "target": "RefreshButton", "text": {
+      "en": "Refresh: recompute the open graph with the current settings.",
+      "cs": "Refresh: přepočítá otevřený graf s aktuálním nastavením."}},
+    {"kind": "marker", "target": "ComputeBatchButton", "text": {
+      "en": "Compute Batch: compute the analysis for a whole folder and keep it in the Result Pool.",
+      "cs": "Compute Batch: spočítá analýzu pro celou složku a uloží ji do Result Poolu."}},
+    {"kind": "marker", "target": "RibbonGroupFFTAnalysis", "text": {
+      "en": "Analysis settings: FFT size and window; they apply to graphs you open or refresh next.",
+      "cs": "Nastavení analýzy: velikost FFT a okno; platí pro grafy, které otevřete nebo obnovíte dále."}},
+    {"kind": "marker", "target": "RibbonGroupView", "text": {
+      "en": "View: display format, scale and amplitude mode; changing them redraws without recomputing.",
+      "cs": "View: formát zobrazení, měřítko a režim amplitudy; změna překreslí graf bez přepočtu."}},
+    {"kind": "marker", "target": "RibbonGroupHelp", "text": {
+      "en": "Help: opens this help on the page for the active tab.",
+      "cs": "Help: otevře tuto nápovědu na stránce k aktivní záložce."}}
+  ]
+}

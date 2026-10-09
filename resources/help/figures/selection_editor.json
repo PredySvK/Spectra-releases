@@ -1,0 +1,33 @@
+{
+  "scenario": "selection_editor",
+  "size": [
+    900,
+    420
+  ],
+  "elements": [
+    {
+      "kind": "marker",
+      "target": "SelectionNameField",
+      "text": {
+        "en": "Name of the Selection (unique; Whole Data Pool is reserved).",
+        "cs": "Název Selection (jedinečný; Whole Data Pool je vyhrazený)."
+      }
+    },
+    {
+      "kind": "marker",
+      "target": "SelectionGrid",
+      "text": {
+        "en": "One column per condition: values within a column are alternatives, columns apply together.",
+        "cs": "Jeden sloupec = jedna podmínka: hodnoty ve sloupci jsou alternativy, sloupce platí společně."
+      }
+    },
+    {
+      "kind": "marker",
+      "target": "SelectionCount",
+      "text": {
+        "en": "Live count of matching measurements and distinct channels; OK needs at least one measurement.",
+        "cs": "Živý počet odpovídajících měření a různých kanálů; OK vyžaduje alespoň jedno měření."
+      }
+    }
+  ]
+}

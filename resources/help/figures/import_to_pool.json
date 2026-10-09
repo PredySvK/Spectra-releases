@@ -1,0 +1,12 @@
+{
+  "scenario": "import_to_pool",
+  "size": [1000, 290],
+  "elements": [
+    {"kind": "marker", "target": "ImportMenuShot", "text": {
+      "en": "File Browser: right-click a folder or measurement file and choose Add to Data Pool.",
+      "cs": "File Browser: klikněte pravým tlačítkem na složku nebo soubor měření a zvolte Add to Data Pool."}},
+    {"kind": "marker", "target": "ImportPoolShot", "text": {
+      "en": "Data Pool: the measurements appear grouped by Test Setup, one channel list per file.",
+      "cs": "Data Pool: měření se objeví seskupená podle Test Setup, u každého souboru seznam kanálů."}}
+  ]
+}

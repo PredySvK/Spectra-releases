@@ -1,0 +1,18 @@
+# Default Benchmark plan.
+files = []
+# Set generated = true to include the deterministic 16-ch reference signal
+generated = true
+
+analyses = ["spectrum", "spectrogram", "order_cut", "overall_level"]
+channels = [1, "all"]
+mode = "sweep"
+repeats = 3
+timeout_s = 600
+
+[base]
+nfft = 4096
+rpm_step = 50.0
+
+[sweep]
+nfft = [2048, 4096, 8192]
+rpm_step = [10.0, 20.0, 50.0]

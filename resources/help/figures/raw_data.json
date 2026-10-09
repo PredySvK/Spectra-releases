@@ -1,0 +1,9 @@
+{
+  "scenario": "raw_data",
+  "size": [1600, 900],
+  "elements": [
+    {"kind": "marker", "target": "WorkspaceTabs", "text": {
+      "en": "A raw channel opened as a time signal: time in s on the X axis, the channel in its unit on Y.",
+      "cs": "Surový kanál otevřený jako časový signál: čas v s na ose X, kanál ve své jednotce na ose Y."}}
+  ]
+}

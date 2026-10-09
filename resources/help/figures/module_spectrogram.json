@@ -1,0 +1,18 @@
+{
+  "scenario": "module_spectrogram",
+  "size": [1700, 900],
+  "elements": [
+    {"kind": "marker", "target": "RibbonGroupSpectrum", "text": {
+      "en": "Spectrum: block size and window; each map column is one block.",
+      "cs": "Spectrum: velikost bloku a okno; každý sloupec mapy je jeden blok."}},
+    {"kind": "marker", "target": "RibbonGroupView", "text": {
+      "en": "View: Linear, Power or PSD, RMS or Peak, colour scale Linear or dB (Log); redraws without recomputing.",
+      "cs": "View: Linear, Power nebo PSD, RMS nebo Peak, barevná škála Linear nebo dB (Log); jen překreslí."}},
+    {"kind": "marker", "target": "RibbonGroupTachoTracking", "text": {
+      "en": "Tacho Tracking: RPM Tracked (axis in rpm) or Free Run (axis in time), Step, Sweep, Hysteresis.",
+      "cs": "Tacho Tracking: RPM Tracked (osa v rpm) nebo Free Run (osa v čase), Step, Sweep, Hysteresis."}},
+    {"kind": "marker", "target": "WorkspaceTabs", "text": {
+      "en": "The map: frequency across, speed or time along, colour is the amplitude. A line is a tone, a bright patch a resonance.",
+      "cs": "Mapa: frekvence napříč, otáčky nebo čas podél, barva je amplituda. Čára je tón, světlá skvrna rezonance."}}
+  ]
+}

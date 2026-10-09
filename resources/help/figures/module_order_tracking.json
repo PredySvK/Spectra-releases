@@ -1,0 +1,24 @@
+{
+  "scenario": "module_order_tracking",
+  "size": [1700, 1000],
+  "elements": [
+    {"kind": "marker", "target": "RibbonGroupSpectrum", "text": {
+      "en": "Spectrum: block size and window of the FFT behind each point.",
+      "cs": "Spectrum: velikost bloku a okno FFT za každým bodem."}},
+    {"kind": "marker", "target": "RibbonGroupLiveOrders", "text": {
+      "en": "Live Orders: which orders to draw (Target Orders) and how wide a band around each (Order Width).",
+      "cs": "Live Orders: které řády vykreslit (Target Orders) a jak široké pásmo kolem každého (Order Width)."}},
+    {"kind": "marker", "target": "RibbonGroupTachoTracking", "text": {
+      "en": "Tacho Tracking: Step, Sweep and Hysteresis decide where along the run-up a point is taken.",
+      "cs": "Tacho Tracking: Step, Sweep a Hysteresis určují, kde na rozjezdu se bod odebere."}},
+    {"kind": "marker", "target": "RibbonGroupOptions", "text": {
+      "en": "Options: Remove DC Offset and Overall Level + Residual.",
+      "cs": "Options: Remove DC Offset a Overall Level + Residual."}},
+    {"kind": "marker", "target": "WorkspaceTabs", "text": {
+      "en": "Order curves: amplitude of each order against rpm, one curve per order.",
+      "cs": "Řádové křivky: amplituda každého řádu podle rpm, jedna křivka na řád."}},
+    {"kind": "marker", "target": "EvaluationTable", "text": {
+      "en": "Evaluation: Max, Top-N maxima, Typed orders or Dominant orders read off the curves.",
+      "cs": "Evaluation: Max, Top-N maxima, Typed orders nebo Dominant orders přečtené z křivek."}}
+  ]
+}

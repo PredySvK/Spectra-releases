@@ -1,0 +1,170 @@
+{
+ "contexts": {
+  "1d_spectrum": "spectrum/intro",
+  "2d_spectrogram": "spectrogram/intro",
+  "order_tracking": "order_tracking/intro",
+  "overall_level": "overall_level/intro",
+  "evaluation_max": "evaluation/max",
+  "evaluation_topn_maxima": "evaluation/topn_maxima",
+  "evaluation_typed_orders": "evaluation/typed_orders",
+  "evaluation_dominant_orders": "evaluation/dominant_orders",
+  "workflow": "quick_start/overview",
+  "project": "general/projects",
+  "settings": "general/intro",
+  "tools": "tools/intro"
+ },
+ "topics": [
+  {
+   "id": "quick_start/overview",
+   "children": [
+    {
+     "id": "quick_start/workflow"
+    }
+   ]
+  },
+  {
+   "id": "import/intro",
+   "children": [
+    {
+     "id": "import/formats"
+    },
+    {
+     "id": "import/metadata"
+    },
+    {
+     "id": "import/channel_pairing"
+    }
+   ]
+  },
+  {
+   "id": "generation/signal",
+   "children": [
+    {
+     "id": "generation/datasets"
+    }
+   ]
+  },
+  {
+   "id": "data_management/intro",
+   "children": [
+    {
+     "id": "filtering/intro"
+    },
+    {
+     "id": "selections/intro"
+    },
+    {
+     "id": "results/intro"
+    },
+    {
+     "id": "batch/intro"
+    }
+   ]
+  },
+  {
+   "id": "raw_data/intro"
+  },
+  {
+   "id": "shared/intro",
+   "children": [
+    {
+     "id": "shared/fft_size"
+    },
+    {
+     "id": "shared/windows"
+    },
+    {
+     "id": "shared/amplitude_format"
+    },
+    {
+     "id": "shared/remove_dc"
+    },
+    {
+     "id": "shared/tracking"
+    }
+   ]
+  },
+  {
+   "id": "overall_level/intro",
+   "children": [
+    {
+     "id": "overall_level/band"
+    },
+    {
+     "id": "overall_level/energy_parseval"
+    }
+   ]
+  },
+  {
+   "id": "order_tracking/intro",
+   "children": [
+    {
+     "id": "order_tracking/orders"
+    },
+    {
+     "id": "order_tracking/companion_curves"
+    }
+   ]
+  },
+  {
+   "id": "spectrogram/intro"
+  },
+  {
+   "id": "spectrum/intro"
+  },
+  {
+   "id": "evaluation/intro",
+   "children": [
+    {
+     "id": "evaluation/max"
+    },
+    {
+     "id": "evaluation/topn_maxima"
+    },
+    {
+     "id": "evaluation/typed_orders"
+    },
+    {
+     "id": "evaluation/dominant_orders"
+    }
+   ]
+  },
+  {
+   "id": "tools/intro",
+   "children": [
+    {
+     "id": "tools/cursor"
+    },
+    {
+     "id": "tools/band_rms"
+    }
+   ]
+  },
+  {
+   "id": "general/intro",
+   "children": [
+    {
+     "id": "general/projects"
+    },
+    {
+     "id": "jobs/intro"
+    },
+    {
+     "id": "units/intro"
+    },
+    {
+     "id": "graphs/intro"
+    },
+    {
+     "id": "settings/graph_defaults"
+    },
+    {
+     "id": "benchmark/intro"
+    },
+    {
+     "id": "updates/intro"
+    }
+   ]
+  }
+ ]
+}

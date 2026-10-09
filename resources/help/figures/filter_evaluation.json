@@ -1,0 +1,18 @@
+{
+  "scenario": "filter_evaluation",
+  "size": [1700, 1000],
+  "elements": [
+    {"kind": "marker", "target": "FilterPanel", "text": {
+      "en": "Filters: untick a value to hide those curves from the graph; Filter Data Pool also narrows the Data Pool tree.",
+      "cs": "Filtry: odškrtnutím hodnoty skryjete tyto křivky v grafu; Filter Data Pool zúží i strom Data Poolu."}},
+    {"kind": "marker", "target": "EvaluationCombo", "text": {
+      "en": "Evaluation: Max, Top-N maxima, Typed orders or Dominant orders; its parameters appear next to it.",
+      "cs": "Evaluation: Max, Top-N maxima, Typed orders nebo Dominant orders; parametry se objeví vedle."}},
+    {"kind": "marker", "target": "EvaluationTable", "text": {
+      "en": "Result table: one row per extracted value, with where on the curve it sits.",
+      "cs": "Tabulka výsledků: jeden řádek na každou vytaženou hodnotu, včetně místa na křivce."}},
+    {"kind": "marker", "target": "ExportCsvButton", "text": {
+      "en": "Export CSV: save the table to a file (Ctrl+C copies the selected rows).",
+      "cs": "Export CSV: uloží tabulku do souboru (Ctrl+C zkopíruje vybrané řádky)."}}
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "scenario": "band_rms",
+  "size": [1700, 1000],
+  "elements": [
+    {"kind": "marker", "target": "BandRmsCheckbox", "text": {
+      "en": "Band RMS Cursors: shows the band on the graph tab in front (off by default).",
+      "cs": "Band RMS Cursors: zobrazí pásmo v právě otevřené záložce s grafem (ve výchozím stavu vypnuto)."}},
+    {"kind": "marker", "rect": [608, 182, 310, 591], "text": {
+      "en": "The shaded band: drag an edge to resize it, drag the middle to move the whole range.",
+      "cs": "Stínované pásmo: tažením okraje změníte rozsah, tažením středu posunete celé pásmo."}},
+    {"kind": "marker", "rect": [480, 203, 145, 34], "text": {
+      "en": "Readout: the RMS level inside the band, in the channel's unit, and the band edges in Hz.",
+      "cs": "Údaj: hladina RMS uvnitř pásma v jednotce kanálu a hranice pásma v Hz."}}
+  ]
+}

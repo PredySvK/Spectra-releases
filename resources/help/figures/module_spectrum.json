@@ -1,0 +1,24 @@
+{
+  "scenario": "module_spectrum",
+  "size": [1700, 1000],
+  "elements": [
+    {"kind": "marker", "target": "RibbonGroupFFTAnalysis", "text": {
+      "en": "FFT Analysis: block size and window of the spectrum.",
+      "cs": "FFT Analysis: velikost bloku a okno spektra."}},
+    {"kind": "marker", "target": "RibbonGroupView", "text": {
+      "en": "View: Linear, Power or PSD, RMS or Peak, Linear or dB axis; changing it redraws without recomputing.",
+      "cs": "View: Linear, Power nebo PSD, RMS nebo Peak, osa Linear nebo dB; změna jen překreslí, nepřepočítává."}},
+    {"kind": "marker", "target": "RibbonGroupAveraging", "text": {
+      "en": "Averaging: how the blocks are combined: Linear, Peak Hold or Exponential (Weight α).",
+      "cs": "Averaging: jak se bloky spojí: Linear, Peak Hold nebo Exponential (Weight α)."}},
+    {"kind": "marker", "target": "RibbonGroupOptions", "text": {
+      "en": "Options: Remove DC Offset, curve placement and Band RMS Cursors.",
+      "cs": "Options: Remove DC Offset, umístění nové křivky a Band RMS Cursors."}},
+    {"kind": "marker", "target": "WorkspaceTabs", "text": {
+      "en": "The spectrum: amplitude against frequency, one curve per channel. Peaks are tones and resonances.",
+      "cs": "Spektrum: amplituda podle frekvence, jedna křivka na kanál. Vrcholy jsou tóny a rezonance."}},
+    {"kind": "marker", "target": "EvaluationTable", "text": {
+      "en": "Evaluation: Max or Top-N maxima read off the curve into a table.",
+      "cs": "Evaluation: Max nebo Top-N maxima přečtená z křivky do tabulky."}}
+  ]
+}

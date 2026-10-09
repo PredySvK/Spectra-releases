@@ -1,0 +1,27 @@
+{
+  "scenario": "configure_filters",
+  "size": [2100, 640],
+  "elements": [
+    {"kind": "marker", "target": "FilterDockShot", "text": {
+      "en": "The Filters dock: one Filter card, here with only Channel. The gear button opens Configure Filters.",
+      "cs": "Dok Filters: jedna Filter card, zde jen s Channel. Tlačítko ozubeného kola otevře Configure Filters."}},
+    {"kind": "marker", "target": "FilterColumnCountCombo", "text": {
+      "en": "Columns side by side: how many columns of the card sit next to each other (1 to 4).",
+      "cs": "Columns side by side: kolik sloupců karty leží vedle sebe (1 až 4)."}},
+    {"kind": "marker", "target": "GridHeaderName", "text": {
+      "en": "Name: tick a field to put it on the card; the number is how many distinct values it has now.",
+      "cs": "Name: zaškrtnutím pole ho přidáte na kartu; číslo je aktuální počet různých hodnot."}},
+    {"kind": "marker", "target": "GridHeaderPriority", "text": {
+      "en": "Priority: the position of the column on the card.",
+      "cs": "Priority: pozice sloupce na kartě."}},
+    {"kind": "marker", "target": "GridHeaderShownas", "text": {
+      "en": "Shown as: Checkbox list, Multi-select or Range (min..max).",
+      "cs": "Shown as: Checkbox list, Multi-select nebo Range (min..max)."}},
+    {"kind": "marker", "target": "GridHeaderDefault", "text": {
+      "en": "Default: add the column to every new graph's card on top of Channel.",
+      "cs": "Default: sloupec se přidá na kartu každého nového grafu navíc ke Channel."}},
+    {"kind": "marker", "target": "FilterAutoApply", "text": {
+      "en": "Auto apply: show each change on the graph in focus while you make it; Cancel restores the card.",
+      "cs": "Auto apply: každou změnu ukáže na grafu v popředí, hned jak ji uděláte; Cancel kartu vrátí."}}
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "scenario": "cursor",
+  "size": [1700, 1000],
+  "elements": [
+    {"kind": "marker", "target": "CursorButton", "text": {
+      "en": "Cursor: on/off for every open graph (also C). Lit teal while on.",
+      "cs": "Cursor: zapíná a vypíná kurzor ve všech otevřených grafech (také C). Při zapnutí svítí tyrkysově."}},
+    {"kind": "marker", "target": "CursorSettingsButton", "text": {
+      "en": "Cursor Settings: choose which fields the box shows and in what order.",
+      "cs": "Cursor Settings: výběr polí, která box zobrazuje, a jejich pořadí."}},
+    {"kind": "marker", "target": "HighlightButton", "text": {
+      "en": "Highlight (H): thickens the curve under the mouse and dims the others.",
+      "cs": "Highlight (H): zesílí křivku pod myší a ostatní ztlumí."}},
+    {"kind": "marker", "target": "CursorPinButton", "text": {
+      "en": "Pin (P): freezes the box in place; drag the box to move it.",
+      "cs": "Pin (P): ukotví box na místě; táhnutím boxu ho přesunete."}},
+    {"kind": "marker", "rect": [722, 573, 295, 75], "text": {
+      "en": "Cursor Box: the nearest real sample of the nearest curve (curve name, X, Y, ...).",
+      "cs": "Cursor Box: nejbližší skutečný vzorek nejbližší křivky (název křivky, X, Y, ...)."}}
+  ]
+}

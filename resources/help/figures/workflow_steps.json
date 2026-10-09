@@ -1,0 +1,30 @@
+{
+  "scenario": "workflow_steps",
+  "size": [1580, 830],
+  "elements": [
+    {"kind": "marker", "target": "StepNewOpen", "text": {
+      "en": "Step 1: Project tab, press New (or Open).",
+      "cs": "Krok 1: záložka Project, stiskněte New (nebo Open)."}},
+    {"kind": "marker", "target": "StepAddData", "text": {
+      "en": "Step 2: Add Data Directory, then pick the folder with your measurements.",
+      "cs": "Krok 2: Add Data Directory, potom vyberte složku s měřeními."}},
+    {"kind": "marker", "target": "StepChannel", "text": {
+      "en": "Step 3: double-click a channel in the Data Pool to see the raw signal.",
+      "cs": "Krok 3: dvakrát klikněte na kanál v Data Poolu pro zobrazení surového signálu."}},
+    {"kind": "marker", "target": "StepCompute", "text": {
+      "en": "Step 4: pick an analysis tab, set FFT size and window here, then double-click a channel.",
+      "cs": "Krok 4: zvolte analytickou záložku, zde nastavte velikost FFT a okno a dvakrát klikněte na kanál."}},
+    {"kind": "marker", "target": "StepFilter", "text": {
+      "en": "Step 5: untick the values you do not want to see in the Filters dock.",
+      "cs": "Krok 5: v doku Filters odškrtněte hodnoty, které nechcete vidět."}},
+    {"kind": "marker", "target": "StepMax", "text": {
+      "en": "Step 6: Evaluation tab in the Output dock, pick Max (or Top-N maxima, Typed orders, Dominant orders).",
+      "cs": "Krok 6: záložka Evaluation v doku Output, zvolte Max (nebo Top-N maxima, Typed orders, Dominant orders)."}},
+    {"kind": "marker", "target": "StepExport", "text": {
+      "en": "Step 7: Export CSV.",
+      "cs": "Krok 7: Export CSV."}},
+    {"kind": "marker", "target": "StepSave", "text": {
+      "en": "Step 8: Project tab, press Save.",
+      "cs": "Krok 8: záložka Project, stiskněte Save."}}
+  ]
+}

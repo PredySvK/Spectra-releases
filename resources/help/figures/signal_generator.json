@@ -1,0 +1,30 @@
+{
+  "scenario": "signal_generator",
+  "size": [1400, 860],
+  "elements": [
+    {"kind": "marker", "target": "GlobalSettingsGroup", "text": {
+      "en": "Global Settings: duration, sampling rate and seed; Load Preset… replaces the whole setup.",
+      "cs": "Global Settings: délka záznamu, vzorkovací frekvence a seed; Load Preset… nahradí celé nastavení."}},
+    {"kind": "marker", "target": "TachoSettingsGroup", "text": {
+      "en": "Tacho Settings: the speed profile that the order components follow.",
+      "cs": "Tacho Settings: profil otáček, který sledují složky typu Order."}},
+    {"kind": "marker", "target": "ChannelTabs", "text": {
+      "en": "One tab per channel: label, unit and its table of components; they add up to the channel signal.",
+      "cs": "Jedna záložka na kanál: název, jednotka a tabulka složek; složky se sčítají do signálu kanálu."}},
+    {"kind": "marker", "target": "AddComponentButton", "text": {
+      "en": "Add Component: appends the type and values chosen in the fields above the table.",
+      "cs": "Add Component: přidá do tabulky typ a hodnoty zvolené v polích nad ní."}},
+    {"kind": "marker", "target": "TachoProfilePlot", "text": {
+      "en": "Tacho Profile: speed against time (always the clean profile).",
+      "cs": "Tacho Profile: otáčky v čase (vždy čistý profil)."}},
+    {"kind": "marker", "target": "VibrationPreviewPlot", "text": {
+      "en": "Preview of the selected channel only; switch the channel tab to preview another one.",
+      "cs": "Náhled pouze vybraného kanálu; jiný kanál zobrazíte přepnutím záložky."}},
+    {"kind": "marker", "target": "ViewSettingsGroup", "text": {
+      "en": "View Settings: X axis, visible time window, View All and View 4 period.",
+      "cs": "View Settings: osa X, zobrazené časové okno, View All a View 4 period."}},
+    {"kind": "marker", "target": "ExportSignalButton", "text": {
+      "en": "Export Signal: asks for a file name and writes the Siemens Testlab ASC file.",
+      "cs": "Export Signal: zeptá se na název souboru a zapíše soubor Siemens Testlab ASC."}}
+  ]
+}

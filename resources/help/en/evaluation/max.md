@@ -1,0 +1,15 @@
+## 📊 Evaluation: Max
+
+Evaluation pulls <b>Single values</b> out of the curves of the focused graph. A Single value is one number an Evaluation extracted from one curve, together with where on the curve it sits -- e.g. "3.2 g RMS at 4500 rpm, Acc1 Z, run_014.unv". The Evaluation table below is every Single value the current Evaluation produced, one row per curve.
+
+<b>Max</b> is the simplest Evaluation: the highest valid value of each visible curve and where it sits, with nothing to configure. It always returns exactly one row per curve -- never zero, and never more than one.
+
+- <b>Amplitude (RMS vs. Peak):</b> Values are calculated in the channel's native unit ([Units](topic:units/intro)). Switch between RMS and Peak display modes without recomputing the evaluation. <b>Peak = &radic;2 &times; RMS</b> represents the amplitude of a sine wave with equivalent energy, not the true peak of the raw time signal. The Value column header always indicates the active unit and mode.
+- <b>Format (Linear / Power / PSD):</b> For spectral curves, switches the display format using the shared scaling table ([Amplitude format](topic:shared/amplitude_format)) without recomputation. Disabled when no spectra are present.
+- <b>Units:</b> The table respects global engineering unit settings (e.g. g &harr; m/s²). The position (at X) remains unchanged across all display switches.
+- <b>Sorting:</b> Click any column header to sort. Numbers sort numerically; empty "&mdash;" rows always stay at the bottom in both ascending and descending sorts.
+- <b>Copy & Export CSV:</b> Use the Copy button or Ctrl+C to copy the table (or selected rows) to the clipboard (tab-separated with headers for Excel). Use Export CSV to save the table to a CSV file.
+- <b>Columns&hellip;:</b> Configure metadata and identity columns displayed in the Evaluation table (Identity, Raw metadata, Excel metadata, Calculated metadata). Only active schema fields (enabled in Metadata Editor) are offered. Selected columns are preserved per dock across project save and reload. Numeric columns sort numerically, and empty cells stay at the bottom in both ascending and descending sorts.
+- <b>"&mdash;" (dash):</b> A curve with no valid sample at all -- an order cut entirely below the frequency resolution or above a file's Nyquist frequency -- still gets a row, just an empty one. A dash is not a dropped curve.
+- <b>Which curves:</b> Max reads [order cuts](topic:order_tracking/orders), [spectra](topic:spectrum/intro) and [Overall Level](topic:overall_level/intro) curves. A [spectrogram](topic:spectrogram/intro) (a 2D map, not a curve) and a [time-domain graph](topic:raw_data/intro) offer nothing to Max, so their card shows a message instead of an empty table.
+- <b>Respect Trace filter:</b> On by default -- the table only covers curves the graph itself is currently showing (the graph's own Trace filter mask). Turn it off to evaluate every curve the dock holds, including ones the mask is hiding. See [Filtering](topic:filtering/intro). Remembered separately for each dock.

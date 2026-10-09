@@ -1,0 +1,33 @@
+{
+  "scenario": "channel_pairing",
+  "size": [940, 700],
+  "elements": [
+    {"kind": "marker", "target": "PairingFileLabel", "text": {
+      "en": "The pairs are stored in this file, channel_pairing.xlsx in the project folder.",
+      "cs": "Páry jsou uloženy v tomto souboru, channel_pairing.xlsx ve složce projektu."}},
+    {"kind": "marker", "target": "PairingRemainingOnly", "text": {
+      "en": "Remaining only: hide channels that are already paired. Off, both lists show every channel.",
+      "cs": "Remaining only: skryje už spárované kanály. Vypnuto, oba seznamy ukazují všechny kanály."}},
+    {"kind": "marker", "target": "PairingMeasuredSearch", "text": {
+      "en": "Search of the Measured list. Ticking Link applies this text to both lists.",
+      "cs": "Hledání v seznamu Measured. Zaškrtnuté Link použije tento text na oba seznamy."}},
+    {"kind": "marker", "target": "PairingMeasuredList", "text": {
+      "en": "Measured: every channel of your measurement files. Pick one.",
+      "cs": "Measured: všechny kanály vašich souborů měření. Vyberte jeden."}},
+    {"kind": "marker", "target": "PairingLink", "text": {
+      "en": "Link: search both lists with the left text (the right search is then disabled).",
+      "cs": "Link: hledá v obou seznamech podle levého textu (pravé hledání je pak vypnuté)."}},
+    {"kind": "marker", "target": "PairingSimulatedList", "text": {
+      "en": "Simulated: the MASTA results. Pick the channel of the same physical point.",
+      "cs": "Simulated: výsledky MASTA. Vyberte kanál téhož fyzického místa."}},
+    {"kind": "marker", "target": "PairingPairButton", "text": {
+      "en": "Pair: adds the two picked channels as a pair. Active only when both sides are picked.",
+      "cs": "Pair: přidá dva vybrané kanály jako pár. Aktivní, jen když je vybráno na obou stranách."}},
+    {"kind": "marker", "target": "PairingPairsTable", "text": {
+      "en": "The pairs made so far.",
+      "cs": "Dosud vytvořené páry."}},
+    {"kind": "marker", "target": "PairingRemoveButton", "text": {
+      "en": "Remove Selected: deletes the selected pairs.",
+      "cs": "Remove Selected: smaže vybrané páry."}}
+  ]
+}
