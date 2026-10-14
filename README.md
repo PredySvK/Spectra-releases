@@ -5,7 +5,7 @@ trending across large sets of measurements.
 
 Compute, compare and trend measurements — from a single run-up to whole folders of them.
 
-> **Status: first public alpha (0.1.x).** Windows only. Features marked *pre-alpha* may
+> **Status: first public alpha (0.2.x).** Windows only. Features marked *pre-alpha* may
 > change or break between releases.
 
 ![Spectra main window](img/main_window.png)
@@ -39,11 +39,13 @@ The installer is not code-signed yet, so Windows SmartScreen may warn — choose
   measurements and pair channels, then filter and compare by them.
 - **Evaluation tables** — maximum, top-N peaks and dominant orders pulled out of
   curves into a table, exportable to CSV.
-- **Workflow editor** *(pre-alpha)* — build a calculation as a block diagram and run
-  it over a whole selection.
+- **Workflow editor** *(pre-alpha)* — build a calculation on a block canvas (drag, wire,
+  undo / redo) and run all chains or one of them over a whole selection.
+- **Cursor** — hover a graph and read the values of the curve in a box; highlight and pin.
+- **Light and Dark theme** and a searchable **Settings window** with Apply / Revert.
 
 **Everyday comfort**
-- Reads `.unv` and `.asc` measurements and MASTA simulation results (`.xlsx`); project files bundle your selections, filters
+- Reads `.unv` and `.asc` measurements, MASTA simulation results (`.xlsx`, also one sheet per order) and ANSYS harmonic-response `.csv`; project files bundle your selections, filters
   and result sets.
 - The UI never freezes: heavy work runs in the background with a job list and Cancel.
 - Unit preferences, Native/Hz/RPM X axis, built-in help (English and Czech),
