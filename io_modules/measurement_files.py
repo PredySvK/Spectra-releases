@@ -14,20 +14,20 @@ import logging
 import os
 from typing import List, Optional
 
+from core.source_amplitude import SOURCE_AMPLITUDE_PEAK, SOURCE_AMPLITUDE_RMS
 from io_modules.reader_unv import AccReaderUnv
 
 
 # Single source of truth for which measurement files the workspace recognizes.
 # Both the directory scan and the startup cache validation read this, so the two
 # can never drift apart and disagree about what belongs in a workspace.
-SUPPORTED_EXTENSIONS = ("*.unv", "*.uff", "*.asc", "*.xlsx", "*.txt")
+SUPPORTED_EXTENSIONS = ("*.unv", "*.uff", "*.asc", "*.xlsx", "*.txt", "*.csv")
 
 _MEASUREMENT_SUFFIXES = frozenset(ext.replace("*", "").lower() for ext in SUPPORTED_EXTENSIONS)
 
 # Suffixes too generic to trust: the metadata Excel, a README or notes share
 # them, so such a file is a measurement only if its header says so (§1.134).
-# A further format under one of these (ANSYS) is one more recogniser here.
-_RECOGNISED_BY_HEADER = frozenset({".xlsx", ".txt"})
+_RECOGNISED_BY_HEADER = frozenset({".xlsx", ".txt", ".csv"})
 
 _log = logging.getLogger(__name__)
 
@@ -58,10 +58,15 @@ def is_measurement_file(path: str) -> bool:
 @functools.lru_cache(maxsize=1024)
 def _is_recognised(path: str, _mtime_ns: int, _size: int) -> bool:
     """Keyed by stamp, so a folder fingerprint re-reads a workbook only when it changed."""
+    from io_modules.reader_ansys import is_ansys_file
     from io_modules.reader_masta import is_masta_file
     from io_modules.reader_processed_measurement import is_processed_measurement_file
-    return (is_processed_measurement_file(path) if os.path.splitext(path)[1].lower() == ".txt"
-            else is_masta_file(path))
+    suffix = os.path.splitext(path)[1].lower()
+    if suffix == ".txt":
+        return is_processed_measurement_file(path)
+    if suffix == ".csv":
+        return is_ansys_file(path)
+    return is_masta_file(path)
 
 
 # Which reader owns which extension. Kept next to SUPPORTED_EXTENSIONS because the
@@ -73,11 +78,36 @@ _READERS_BY_SUFFIX = {
     ".asc": "AccReaderAsc",
     ".xlsx": "AccReaderMasta",
     ".txt": "AccReaderProcessedMeasurement",
+    ".csv": "AccReaderAnsys",
 }
 
 
 # Readers of simulation results; every other reader reads a measurement.
-_SIMULATED_READERS = {"AccReaderMasta"}
+_SIMULATED_READERS = {"AccReaderMasta", "AccReaderAnsys"}
+
+
+# What an Imported result's amplitude is taken to be until the project says
+# otherwise: ANSYS exports Peak, MASTA and processed measurements are RMS.
+# Also the answer for a project written before the question existed.
+_DEFAULT_SOURCE_AMPLITUDE = {
+    "AccReaderMasta": SOURCE_AMPLITUDE_RMS,
+    "AccReaderProcessedMeasurement": SOURCE_AMPLITUDE_RMS,
+    "AccReaderAnsys": SOURCE_AMPLITUDE_PEAK,
+}
+
+
+def resolve_imported_result_reader(file_path: str) -> Optional[str]:
+    """
+    The name of the Imported-result reader that opens this file, by suffix, or
+    None for a time signal (`.unv`, `.uff`, `.asc`). No disk access.
+    """
+    reader_name = _READERS_BY_SUFFIX.get(os.path.splitext(file_path)[1].lower())
+    return reader_name if reader_name in _DEFAULT_SOURCE_AMPLITUDE else None
+
+
+def resolve_default_source_amplitude(reader_name: str) -> str:
+    """The Source amplitude an Imported-result reader is assumed to deliver; RMS for any other."""
+    return _DEFAULT_SOURCE_AMPLITUDE.get(reader_name, SOURCE_AMPLITUDE_RMS)
 
 
 def is_simulated_result_file(file_path: str) -> bool:
@@ -111,6 +141,9 @@ def open_measurement_reader(file_path: str):
     if reader_name == "AccReaderMasta":
         from io_modules.reader_masta import AccReaderMasta
         return AccReaderMasta(file_path)
+    if reader_name == "AccReaderAnsys":
+        from io_modules.reader_ansys import AccReaderAnsys
+        return AccReaderAnsys(file_path)
     if reader_name == "AccReaderProcessedMeasurement":
         from io_modules.reader_processed_measurement import AccReaderProcessedMeasurement
         return AccReaderProcessedMeasurement(file_path)
@@ -121,6 +154,8 @@ def discard_reader_caches() -> None:
     """Forget what the readers keep of a parsed file between reads."""
     from io_modules.reader_asc import discard_asc_caches
     discard_asc_caches()
+    from io_modules.reader_masta import discard_masta_caches
+    discard_masta_caches()
 
 
 def canonical_path(file_path: str) -> str:

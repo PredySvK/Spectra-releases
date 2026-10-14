@@ -5,7 +5,9 @@ means -- plus which pool directories still need registration with the project.
 The ingest use case (`PoolIngestUseCase`) submits one step per folder through
 a `JobRunner`, folds each folder into the pool as it lands, and reports the
 run as data: a `FolderReport` per folder and one `IngestOutcome` at the end.
-`unregistered_pool_directories` answers the separate question of which pooled
+Before reading it asks the **Source amplitude** question (RMS or Peak) once per
+Imported-result reader that has files in the plan, through a callback the shell
+supplies. `unregistered_pool_directories` answers the separate question of which pooled
 directories the project does not know yet, and `save_metadata_schema` stores an
 edited metadata schema in the project without committing other unsaved edits.
 
@@ -22,6 +24,11 @@ from orchestration.data_pool._ingest import (
     IngestPlan,
     PoolIngestUseCase,
     plan_pool_ingest,
+    plan_pool_refresh,
+)
+from orchestration.data_pool._source_amplitude import (
+    SourceAmplitudeAsker,
+    SourceAmplitudeQuestion,
 )
 from orchestration.data_pool._metadata_schema import save_metadata_schema
 from orchestration.data_pool._registration import (
@@ -37,7 +44,10 @@ __all__ = [
     "IngestOutcome",
     "IngestPlan",
     "PoolIngestUseCase",
+    "SourceAmplitudeAsker",
+    "SourceAmplitudeQuestion",
     "plan_pool_ingest",
+    "plan_pool_refresh",
     "save_metadata_schema",
     "run_pool_registration",
     "unregistered_pool_directories",

@@ -21,9 +21,11 @@ in English.
 from typing import Callable, List, Mapping, Optional
 
 from core.measurement_selection import MeasurementSelection
+from core.jobs import CancelToken
 from core.workflow_graph import Workflow
 from orchestration.batch import (
     BatchOutcome, plan_batch, run_batch, supersede_running_batch,
+    WorkflowChainPlan, WorkflowChainBatch, plan_chain_batches, run_chain_batches,
 )
 
 
@@ -59,15 +61,43 @@ class WorkflowRunBridge:
         self.job_manager = job_manager
         # (label, was_anything_written)
         self.run_finished = _FinishedCallback()
+        self._chain_cancel = CancelToken()
+
+    def build_chain_batches(self, chains: tuple[WorkflowChainPlan, ...]) -> tuple[WorkflowChainBatch, ...]:
+        """Read the pool snapshot and resolve all chains before the run dialog."""
+        context = self.app_context
+        session = context.project_session
+        return plan_chain_batches(
+            chains, sources=session.project.sources, schema=context.pool.schema().master,
+            project_path=session.path, data_roots=session.project.data_roots,
+        )
+
+    def start_chains(self, chains: tuple[WorkflowChainBatch, ...], *, overwrite_by_block=None) -> None:
+        """Hand sequential execution to orchestration using the existing job queue."""
+        self.supersede()
+        self._chain_cancel = CancelToken()
+        context = self.app_context
+        run_chain_batches(
+            chains, context.project_session, self.job_manager,
+            overwrite_by_block=overwrite_by_block,
+            compression=getattr(context, "result_cache_compression", None),
+            on_message=context.log, on_finished=self._on_finished,
+            cancel=self._chain_cancel,
+        )
+
+    def supersede(self) -> None:
+        """Stop the active batch and its not-yet-submitted chains."""
+        self._chain_cancel.cancel()
+        supersede_running_batch(self.job_manager)
 
     def start(self, workflow: Workflow, selection: MeasurementSelection,
-              label: str, overwrite_by_node: Optional[Mapping[str, str]] = None,
+              label: str, overwrite_by_block: Optional[Mapping[str, str]] = None,
               what: str = "Run workflow") -> None:
         """
         Plan the run, log what the plan has to say, and -- if it can happen at
         all -- hand it to the job queue.
 
-        `overwrite_by_node` and `what` are `plan_batch`'s; see it for what they
+        `overwrite_by_block` and `what` are `plan_batch`'s; see it for what they
         decide.
         """
         context = self.app_context
@@ -75,7 +105,7 @@ class WorkflowRunBridge:
 
         # Before the plan, not after it: pressing Run ends the live batch even
         # when this run turns out to be refused (that is what it always did).
-        supersede_running_batch(self.job_manager)
+        self.supersede()
 
         plan = plan_batch(
             workflow, selection,
@@ -83,7 +113,7 @@ class WorkflowRunBridge:
             schema=context.pool.schema().master,
             project_path=session.path,
             data_roots=session.project.data_roots,
-            label=label, what=what, overwrite_by_node=overwrite_by_node,
+            label=label, what=what, overwrite_by_block=overwrite_by_block,
         )
         for message in plan.messages:
             context.log(message)

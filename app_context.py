@@ -12,13 +12,14 @@ import json
 import os
 from datetime import datetime, timezone
 from typing import List, Optional
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QObject, QSettings, Signal
 
 from session.project import ProjectSession
 from io_modules.project_store import DirectoryIndex, prune_untitled_scan_cache
 from session.data_pool import DataPool, IntegrateResult
 from core.app_metadata import SETTINGS_ORGANIZATION, SETTINGS_ROOT, SETTINGS_SHARED
 from core.cursor_config import CursorConfig
+from core.theme import resolve_graph_theme, resolve_theme
 from core.graphic_configs import GRAPHIC_SYSTEM_DEFAULTS
 from core.units import UnitPreferences
 from core.dsp_configs import SpectrumConfig, SpectrogramConfig, OrderTrackingConfig, OverallLevelConfig
@@ -27,8 +28,11 @@ from core.recent_projects import (
 )
 
 
-class AppContext:
+class AppContext(QObject):
+    settings_changed = Signal(dict)
+
     def __init__(self):
+        super().__init__()
         # Central logging hook
         self.logger_callback = None
 
@@ -60,30 +64,7 @@ class AppContext:
 
         self.current_analysis_mode: str = "project"
 
-        # Unit and performance preferences live in shared_settings rather than
-        # self.settings to keep them conceptually separate from window geometry
-        # and layout state.
-        self.global_unit_acceleration: str = str(self.shared_settings.value("global_unit_acceleration", "g"))
-        self.global_unit_pressure: str = str(self.shared_settings.value("global_unit_pressure", "Pa"))
-        self.global_unit_voltage: str = str(self.shared_settings.value("global_unit_voltage", "V"))
-        self.global_unit_speed: str = str(self.shared_settings.value("global_unit_speed", "rpm"))
-
-        # How result-cache shards are stored: "" (none), "lzf" or "gzip".
-        # Off by default -- the fastest write, and h5py reads a compressed file
-        # transparently, so the setting only ever affects what is written next;
-        # existing result sets stay readable whatever it is set to.
-        compression = str(self.shared_settings.value("result_cache_compression", "") or "")
-        self.result_cache_compression: str = compression if compression in ("lzf", "gzip") else ""
-
-        # Global toggle for using cached results during spectrum/order lookup.
-        # True by default; stored in shared_settings so it applies application-wide.
-        self.use_result_cache_lookup: bool = bool(self.shared_settings.value(
-            "use_result_cache_lookup", True, type=bool
-        ))
-
-        for config_key, (default_value, data_type) in GRAPHIC_SYSTEM_DEFAULTS.items():
-            loaded_value = self.shared_settings.value(config_key, default_value, type=data_type)
-            setattr(self, config_key, loaded_value)
+        self.read_shared_settings()
 
         # The ribbon writes its current DTO here whenever a control changes (see
         # each tab's _push_dsp_config); Workspace and the drop router read
@@ -105,7 +86,6 @@ class AppContext:
         self.highlight_enabled: bool = self._load_tool_flag("highlight_enabled", False)
         self.cursor_pinned: bool = self._load_tool_flag("cursor_pinned", False)
         self.cursor_config: CursorConfig = self._load_cursor_config()
-        self.highlight_other_opacity: int = int(self.shared_settings.value("highlight_other_opacity", 25, type=int))
         # Default False = current behaviour: a dropped comparison curve is
         # computed with the ribbon's current SpectrumConfig. True = it instead
         # inherits compute_spec off the dock's base trace, so a dropped curve
@@ -114,6 +94,37 @@ class AppContext:
         # ribbon toggles, never written to the project (see
         # execute_channel_drop_processing).
         self.new_curve_config_from_trace: bool = False
+
+    def read_shared_settings(self) -> None:
+        """(Re)reads the Settings window values kept in shared_settings, defaults where absent."""
+        # Unit and performance preferences live in shared_settings rather than
+        # self.settings to keep them conceptually separate from window geometry
+        # and layout state.
+        self.global_unit_acceleration: str = str(self.shared_settings.value("global_unit_acceleration", "g"))
+        self.global_unit_pressure: str = str(self.shared_settings.value("global_unit_pressure", "Pa"))
+        self.global_unit_voltage: str = str(self.shared_settings.value("global_unit_voltage", "V"))
+        self.global_unit_speed: str = str(self.shared_settings.value("global_unit_speed", "rpm"))
+
+        self.theme = resolve_theme(self.shared_settings.value("theme")).value
+        self.graph_theme = resolve_graph_theme(self.shared_settings.value("graph_theme")).value
+
+        # How result-cache shards are stored: "" (none), "lzf" or "gzip".
+        # Off by default -- the fastest write, and h5py reads a compressed file
+        # transparently, so the setting only ever affects what is written next;
+        # existing result sets stay readable whatever it is set to.
+        compression = str(self.shared_settings.value("result_cache_compression", "") or "")
+        self.result_cache_compression: str = compression if compression in ("lzf", "gzip") else ""
+
+        # Global toggle for using cached results during spectrum/order lookup.
+        # True by default; stored in shared_settings so it applies application-wide.
+        self.use_result_cache_lookup: bool = bool(self.shared_settings.value(
+            "use_result_cache_lookup", True, type=bool
+        ))
+
+        for config_key, (default_value, data_type) in GRAPHIC_SYSTEM_DEFAULTS.items():
+            loaded_value = self.shared_settings.value(config_key, default_value, type=data_type)
+            setattr(self, config_key, loaded_value)
+        self.highlight_other_opacity: int = int(self.shared_settings.value("highlight_other_opacity", 25, type=int))
 
     def log(self, message: str):
         if self.logger_callback:
@@ -141,6 +152,12 @@ class AppContext:
         self.shared_settings.setValue("perf_auto_mode_active", auto_mode_active)
         self.shared_settings.setValue("perf_manual_factor", manual_factor)
         self.shared_settings.setValue("perf_render_screen_only", render_screen_only)
+        self.settings_changed.emit({
+            "perf_downsample_enabled": downsample_enabled,
+            "perf_auto_mode_active": auto_mode_active,
+            "perf_manual_factor": manual_factor,
+            "perf_render_screen_only": render_screen_only,
+        })
 
     # ---- recent projects ----------------------------------------------
 
@@ -184,6 +201,7 @@ class AppContext:
         """Keeps how visible the non-highlighted curves stay (0-100 %) for every later start."""
         self.highlight_other_opacity = max(0, min(100, int(percent)))
         self.shared_settings.setValue("highlight_other_opacity", self.highlight_other_opacity)
+        self.settings_changed.emit({"highlight_other_opacity": self.highlight_other_opacity})
 
     def _load_cursor_config(self) -> CursorConfig:
         """Cursor Box fields from shared settings (ADR §1.149); defaults if absent or unreadable."""

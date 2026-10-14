@@ -15,7 +15,7 @@ Not in the project: the display units (kept by the application) and the channel 
 
 **Calculate &amp; Save Data** writes a **result set** (see [Result Pool](topic:results/intro)): a folder `cache/<name>/` with one HDF5 file per measurement and a small manifest `_set.json`. What you compute live by dropping a channel on a [graph](topic:graphs/intro) is *not* written there.
 
-Later, when you drop a channel on a graph, Spectra first looks for a saved result that already answers the request, and draws it from disk instead of computing it. **Use cached results** (*Settings*, Cache group) turns this lookup off, so every request is computed; the choice is remembered by the application.
+Later, when you drop a channel on a graph, Spectra first looks for a saved result that already answers the request, and draws it from disk instead of computing it. **Use cached results** (*Settings* window, page Computation › Result Cache, opened with the gear in the title bar) turns this lookup off, so every request is computed; the choice is remembered by the application.
 
 ### When a saved result is reused
 

@@ -60,7 +60,7 @@ from typing import Callable, Dict, Optional
 import numpy as np
 
 from core.block_kinds import KIND_ORDER_CUT, PARAM_ORDER
-from core.data_block import NVHDataBlock, SourceRef
+from core.data_block import NVHDataBlock, build_source_ref
 from gui.workspace.graph_dock import GraphDock
 from gui.workspace.spectrogram_dock import SpectrogramDock
 from orchestration import live_compute
@@ -187,17 +187,11 @@ def _orders_precheck(mixin: "AnalysisTabsMixin", dock, config) -> bool:
 
 
 def _orders_plot_cache_hit(mixin: "AnalysisTabsMixin", dock, cached, raw_channel_name: str, config) -> None:
-    # The same identity a fresh read stamps (DataAccessor._build_source_ref).
-    # Left at SourceRef's unset -1, the order-2.. curves no longer match the
-    # base channel's (file_path, channel_index), so a later Refresh re-drops
-    # them as an "overlay" -- and a -1 read is the file's last column (#379).
-    source = SourceRef(
-        file_path=getattr(dock.run_index, "file_path", "") if dock.run_index else "",
-        file_name=getattr(dock.run_index, "file_name", "") if dock.run_index else "",
-        channel_index=getattr(dock.channel_meta, "index", -1) if dock.channel_meta else -1,
-        channel_name=raw_channel_name,
-        excel_metadata=(getattr(dock.run_index, "metadata", None) or {}) if dock.run_index else {},
-    )
+    # The same identity a fresh read stamps. Left at SourceRef's unset -1, the
+    # order-2.. curves no longer match the base channel's (file_path,
+    # channel_index), so a later Refresh re-drops them as an "overlay" -- and
+    # a -1 read is the file's last column (#379).
+    source = build_source_ref(dock.run_index, dock.channel_meta)
     source_block = NVHDataBlock.time_response(
         name=raw_channel_name,
         values=np.empty(0),

@@ -1,6 +1,6 @@
 # Supported formats
 
-A file is picked up by its suffix: `.unv`, `.uff`, `.asc`, `.xlsx`, `.txt` (case does not matter). `.xlsx` and `.txt` are too common to trust, so they count as measurements only when their header is recognised. [`metadata.xlsx`](topic:import/metadata), a README or your notes are ignored.
+A file is picked up by its suffix: `.unv`, `.uff`, `.asc`, `.xlsx`, `.txt`, `.csv` (case does not matter). `.xlsx`, `.txt` and `.csv` are too common to trust, so they count as measurements only when their header is recognised. [`metadata.xlsx`](topic:import/metadata), a README or your notes are ignored.
 
 | Suffix | Format | What it holds | Kind |
 |---|---|---|---|
@@ -8,6 +8,7 @@ A file is picked up by its suffix: `.unv`, `.uff`, `.asc`, `.xlsx`, `.txt` (case
 | `.asc` | Siemens Testlab ASCII | [time waveforms](topic:raw_data/intro) | measured |
 | `.txt` | tab-separated processed measurement | [order curves](topic:order_tracking/intro) against speed | measured |
 | `.xlsx` | MASTA result workbook | [order curves](topic:order_tracking/intro) against speed | simulated (paired via [Channel pairing](topic:import/channel_pairing)) |
+| `.csv` | ANSYS harmonic response | a first [order curve](topic:order_tracking/intro) against speed | simulated (paired via [Channel pairing](topic:import/channel_pairing)) |
 
 ## .unv / .uff
 
@@ -45,7 +46,7 @@ First line: `(rev/s)`, then one `name (unit)` cell per channel, separated by tab
 
 ## .xlsx (MASTA)
 
-First sheet. Every channel is a pair of columns (speed, amplitude):
+Every sheet named `H<n>` (for example `H1`, `H4.79`, `H22`) is read; other sheets are skipped. A workbook without such sheets is read from its first sheet. In the Data Pool the channels are listed under their sheet. Every channel is a pair of columns (speed, amplitude):
 
 | Row | Content |
 |---|---|
@@ -56,6 +57,39 @@ First sheet. Every channel is a pair of columns (speed, amplitude):
 | 5… | rpm and amplitude (numbers or text, decimal comma accepted) |
 
 Design, scenario, damping and the remaining comma-separated parts of row 2 become [raw metadata](topic:import/metadata) (*Design*, *Scenario*, *Damping*, *Description 1…*). The order belongs to the [curve](topic:order_tracking/orders).
+
+## .csv (ANSYS harmonic response)
+
+One file per Design point and node, named `DP<n>_Freq_Resp_<channel>.csv` (for example `DP0_Freq_Resp_B0_HSG_inner_Acc_Y.csv`). Any other `.csv` in the folder, such as a Bearing Probe export, is skipped.
+
+| Line | Content |
+|---|---|
+| 1 | `Frequency [Hz],Amplitude [<unit>]` |
+| 2… | frequency and amplitude |
+
+Every line may be wrapped in double quotes. A `˛` in the unit is read as `²` (`mm/s˛` → `mm/s²`). A row that is not two numbers is dropped; the frequency steps may be uneven.
+
+- The channel is named `<channel>`, unchanged, so it pairs by the same name in [`channel_pairing.xlsx`](topic:import/channel_pairing). A trailing `_X`, `_Y` or `_Z` gives the direction.
+- The curve is [order](topic:order_tracking/orders) 1 against rpm = 60 · frequency: an unbalance load acts at the rotation frequency.
+- **ANSYS amplitudes are peak by default.** When you add the files the program asks whether the amplitude is RMS or Peak (see *Source amplitude* below); peak is divided by √2, so the curve is RMS like every computed order curve. Do not convert them again; the Peak/RMS display switch works on them as usual.
+- `DP<n>` becomes [raw metadata](topic:import/metadata) *Design point*.
+
+What a Design point means (rotor unbalance, spring…) goes into a `Metadata.xlsx` placed **in each result folder**, with `File Name` = `DP0`, `DP1`, … A `DP1` row describes `DP1_…` files, never `DP10_…`. Use the same column names and values as the measurement metadata (for example `Rotor unbalance` = `G2.5`) so the Trace filter shows the matching measurement and Design point together. Do not put `DP<n>` rows into the project's own `metadata.xlsx`: it takes precedence and would apply them to every result folder.
+
+## Source amplitude
+
+MASTA, processed measurement and ANSYS files carry a ready-made amplitude, and the file does not say whether it is RMS or Peak. When you add such files to the Data Pool, the program asks once per format (not per file) and shows the conversion it will apply: `RMS = Peak / √2`.
+
+| Format | Default answer |
+|---|---|
+| MASTA | RMS |
+| processed measurement | RMS |
+| ANSYS | Peak |
+
+- The answer is stored with each file in the project and is not asked again on Refresh or when the project is opened. New files that appear in a watched folder ask again.
+- Cancel adds nothing to the pool. To correct a wrong answer, remove the file from the pool and add it again.
+- Time signals (`.unv`, `.uff`, `.asc`) are never asked about: the program computes their amplitude itself.
+- A project saved before the question existed keeps its curves unchanged (ANSYS Peak, others RMS).
 
 ## Channel type
 

@@ -3,6 +3,7 @@
 import time
 
 from core.block_kinds import KIND_OVERALL_LEVEL, PARAM_ORDER
+from core.data_block import build_source_ref, display_meta_from
 from io_modules.data_accessor import DataAccessor
 from orchestration.live_compute._file_tracking import FileTracking
 from orchestration.live_compute._order_cut_cache import (
@@ -74,7 +75,9 @@ def lookup_or_compute_order_drops(
                     (order, rpm_axis, block.values, unit, block)
                     for order, block in zip(config.orders_to_extract, live_blocks)
                 ]
-                metadata = DataAccessor.build_display_meta(mock_run, mock_meta)
+                # A cache hit has no block, but the legend and unit conversion
+                # take the same display meta a read would stamp.
+                metadata = display_meta_from(build_source_ref(mock_run, mock_meta), mock_meta.type)
                 rendered.append((
                     desc, ch_name, cached.result_set_label, order_rows, metadata, None, None,
                 ))

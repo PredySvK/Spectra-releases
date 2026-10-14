@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 from gui.dialogs.dialog_state import remember_dialog_geometry
 from session.data_pool import ACKNOWLEDGED_KEY, unacknowledged
 from view_models.data_pool import describe_schema_conflict
+from gui.appearance import APP_TOKENS
 
 
 def show_schema_conflicts(app_context, parent, conflicts) -> bool:
@@ -89,7 +90,7 @@ class SchemaConflictDialog(QDialog):
             checkbox = QCheckBox(f"Exclude '{conflict.key}' from filters")
             detail = QLabel(describe_schema_conflict(conflict))
             detail.setWordWrap(True)
-            detail.setStyleSheet("color: #808080; margin-left: 18px; margin-bottom: 6px;")
+            detail.setStyleSheet(f"color: {APP_TOKENS.text_muted}; margin-left: 18px; margin-bottom: 6px;")
 
             body_layout.addWidget(checkbox)
             body_layout.addWidget(detail)

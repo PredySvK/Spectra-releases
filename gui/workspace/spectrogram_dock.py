@@ -15,6 +15,7 @@ from core.data_block import NVHDataBlock
 from core.models import MeasurementRunIndex, ChannelMetadata
 from gui.workspace.channel_drop_target import ChannelDropTargetMixin
 from gui.workspace.cursor import SpectrogramCursorMixin
+from gui.workspace.plot_area import style_plot_area
 from orchestration.channel_drop import PendingDrops
 from view_models.analysis_kinds import ANALYSIS_SPECTROGRAM
 from view_models.plot import GraphSpectrogram, SpectrogramModel
@@ -53,6 +54,7 @@ class SpectrogramDock(ChannelDropTargetMixin, SpectrogramCursorMixin, QWidget):
         layout.setSpacing(2)
 
         self.plot_widget = pg.PlotWidget()
+        style_plot_area(self.plot_widget)
 
         bottom_axis = self.plot_widget.getAxis('bottom')
         bottom_axis.enableAutoSIPrefix(False)

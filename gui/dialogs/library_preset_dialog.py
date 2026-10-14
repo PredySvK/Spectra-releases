@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QListWidget,
     QDialogButtonBox,
 )
+from gui.appearance import APP_TOKENS
 
 
 class LibraryPresetDialog(QDialog):
@@ -46,7 +47,7 @@ class LibraryPresetDialog(QDialog):
 
         self.lbl_description = QLabel()
         self.lbl_description.setWordWrap(True)
-        self.lbl_description.setStyleSheet("color: #666;")
+        self.lbl_description.setStyleSheet(f"color: {APP_TOKENS.text_description};")
         layout.addWidget(self.lbl_description)
 
         self.list_measurements = QListWidget()

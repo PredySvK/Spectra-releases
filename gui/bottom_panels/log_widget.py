@@ -4,6 +4,8 @@ from datetime import datetime
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QTextCursor
 from PySide6.QtWidgets import QPlainTextEdit
+from gui.appearance import APP_TOKENS
+
 
 class LogWidget(QPlainTextEdit):
     """
@@ -23,11 +25,11 @@ class LogWidget(QPlainTextEdit):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.setStyleSheet("""
             QPlainTextEdit {
-                background-color: #1e1e1e;
-                color: #aaaaaa;
-                border: 1px solid #2d2d2d;
+                background-color: %s;
+                color: %s;
+                border: 1px solid %s;
             }
-        """)
+        """ % (APP_TOKENS.log_background, APP_TOKENS.log_text, APP_TOKENS.log_border))
         self.setFont(QFont("Consolas", 9))
 
     def log_message(self, message: str):

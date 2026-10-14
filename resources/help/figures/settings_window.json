@@ -1,0 +1,21 @@
+{
+  "scenario": "settings_window",
+  "size": [760, 480],
+  "elements": [
+    {"kind": "marker", "target": "SettingsSearch", "text": {
+      "en": "Search: type a word to show only the pages that contain it.",
+      "cs": "Hledání: po zadání slova se zobrazí jen stránky, které ho obsahují."}},
+    {"kind": "marker", "target": "SettingsPageTree", "text": {
+      "en": "Pages. A page in bold has unapplied edits.",
+      "cs": "Stránky. Tučná stránka má neuplatněné úpravy."}},
+    {"kind": "marker", "target": "Settings_theme", "text": {
+      "en": "Theme: Dark or Light for the whole application. Applies after restart.",
+      "cs": "Theme: Dark nebo Light pro celou aplikaci. Projeví se po restartu."}},
+    {"kind": "marker", "target": "Settings_graph_theme", "text": {
+      "en": "Graph theme: Follow theme, Dark or Light for the graph area only. Applies after restart.",
+      "cs": "Graph theme: Follow theme, Dark nebo Light jen pro plochu grafu. Projeví se po restartu."}},
+    {"kind": "marker", "target": "SettingsApply", "text": {
+      "en": "Apply saves the edits; Revert discards them.",
+      "cs": "Apply edity uloží; Revert je zahodí."}}
+  ]
+}

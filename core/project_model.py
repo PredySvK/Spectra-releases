@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import os.path
 import uuid
 
-from core.block_kinds import KIND_ORDER_CUT, KIND_SPECTROGRAM
+from core.block_kinds import KIND_ORDER_CUT
 from core.filter_card_config import FilterCardConfig
 from core.measurement_selection import MeasurementSelection
 from core.models import ChannelIdentity
@@ -44,21 +44,6 @@ OLDEST_READABLE_PROJECT_FORMAT_VERSION = 1
 # On an incompatible format change, raise both limits together (ADR §1.140).
 
 PROJECT_EXTENSION = ".nvhproject"
-
-# What a result set's `kind` used to be spelled as, before §1.21 made it the
-# same vocabulary as the blocks stored inside it. Read-side only: to_dict()
-# always writes the block kind, so a project rewrites itself on first save.
-_LEGACY_RESULT_KINDS = {
-    "order_cuts": KIND_ORDER_CUT,
-    "waterfall": KIND_SPECTROGRAM,
-}
-
-
-def normalize_result_kind(kind: Optional[str]) -> str:
-    """A result set's kind as a core.block_kinds key, translating old spellings."""
-    kind = (kind or KIND_ORDER_CUT).strip()
-    return _LEGACY_RESULT_KINDS.get(kind, kind)
-
 
 def utc_now() -> str:
     """Timestamp format used everywhere in the project file."""
@@ -123,8 +108,8 @@ class SourceEntry:
     """
     One measurement file, as the project sees it.
 
-    `metadata` and `unit_overrides` are the reason this class exists. Both are
-    user decisions about a file that must never be written back into the file
+    `unit_overrides` and `setup_label` are the reason this class exists. Both
+    are user decisions about a file that must never be written back into the file
     itself -- the raw measurement is evidence and stays untouched. Keeping them
     here means they travel with the project, survive a restart, and can be
     handed to a colleague.
@@ -143,7 +128,7 @@ class SourceEntry:
     # Whether this measurement is currently in the Data Pool -- the working
     # set the user has lined up, as opposed to everything the project has ever
     # indexed. Removing a file from the pool clears this rather than deleting
-    # the entry, because the entry is where its metadata, unit corrections and
+    # the entry, because the entry is where its unit corrections and
     # test setup live and every result set refers to it by id. Defaults to
     # True so a project written before the pool existed opens with everything
     # it indexed, which is what it used to show.
@@ -156,18 +141,18 @@ class SourceEntry:
     # been assigned to one and shows under the default setup.
     setup_label: str = ""
 
-    # Free-form run-level metadata. Values stay strings for now; typing them
-    # is deferred until the comparator needs to filter on them numerically.
-    metadata: Dict[str, str] = field(default_factory=dict)
-
     # channel label -> corrected unit, for channels whose file-declared unit
     # is wrong (a tacho recorded as volts, an accelerometer as dimensionless).
     unit_overrides: Dict[str, str] = field(default_factory=dict)
 
+    # What the amplitude in an Imported result file means ("rms" | "peak",
+    # core.source_amplitude), as the user answered when the file was added to
+    # the pool. Blank means never answered: the reader's default applies, so a
+    # project written before the question existed opens with unchanged curves.
+    source_amplitude: str = ""
+
     # The Level 2 Excel row linked to this file (see io_modules.metadata_schema),
-    # re-synced automatically on every scan. Kept separate from `metadata` above,
-    # which is a manual per-field decision the user typed in the app -- an
-    # auto-synced row would otherwise silently overwrite that on the next scan.
+    # re-synced automatically on every scan.
     excel_metadata: Dict[str, Any] = field(default_factory=dict)
 
     # Level 1 facts discovered straight from the file itself (id1..id5 today;
@@ -204,8 +189,8 @@ class SourceEntry:
             "mtime_ns": self.mtime_ns,
             "in_pool": self.in_pool,
             "setup_label": self.setup_label,
-            "metadata": dict(self.metadata),
             "unit_overrides": dict(self.unit_overrides),
+            "source_amplitude": self.source_amplitude,
             "excel_metadata": dict(self.excel_metadata),
             "file_metadata": dict(self.file_metadata),
             "parsed_metadata": dict(self.parsed_metadata),
@@ -222,8 +207,8 @@ class SourceEntry:
             mtime_ns=int(data.get("mtime_ns", 0)),
             in_pool=bool(data.get("in_pool", True)),
             setup_label=data.get("setup_label", ""),
-            metadata=dict(data.get("metadata") or {}),
             unit_overrides=dict(data.get("unit_overrides") or {}),
+            source_amplitude=data.get("source_amplitude", ""),
             excel_metadata=dict(data.get("excel_metadata") or {}),
             file_metadata=dict(data.get("file_metadata") or {}),
             parsed_metadata=dict(data.get("parsed_metadata") or {}),
@@ -248,15 +233,10 @@ class ResultSetRef:
     suggests.
 
     `kind` is a block kind from core/block_kinds.py -- the same vocabulary the
-    blocks inside the file use. It used to be a second, parallel one
-    ("order_cuts" here vs. "order_cut" on the block), which nothing mapped
-    between; from_dict() normalises the old spelling so projects written before
-    §1.21 keep working.
+    blocks inside the file use.
 
-    `format_version` says what `file` points at: 1 = a single .h5 holding the
-    whole set (pre-§1.21), 2 = a folder with one .h5 shard per measurement plus
-    a _set.json manifest. Recorded rather than sniffed from the filesystem, so
-    listing a project's result sets never has to stat anything.
+    `file` is a folder with one .h5 shard per measurement plus a _set.json
+    manifest.
     """
     id: str = field(default_factory=lambda: _new_id("rs"))
     label: str = ""
@@ -265,13 +245,6 @@ class ResultSetRef:
     params: Dict[str, Any] = field(default_factory=dict)
     params_hash: str = ""
     created_utc: str = field(default_factory=utc_now)
-    format_version: int = 1
-
-    def __post_init__(self):
-        # Normalised here rather than only in from_dict, so a ref built in code
-        # with the old spelling cannot slip past either -- one place decides
-        # what a kind is called, and every comparison against KINDS holds.
-        self.kind = normalize_result_kind(self.kind)
 
     # complete | partial | failed. A cancelled or crashed batch leaves
     # "partial", which is a resumable state rather than an error.
@@ -292,7 +265,6 @@ class ResultSetRef:
             "params": dict(self.params),
             "params_hash": self.params_hash,
             "created_utc": self.created_utc,
-            "format_version": self.format_version,
             "status": self.status,
             "source_ids": list(self.source_ids),
             "all_channels": self.all_channels,
@@ -303,12 +275,11 @@ class ResultSetRef:
         return cls(
             id=data.get("id") or _new_id("rs"),
             label=data.get("label", ""),
-            kind=data.get("kind") or KIND_ORDER_CUT,     # normalised in __post_init__
+            kind=data.get("kind") or KIND_ORDER_CUT,
             file=data.get("file", ""),
             params=dict(data.get("params") or {}),
             params_hash=data.get("params_hash", ""),
             created_utc=data.get("created_utc") or utc_now(),
-            format_version=int(data.get("format_version", 1) or 1),
             status=data.get("status", "partial"),
             source_ids=list(data.get("source_ids") or []),
             all_channels=bool(data.get("all_channels", False)),
@@ -539,8 +510,8 @@ class NVHProject:
                 entry.root_id = keep.id
                 kept_by_relpath[_compare_path(entry.relpath)] = entry
                 continue
-            survivor.metadata.update(entry.metadata)
             survivor.unit_overrides.update(entry.unit_overrides)
+            survivor.source_amplitude = entry.source_amplitude or survivor.source_amplitude
             survivor.setup_label = entry.setup_label or survivor.setup_label
             survivor.in_pool = survivor.in_pool or entry.in_pool
             renamed[entry.id] = survivor.id
@@ -626,13 +597,6 @@ class NVHProject:
         else:
             self.filter_cards[self.filter_cards.index(existing)] = card
         return card
-
-    def remove_filter_card(self, card_id: str) -> bool:
-        existing = self.filter_card_by_id(card_id)
-        if existing is None:
-            return False
-        self.filter_cards.remove(existing)
-        return True
 
     def touch(self) -> None:
         self.modified_utc = utc_now()

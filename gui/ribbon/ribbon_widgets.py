@@ -26,23 +26,25 @@ from PySide6.QtWidgets import (
     QToolButton, QVBoxLayout, QWidget, QWidgetAction,
 )
 
+from gui.appearance import APP_TOKENS
 from gui.ribbon.icons import ribbon_icon
 
-# Dark tooltip so the hover text does not flash a white box over the ribbon.
+
+# Tooltip roles follow the application palette.
 # Applied once by RibbonBar; kept here next to the widgets it describes.
 RIBBON_TOOLTIP_QSS = (
     "QToolTip {"
-    "  background-color: #1f1f1f; color: #e6e6e6;"
-    "  border: 1px solid #555555; padding: 4px 6px;"
+    "  background-color: palette(tool-tip-base); color: palette(tool-tip-text);"
+    "  border: 1px solid palette(mid); padding: 4px 6px;"
     "}"
 )
 
 # kind -> (background, hover background, text colour, border colour)
 _KIND = {
-    "primary": ("#33465c", "#3f566f", "#ffffff", "transparent"),
-    "commit":  ("#4a4366", "#585078", "#ffffff", "transparent"),
-    "danger":  ("#a12d2d", "#b23a3a", "#ffffff", "transparent"),
-    "neutral": ("#3c3c3c", "#474747", "#e6e6e6", "#555555"),
+    "primary": (*APP_TOKENS.ribbon_primary, APP_TOKENS.icon_on_accent, "transparent"),
+    "commit":  (*APP_TOKENS.ribbon_commit, APP_TOKENS.icon_on_accent, "transparent"),
+    "danger":  (*APP_TOKENS.ribbon_danger, APP_TOKENS.icon_on_accent, "transparent"),
+    "neutral": ("palette(button)", "palette(midlight)", "palette(button-text)", "palette(mid)"),
 }
 
 _BIG_SIZE = (94, 86)
@@ -59,7 +61,7 @@ def _button_qss(kind: str) -> str:
         "  padding: 4px 8px; font-weight: bold;"
         "}"
         f"QToolButton:hover {{ background-color: {hover}; }}"
-        "QToolButton:disabled { color: #808080; }"
+        "QToolButton:disabled { color: palette(mid); }"
     )
 
 
@@ -210,13 +212,13 @@ def vertical_separator() -> QFrame:
     line = QFrame()
     line.setFrameShape(QFrame.Shape.VLine)
     line.setFrameShadow(QFrame.Shadow.Sunken)
-    line.setStyleSheet("color: #4a4a4a;")
+    line.setStyleSheet("color: palette(mid);")
     return line
 
 
 def _field_label(text: str) -> QLabel:
     label = QLabel(text)
-    label.setStyleSheet("color: #b8b8b8; font-size: 11px;")
+    label.setStyleSheet("color: palette(window-text); font-size: 11px;")
     return label
 
 
@@ -246,7 +248,7 @@ class RibbonGroup(QWidget):
 
         caption = QLabel(title)
         caption.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        caption.setStyleSheet("color: #9aa0a6; font-size: 10px;")
+        caption.setStyleSheet("color: palette(placeholder-text); font-size: 10px;")
         column.addWidget(caption)
 
         self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)

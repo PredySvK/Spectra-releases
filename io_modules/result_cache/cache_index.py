@@ -121,38 +121,15 @@ def write(project_path: str, entries: List[Dict[str, Any]]) -> str:
 def rebuild(project: NVHProject, project_path: str) -> List[Dict[str, Any]]:
     """
     Reconstructs the index from the project's result sets and their manifests.
-
-    Format-1 result sets are indexed too, from their `source_ids` -- with no
-    channel list, because listing their channels would mean opening the .h5,
-    which is exactly what the index exists to avoid. Lookup treats an entry
-    with no channel list as "might match, open it and see", so a legacy set
-    still gets found; it just does not get the free rejection.
     """
     entries: List[Dict[str, Any]] = []
     for result_set in project.result_sets:
-        if result_set.format_version >= layout.FORMAT_VERSION:
-            folder = os.path.join(project_folder(project_path), result_set.file)
-            manifest = read_set_manifest(folder)
-            if manifest is None:
-                continue
-            entries.extend(entries_for_result_set(result_set, manifest))
-        else:
-            entries.extend(_legacy_entries(result_set))
+        folder = os.path.join(project_folder(project_path), result_set.file)
+        manifest = read_set_manifest(folder)
+        if manifest is None:
+            continue
+        entries.extend(entries_for_result_set(result_set, manifest))
     return entries
-
-
-def _legacy_entries(result_set) -> List[Dict[str, Any]]:
-    return [
-        _index_entry(
-            result_set,
-            source_id=source_id,
-            source_size_bytes=None,     # unknown without opening the file
-            file=result_set.file,
-            channels=None,              # unknown without opening the file
-            block_params=None,
-        )
-        for source_id in result_set.source_ids
-    ]
 
 
 def entries_for(project: NVHProject, project_path: Optional[str],

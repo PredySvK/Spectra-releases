@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from typing import Iterable, Mapping
 
+from core.channel_drop import read_drop_descriptor
 from core.models import ChannelMetadata, MeasurementRunIndex
 from selection.tacho import find_tacho_channel
 
@@ -46,15 +47,7 @@ def plan_tacho_per_file(
     for descriptor in descriptors:
         channel_name = descriptor["channel_name"]
 
-        mock_run = MeasurementRunIndex(descriptor["file_name"], descriptor["file_path"])
-        mock_meta = ChannelMetadata(
-            descriptor["channel_index"],
-            channel_name,
-            descriptor["channel_type"],
-            descriptor["unit"],
-        )
-        mock_meta.block_kind = descriptor.get("block_kind")
-        mock_meta.func_type = descriptor.get("func_type", mock_meta.func_type)
+        mock_run, mock_meta = read_drop_descriptor(descriptor)
 
         path = descriptor["file_path"]
         tacho_meta = None

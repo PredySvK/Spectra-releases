@@ -4,7 +4,7 @@ A Benchmark times how long Spectra takes to read measurements, calculate analyse
 
 ## Choose a variant
 
-Open the **Settings** tab and choose **Run Benchmark…**. The dialog starts with **Full** selected.
+Open the **Project** tab and choose **Tools › Run Benchmark…**. The dialog starts with **Full** selected.
 
 | Variant | What it measures |
 |---|---|

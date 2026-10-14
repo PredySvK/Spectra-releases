@@ -70,8 +70,8 @@ SET_MASK_WIDGETS = (WIDGET_CHECKBOX_LIST, WIDGET_MULTI_SELECT)
 # its Type switched to Text in Metadata and Filter Settings instead (§1.34).
 RANGE_KINDS = ("int", "float", "date")
 
-# Widget names already reported as unknown, so a project full of columns saved
-# by a dialog that offered five widgets logs once per name instead of once per
+# Widget names already reported as unknown, so a project with many columns
+# naming the same unknown widget logs once per name instead of once per
 # column (§1.34: "prepíše na checkbox_list a raz zaloguje"). Module-level state
 # is deliberate and harmless here -- it changes nothing a caller can observe
 # except how often the log repeats itself.
@@ -84,9 +84,9 @@ def _widget_from_stored(widget: str) -> str:
     knows (§1.34).
 
     Only `from_dict` is this forgiving; `FilterColumnConfig.__post_init__` stays
-    strict. A file that is older has to open -- a project saved between #49 and
-    #50 carries `checkbox` and `text_search` columns from a dialog that offered
-    them -- while a *call* that lies (a typo in code) still has to fail loudly.
+    strict. A project file is editable text and a hand-edited widget name must
+    not stop it from opening, while a *call* that lies (a typo in code) still
+    has to fail loudly.
     """
     if widget in WIDGETS:
         return widget
@@ -232,8 +232,7 @@ class FilterColumnConfig:
 
 def _column_count_from_stored(value: Any) -> int:
     """A stored `column_count`, or the default if it names nothing in
-    `ALLOWED_COLUMN_COUNTS` (§1.37) -- an older or hand-edited project still
-    opens."""
+    `ALLOWED_COLUMN_COUNTS` (§1.37) -- a hand-edited project still opens."""
     try:
         count = int(value)
     except (TypeError, ValueError):

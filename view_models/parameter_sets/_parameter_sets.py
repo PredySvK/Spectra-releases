@@ -9,15 +9,13 @@ Parameter Set grouping and signatures live in selection.parameter_sets (#163).
 from selection.parameter_sets import shape_signature
 
 
-def format_parameter_set_details(params: dict, kind: str = "") -> str:
+def format_parameter_set_details(params: dict, kind: str) -> str:
     """
     One line per setting that distinguishes this Parameter Set, for the
     panel's detail view -- the same keys the signature is built from, so what
-    the user reads is exactly what the grouping was decided by. `kind` defaults
-    to order cuts for callers that predate mixed-kind result sets.
+    the user reads is exactly what the grouping was decided by.
     """
-    from core.block_kinds import KIND_ORDER_CUT, KIND_OVERALL_LEVEL, PARAM_F_STOP
-    kind = kind or KIND_ORDER_CUT
+    from core.block_kinds import KIND_OVERALL_LEVEL, PARAM_F_STOP
 
     def shown(key, value):
         # f_stop=None is Full Bandwidth, an intent -- "None" reads as a setting that is missing.

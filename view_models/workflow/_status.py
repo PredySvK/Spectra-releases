@@ -13,7 +13,8 @@ from enum import Enum
 from typing import Callable, Optional, Tuple
 
 from core.workflow_graph import Workflow
-from signal_processing.workflow import save_node_ids, sole_input_node_id, validate_graph
+from signal_processing.workflow import save_block_ids
+from signal_processing.workflow_readiness import resolve_workflow_readiness
 
 
 class WorkflowStatus(Enum):
@@ -37,38 +38,19 @@ def format_workflow_status(
     """
     if workflow is None:
         return WorkflowStatus.EMPTY, ""
-    try:
-        validate_graph(workflow)
-    except ValueError as exc:
-        return WorkflowStatus.NOT_READY, f"⚠  Not ready: {exc}"
-    # validate_graph only type-checks the graph. It allows several input
-    # nodes ("at least one"), a stale selection name and a save spec that can
-    # land on nothing -- all of which Run then rejects or writes nothing for.
-    # The status line has to check the same things or "Ready to run" lies
-    # (audit 02 finding 2.7).
-    try:
-        input_id = sole_input_node_id(workflow)
-    except ValueError as exc:
-        return WorkflowStatus.NOT_READY, f"⚠  Not ready: {exc}"
-    input_spec = workflow.node(input_id).input
-    if input_spec is None or (not input_spec.whole_pool and not input_spec.selection_name):
-        return WorkflowStatus.NOT_READY, "⚠  Not ready: pick what the input node runs over."
-    if (not input_spec.whole_pool and find_selection is not None
-            and find_selection(input_spec.selection_name) is None):
-        return WorkflowStatus.NOT_READY, (
-            f"⚠  Not ready: the input selection '{input_spec.selection_name}' "
-            "no longer exists."
-        )
-    save_ids = save_node_ids(workflow)
-    if not save_ids:
-        return WorkflowStatus.NOT_READY, (
-            "⚠  Not ready: tick 'Save this node's output' on at least one block."
-        )
-    for node_id in save_ids:
-        save = workflow.node(node_id).save
-        if not save.all_channels and not save.channel_identities:
-            return WorkflowStatus.NOT_READY, (
-                f"⚠  Not ready: node '{node_id}' saves a result set but has no "
-                "channels chosen."
-            )
-    return WorkflowStatus.READY, f"✔  Ready to run — {len(save_ids)} node(s) saved"
+    statuses = [(chain.name, *_format_chain_status(chain, issues))
+                for chain, issues in resolve_workflow_readiness(workflow, find_selection)]
+    if len(statuses) == 1:
+        return statuses[0][1:]
+    ready = sum(status is WorkflowStatus.READY for _, status, _ in statuses)
+    refused = [f"{name}: {text}" for name, status, text in statuses if status is not WorkflowStatus.READY]
+    text = ("✔  " if ready else "⚠  ") + f"{ready}/{len(statuses)} chains ready. Run executes ready chains sequentially."
+    if refused:
+        text += "\n" + "\n".join(refused)
+    return (WorkflowStatus.READY if ready else WorkflowStatus.NOT_READY), text
+
+
+def _format_chain_status(chain: Workflow, issues) -> Tuple[WorkflowStatus, str]:
+    if issues:
+        return WorkflowStatus.NOT_READY, f"⚠  Not ready: {issues[0].text}"
+    return WorkflowStatus.READY, f"✔  Ready to run — {len(save_block_ids(chain))} block(s) saved"

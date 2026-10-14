@@ -29,8 +29,9 @@ from core.jobs import job_step
 from gui.workspace.graph_dock import GraphDock
 from gui.workspace.spectrogram_dock import SpectrogramDock
 from io_modules.measurement_files import canonical_path
+from core.channel_drop import build_drop_descriptor
 from orchestration.open_tabs import (
-    build_base_trace_spec, build_drop_descriptor, build_overlay_trace_specs, build_tab_spec,
+    build_base_trace_spec, build_overlay_trace_specs, build_tab_spec,
 )
 from session.data_pool import DeadLink
 from session.open_tabs import TabSpec, TraceSpec, build_restore_plan
@@ -290,7 +291,7 @@ class OpenTabs:
                 # to now. A SpectrogramDock saves neither (S7).
                 if isinstance(dock, GraphDock) and (restored_tab.overlays or spec.loaded_result_set_ids):
                     dock.curves.expect_saved_restore(
-                        overlays=[build_drop_descriptor(o) for o in restored_tab.overlays],
+                        overlays=[build_drop_descriptor(o.run_index, o.channel_meta) for o in restored_tab.overlays],
                         result_set_ids=spec.loaded_result_set_ids,
                     )
                 docks.append(dock)

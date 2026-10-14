@@ -409,28 +409,9 @@ class TrackingPlan:
         for array in (self.cleaned_rpm, self.trigger_indices, self.axis_values):
             array.setflags(write=False)
 
-    def matches(self, fs: float, n_samples: int, step: Optional[float] = None,
-                direction: Optional[str] = None,
-                hysteresis_rpm: Optional[float] = None) -> bool:
-        """
-        Whether this plan was built for the signal *and* the sweep settings a
-        caller is about to cut against.
-
-        The sweep arguments are optional only for backwards compatibility: a
-        plan carries `step`, `direction` and `hysteresis_rpm`, and a caller that
-        passes them but leaves them unchecked (as this did before audit 02 /
-        7.6) will happily cut an order against a plan built on a different rpm
-        grid, with nothing in the result to show for it.
-        """
-        if self.n_samples != n_samples or float(self.fs) != float(fs):
-            return False
-        if step is not None and float(self.step) != float(step):
-            return False
-        if direction is not None and self.direction != direction:
-            return False
-        if hysteresis_rpm is not None and float(self.hysteresis_rpm) != float(hysteresis_rpm):
-            return False
-        return True
+    def matches(self, fs: float, n_samples: int) -> bool:
+        """Whether this plan was built for the signal a caller is about to cut."""
+        return self.n_samples == n_samples and float(self.fs) == float(fs)
 
 
 def build_tracking_plan(

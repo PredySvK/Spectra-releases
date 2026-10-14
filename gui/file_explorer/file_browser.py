@@ -34,6 +34,8 @@ from PySide6.QtWidgets import (
 )
 
 from io_modules.measurement_files import SUPPORTED_EXTENSIONS, canonical_path, has_measurement_suffix
+from gui.appearance import APP_TOKENS
+
 
 # The folder-adjacent Level 2 sheet, and the project-wide one beside the
 # .nvhproject. Both are worth marking: a folder holding one behaves
@@ -46,9 +48,9 @@ METADATA_FILE_NAMES = {"metadata.xlsx"}
 # whether a folder has one before deciding to add it.
 BROWSER_NAME_FILTERS = list(SUPPORTED_EXTENSIONS) + ["*.xlsx", "*.xls"]
 
-IN_POOL_COLOR = QColor("#2e7d32")
-PROJECT_FOLDER_COLOR = QColor("#1565c0")
-METADATA_COLOR = QColor("#ef6c00")
+IN_POOL_COLOR = QColor(APP_TOKENS.pool_in)
+PROJECT_FOLDER_COLOR = QColor(APP_TOKENS.pool_project_folder)
+METADATA_COLOR = QColor(APP_TOKENS.pool_metadata)
 
 
 class BrowserFileSystemModel(QFileSystemModel):

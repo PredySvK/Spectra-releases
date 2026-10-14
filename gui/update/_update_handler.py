@@ -2,6 +2,7 @@
 
 from typing import Callable
 from pathlib import Path
+from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QDialog, QMessageBox, QWidget
 
 from core.app_metadata import APP_VERSION
@@ -21,7 +22,7 @@ class UpdateHandler:
     """One shared background path for startup and manual Update checks."""
 
     def __init__(self, job_runner: JobRunner, parent_widget: QWidget,
-                 install_update: Callable[[Path], bool] | None):
+                 install_update: Callable[[Path], bool] | None, *, shared_settings: QSettings):
         self.job_runner = job_runner
         self.parent_widget = parent_widget
         self._checking = False
@@ -29,9 +30,11 @@ class UpdateHandler:
         # Set for exactly as long as a download job owns the temporary installer.
         self._download: tuple[int | None, Path] | None = None
         self._install_update = install_update
+        self._shared_settings = shared_settings
 
     def run_startup_check(self) -> None:
-        self._run_check(manual=False)
+        if self._shared_settings.value("check_for_updates_on_startup", True, type=bool):
+            self._run_check(manual=False)
 
     def run_manual_check(self) -> None:
         self._run_check(manual=True)

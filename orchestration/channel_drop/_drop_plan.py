@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from typing import Callable, Iterable, Mapping
 
 from core.block_kinds import KIND_ORDER_CUT
-from core.models import resolve_channel_block_kind
 from view_models.analysis_kinds import ANALYSIS_ORDERS
 
 from orchestration.channel_drop._routing import (
@@ -46,20 +45,18 @@ def plan_channel_drop(
     facts: DropFacts,
     plotted_keys: Iterable[tuple],
     pending_keys: Iterable[tuple],
-    resolve_metadata: Callable[[Mapping], object],
     read_ribbon_orders: Callable[[], Iterable[float]],
 ) -> ChannelDropPlan:
     """Decide how a drop is served, without touching a dock, a disk or Qt.
 
-    ``resolve_metadata(descriptor)`` returns the channel metadata (with
-    ``func_type``); ``read_ribbon_orders()`` -- read only when needed -- fills ``orders_to_extract`` only into
+    ``read_ribbon_orders()`` -- read only when needed -- fills ``orders_to_extract`` only into
     descriptors on an order dock that carry none of their own.
     """
     descriptors = list(descriptors)
     if facts.is_graph and facts.analysis_kind == ANALYSIS_ORDERS and not facts.is_result_content_dock:
         # Ordinary order drops and companions claim the same per-order identity.
         descriptors = [
-            desc if resolve_channel_block_kind(resolve_metadata(desc)) == KIND_ORDER_CUT
+            desc if desc.get("block_kind") == KIND_ORDER_CUT
             else desc if "orders_to_extract" in desc
             else {**desc, "orders_to_extract": list(read_ribbon_orders())}
             for desc in descriptors
@@ -67,14 +64,7 @@ def plan_channel_drop(
 
     valid = filter_duplicate_descriptors(
         descriptors, plotted_keys, pending_keys, is_graph=facts.is_graph)
-    # Restored overlays and graph drags can carry the older payload shape.
-    resolved = []
-    for desc in valid:
-        meta = resolve_metadata(desc)
-        resolved.append(
-            {**desc, "block_kind": resolve_channel_block_kind(meta), "func_type": meta.func_type})
-
-    routing = classify_drop_descriptors(resolved, facts)
+    routing = classify_drop_descriptors(valid, facts)
     groups: dict[tuple, list[dict]] = {}
     for desc in routing.order:
         orders = tuple(desc["orders_to_extract"])

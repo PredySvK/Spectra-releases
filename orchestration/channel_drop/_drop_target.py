@@ -42,8 +42,6 @@ class DropTarget(Protocol):
 
     facts: DropFacts
 
-    def resolve_metadata(self, descriptor: Mapping) -> Any: ...
-
     def log(self, message: str) -> None: ...
 
     def run_task(self, worker: Callable, *args, on_success: Callable, on_error: Callable,

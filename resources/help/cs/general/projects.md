@@ -15,7 +15,7 @@ Není v projektu: zobrazované jednotky (drží je aplikace) a párování kaná
 
 **Calculate &amp; Save Data** zapíše **sadu výsledků** (viz [Result Pool](topic:results/intro)): složku `cache/<název>/` s jedním souborem HDF5 na měření a malým manifestem `_set.json`. To, co spočtete živě vložením kanálu do [grafu](topic:graphs/intro), se *nezapisuje*.
 
-Když později vložíte kanál do grafu, Spectra nejdřív hledá uložený výsledek, který požadavek už zodpovídá, a vykreslí ho z disku místo výpočtu. **Use cached results** (*Settings*, skupina Cache) toto hledání vypíná, takže se každý požadavek počítá; volba se pamatuje v aplikaci.
+Když později vložíte kanál do grafu, Spectra nejdřív hledá uložený výsledek, který požadavek už zodpovídá, a vykreslí ho z disku místo výpočtu. **Use cached results** (okno *Settings*, stránka Computation › Result Cache, otevírá se ozubeným kolem v titulní liště) toto hledání vypíná, takže se každý požadavek počítá; volba se pamatuje v aplikaci.
 
 ### Kdy se uložený výsledek použije
 

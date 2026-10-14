@@ -30,6 +30,7 @@ import numpy as np
 import pyqtgraph as pg
 
 from core.units import check_units_compatibility, convert_numeric_array
+from gui.workspace.plot_area import GRAPH_TOKENS
 from view_models.plot import BandRmsCursor, base_display_unit
 from signal_processing.dsp.levels import compute_band_rms
 
@@ -129,8 +130,10 @@ class BandRmsCursorsMixin:
         scale = self._x_axis.scale
         self._band_rms_region = pg.LinearRegionItem(
             values=(initial[0] * scale, initial[1] * scale),
-            brush=pg.mkBrush(90, 160, 220, 40),
-            hoverBrush=pg.mkBrush(90, 160, 220, 70),
+            pen=pg.mkPen(GRAPH_TOKENS.band_rms_line),
+            hoverPen=pg.mkPen(GRAPH_TOKENS.band_rms_line_hover),
+            brush=pg.mkBrush(*GRAPH_TOKENS.band_rms_region_fill),
+            hoverBrush=pg.mkBrush(*GRAPH_TOKENS.band_rms_region_hover_fill),
         )
         self._band_rms_region.setBounds([low * scale, high * scale])
         # Behind the traces, so dragging the band never hides the data it measures.
@@ -140,7 +143,7 @@ class BandRmsCursorsMixin:
         # Parented to the ViewBox, so setPos is in pixels and the readout stays
         # put while the user pans and zooms underneath it.
         self._band_rms_label = pg.TextItem(
-            anchor=(0, 0), color="#e8edf2", fill=pg.mkBrush(18, 24, 31, 210)
+            anchor=(0, 0), color=GRAPH_TOKENS.cursor_box_line, fill=pg.mkBrush(*GRAPH_TOKENS.band_rms_box_fill)
         )
         self._band_rms_label.setParentItem(self.plot_widget.plotItem.vb)
         self._band_rms_label.setPos(12, 10)

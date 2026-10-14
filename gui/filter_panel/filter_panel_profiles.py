@@ -295,8 +295,8 @@ class ProfileTabsMixin:
         -- called once after a project's workspace has been restored
         (gui.handlers.project_document.ProjectDocumentHandler.open_project). A
         restored dock takes back the id it was saved with (§1.94), so only a
-        card whose owner did not come back -- its recipe was skipped, or the
-        project predates saved dock ids -- is silently discarded (§1.37).
+        card whose owner did not come back -- its recipe was skipped -- is
+        silently discarded (§1.37).
         """
         open_ids = set(open_dock_ids)
         self._drop_owned_local_cards(lambda owner: owner not in open_ids)

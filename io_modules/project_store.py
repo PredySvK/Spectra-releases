@@ -406,12 +406,6 @@ def read_file_listing(directory: str) -> Dict[str, Optional[dict]]:
     return {path: file_stamp(path) for path in discover_measurement_files(directory)}
 
 
-def read_directory_index(directory: str, project_path: Optional[str],
-                         roots: Sequence[DataRoot]) -> DirectoryIndex:
-    """The synchronous DirectoryIndex, for callers that are not in a worker."""
-    return DirectoryIndex(read_file_listing(directory), read_root_directories(project_path, roots))
-
-
 def index_root(project: NVHProject, project_path: Optional[str], root: DataRoot) -> IndexReport:
     """
     Brings the project's source list in line with what is actually in a folder.
@@ -498,21 +492,3 @@ def index_root_listing(project: NVHProject, root: DataRoot, directory: str,
 def index_all_roots(project: NVHProject, project_path: Optional[str]) -> Dict[str, IndexReport]:
     """Runs index_root over every root; returns one report per root id."""
     return {root.id: index_root(project, project_path, root) for root in project.data_roots}
-
-
-def create_project(project_path: str, name: str = "", data_directory: str = "") -> NVHProject:
-    """
-    Builds a new project, optionally seeded with one data folder already indexed.
-
-    Does not write anything: the caller decides when to save, so an abandoned
-    "New Project" dialog leaves no file behind.
-    """
-    project = NVHProject(
-        name=name or os.path.splitext(os.path.basename(project_path))[0],
-    )
-
-    if data_directory:
-        root = project.add_root(make_root(project_path, data_directory))
-        index_root(project, project_path, root)
-
-    return project

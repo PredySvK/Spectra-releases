@@ -4,7 +4,7 @@ Spectra can check for a newer stable release and, in the installed Windows app, 
 
 ## Check for an update
 
-On the **Settings** tab, choose **Check for Updates**. At startup, Spectra starts the same check after its window appears. The check reads the latest release information from GitHub in the background, so the window stays responsive.
+Open the **Settings** window from the gear in the title strip, select **About Spectra**, and choose **Check for Updates**. The **Maintenance** page controls **Check for updates on startup** (on by default); when enabled, Spectra starts the same check after its window appears. The check reads the latest release information from GitHub in the background, so the window stays responsive.
 
 Spectra offers an update only when the release is newer than the version you are using, is not marked as a draft or prerelease, and includes the matching `Spectra-<version>-setup.exe` installer. The offer shows the release notes when available; otherwise it says **No patch notes provided.** Choose **Update now** to continue or **Later** to close the offer and keep working. **Later** is the default choice.
 

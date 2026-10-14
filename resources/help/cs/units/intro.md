@@ -4,13 +4,13 @@ Spectra drží každé číslo v jednotce, ve které bylo měření nahráno, a 
 
 | Co | Kde | Kde se ukládá | Čeho se týká |
 |---|---|---|---|
-| **Zobrazované jednotky** (osa Y) | záložka *Settings*, **Unit Settings** | aplikace (všechny projekty) | osa hodnot grafů a [tabulka Evaluation](topic:evaluation/intro) |
-| **Jednotka osy X** | záložka *Settings*, **View** | otevřený projekt | každá osa frekvence a otáček |
+| **Zobrazované jednotky** (osa Y) | okno Settings (ozubené kolo), *Units* › *Application* | aplikace (všechny projekty) | osa hodnot grafů a [tabulka Evaluation](topic:evaluation/intro) |
+| **Jednotka osy X** | okno Settings (ozubené kolo), *Units* › *This project* | otevřený projekt | každá osa frekvence a otáček |
 | **Jednotka kanálu** (oprava) | [Data Pool](topic:data_management/intro), **Fix Unit** | projekt | jeden kanál a vše, co se z něj počítá |
 
 ## Zobrazované jednotky
 
-**Unit Settings** nabízí jednu jednotku pro každou fyzikální oblast:
+Stránka *Units* okna Settings nabízí jednu jednotku pro každou fyzikální oblast:
 
 | Oblast | Na výběr | Výchozí |
 |---|---|---|
@@ -35,7 +35,7 @@ Nemožný převod (neznámý řetězec jednotky) hodnoty nechá beze změny a za
 
 ### Co se překreslí
 
-**Apply &amp; Save Units** přeškáluje z nedotčených dat každého grafu:
+**Apply** přeškáluje z nedotčených dat každého grafu:
 
 - otevřené grafy **[Time](topic:raw_data/intro)** a **[Spectrum](topic:spectrum/intro)**;
 - tabulku **Evaluation**, která zobrazované jednotky sleduje ([Evaluation](topic:evaluation/intro));

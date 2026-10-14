@@ -1,0 +1,18 @@
+{
+  "scenario": "workflow_canvas",
+  "size": [1600, 900],
+  "elements": [
+    {"kind": "marker", "target": "ExplorerDock", "text": {
+      "en": "Block Pool: drag a block onto the canvas.",
+      "cs": "Block Pool: přetáhněte blok na plátno."}},
+    {"kind": "marker", "target": "WorkflowCanvas", "text": {
+      "en": "Canvas: wire an output port to an input port.",
+      "cs": "Plátno: propojte výstupní port se vstupním."}},
+    {"kind": "marker", "target": "WorkflowProperties", "text": {
+      "en": "Properties: settings of the selected block.",
+      "cs": "Properties: nastavení vybraného bloku."}},
+    {"kind": "marker", "target": "WorkflowRunButton", "text": {
+      "en": "Run: runs all chains.",
+      "cs": "Run: spustí všechny chainy."}}
+  ]
+}

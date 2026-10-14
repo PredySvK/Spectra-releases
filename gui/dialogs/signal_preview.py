@@ -21,12 +21,16 @@ import numpy as np
 from PySide6.QtCore import QTimer
 import pyqtgraph as pg
 
+from gui.appearance import GRAPH_TOKENS
 from core.jobs import job_step
 from orchestration.jobs import JobRunner
 from io_modules.signal_generation import compute_preview_arrays
 from io_modules.signal_generation.signal_generation_engine import generate_rpm_profile
 
 PREVIEW_SLOT_KEY = "signal_generator_preview"
+# The red and the amber hue of the curve palette, readable on either Graph theme.
+_RPM_COLOUR = GRAPH_TOKENS.curve_palette[0]
+_VIBRATION_COLOUR = GRAPH_TOKENS.curve_palette[10]
 
 
 class SignalPreviewHandler:
@@ -147,7 +151,7 @@ class SignalPreviewHandler:
 
     def _on_preview_ready(self, data: dict):
         self.view.rpm_plot.clear()
-        self.view.rpm_plot.plot(data["t"], data["rpm"], pen=pg.mkPen('r', width=2))
+        self.view.rpm_plot.plot(data["t"], data["rpm"], pen=pg.mkPen(_RPM_COLOUR, width=2))
         self.view.rpm_plot.enableAutoRange(axis=pg.ViewBox.XYAxes)
 
         self.view.vib_plot.clear()
@@ -157,10 +161,10 @@ class SignalPreviewHandler:
         # Dynamic X-Axis plotting with forced auto-ranging to prevent locked viewports
         if data["x_axis_mode"] == "Time":
             self.view.vib_plot.setLabel('bottom', 'Time', 's')
-            self.view.vib_plot.plot(data["t"], data["vib"], pen=pg.mkPen('y', width=1))
+            self.view.vib_plot.plot(data["t"], data["vib"], pen=pg.mkPen(_VIBRATION_COLOUR, width=1))
         elif data["x_axis_mode"] == "RPM":
             self.view.vib_plot.setLabel('bottom', 'Speed', 'RPM')
-            self.view.vib_plot.plot(data["rpm"], data["vib"], pen=pg.mkPen('y', width=1))
+            self.view.vib_plot.plot(data["rpm"], data["vib"], pen=pg.mkPen(_VIBRATION_COLOUR, width=1))
 
         self.view.vib_plot.enableAutoRange(axis=pg.ViewBox.XYAxes)
 

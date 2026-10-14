@@ -9,8 +9,8 @@ that exist, and the functions that validate and run a *graph* of them
 Pure and synchronous. numpy in, numpy out; no I/O, no Qt, no AppContext -- the
 same rules as the rest of signal_processing/, so a graph can be tested with
 analytic blocks and no disk. The runner that reads real measurements off disk,
-resolves each input node to loaded blocks and drives this over a QtJobRunner sits
-above, in gui/ (1.6, decision 2): an input node is resolved by the runner, never
+resolves each input block to loaded blocks and drives this over a QtJobRunner sits
+above, in gui/ (1.6, decision 2): an input block is resolved by the runner, never
 here, because a block that reads a file would drag I/O into this layer.
 
 The invariant that matters most (1.12): a block is an *adapter* over a function
@@ -21,17 +21,17 @@ tool can have.
 
 A new block is one row in BLOCKS plus one thin adapter -- the same "data, not a
 subclass tree" shape core/block_kinds.py uses for result kinds. The input model
-is named ports rather than a needs_tacho flag: a tacho is not another node's
+is named ports rather than a needs_tacho flag: a tacho is not another block's
 output, it is a raw channel of the input measurement, and modelling it as a port
 is what the DAG here and a later canvas (phase 8) build on. A linear chain is
 the degenerate case of the graph.
 
-**Lineage (the finding that reshaped the model, plan 2026-09-02).** A node's
+**Lineage (the finding that reshaped the model, plan 2026-09-02).** A block's
 identity used to be its own params alone. In a graph that is ambiguous:
 `spectrum(2048)` and `lowpass(500) -> spectrum(2048)` would hash the same and a
 cache lookup would return the wrong numbers. So `lineage_hash` fingerprints the
-whole subgraph *above* a node, and `result_params_from_node` folds it in. It
-must stay empty when a node is fed only by input nodes, or every result set
+whole subgraph *above* a block, and `result_params_from_block` folds it in. It
+must stay empty when a block is fed only by input blocks, or every result set
 saved before this change becomes a cache miss -- a test pins that.
 
 All internal documentation strings and variable labels are standardly written
@@ -50,8 +50,8 @@ from core.dsp_configs import (
 )
 from core.jobs import CancelToken
 from core.workflow_graph import (
-    INPUT_BLOCK_TYPE, InputSpec, PortBinding, SaveSpec, Workflow, WorkflowEdge, WorkflowNode,
-    with_edge, with_node,
+    INPUT_BLOCK_TYPE, InputSpec, PortBinding, SaveSpec, Workflow, WorkflowWire, WorkflowBlock,
+    with_wire, with_block,
 )
 from signal_processing.result_blocks import (
     compute_order_cuts, compute_overall_level, compute_spectrogram, compute_spectrum,
@@ -64,21 +64,22 @@ BlockFn = Callable[
     BlockResult,
 ]
 
-# `WorkflowEdge.to_port` value that means "the block's primary input". Kept as a
+# `WorkflowWire.to_port` value that means "the block's primary input". Kept as a
 # named constant so the empty-string convention is not spread as a literal.
 PRIMARY_PORT = ""
 
-# The input node id `workflow_from_configs` builds. A hand-authored graph (phase
-# 7C) may name its input node anything; the ribbon fast path uses this one.
-INPUT_NODE_ID = "input"
+# The input block id `workflow_from_configs` builds. A hand-authored graph (phase
+# 7C) may name its input block anything; the ribbon fast path uses this one.
+INPUT_BLOCK_ID = "input"
 
 
 @dataclass(frozen=True)
 class Port:
-    """One input of a block. `accepts` lists the block kinds that may feed it."""
+    """One block input and its accepted kinds or measurement source."""
     name: str
     accepts: Tuple[str, ...]
     optional: bool = False
+    from_measurement: bool = False
 
 
 @dataclass(frozen=True)
@@ -87,19 +88,19 @@ class BlockSpec:
     What a block type is: its inputs, the kind it emits, the adapter that runs
     it, and the config dataclass its params mirror.
 
-    `inputs[0]` is the primary port -- the runner wires it to the edge feeding
-    the node's primary input (or, for a node fed by an input node, to the input
-    measurement). Any further port is fed from an edge to that named port or, for
-    a raw channel of the measurement, a `PortBinding` on the node.
+    `inputs[0]` is the primary port -- the runner wires it to the wire feeding
+    the block's primary input (or, for a block fed by an input block, to the input
+    measurement). Any further port is fed from an wire to that named port or, for
+    a raw channel of the measurement, a `PortBinding` on the block.
 
     `multi_output` marks a block that emits a list (order tracking: one block
-    per order). Nothing consumes a list, so such a node may not have an outgoing
-    edge.
+    per order). Nothing consumes a list, so such a block may not have an outgoing
+    wire.
 
     `display_only_params` names fields of `config_cls` that change how a result
     is drawn but not what it contains -- a spectrogram's colour scale. They are
-    stripped when a node is built, because a node's params become the result
-    set's identity (`result_params_from_node` -> `params_hash`): leaving one in
+    stripped when a block is built, because a block's params become the result
+    set's identity (`result_params_from_block` -> `params_hash`): leaving one in
     would make flipping a combo box in the ribbon compute a second, identical
     result set and turn the first into a cache miss. The list lives on the kind
     (`core.block_kinds.KindSpec`) so the cache's `shape_signature` and this
@@ -178,16 +179,16 @@ BLOCKS: Mapping[str, BlockSpec] = {
         fn=_spectrum, config_cls=SpectrumConfig,
     ),
     "spectrogram": BlockSpec(
-        inputs=(Port("in", _TIME), Port("tacho", _TIME, optional=True)),
+        inputs=(Port("in", _TIME), Port("tacho", _TIME, optional=True, from_measurement=True)),
         produces="spectrogram", fn=_spectrogram, config_cls=SpectrogramConfig,
     ),
     "order_tracking": BlockSpec(
-        inputs=(Port("in", _TIME), Port("tacho", _TIME)),
+        inputs=(Port("in", _TIME), Port("tacho", _TIME, from_measurement=True)),
         produces="order_cut", fn=_order_tracking, config_cls=OrderTrackingConfig,
         multi_output=True,
     ),
     "overall_level": BlockSpec(
-        inputs=(Port("in", _TIME), Port("tacho", _TIME, optional=True)),
+        inputs=(Port("in", _TIME), Port("tacho", _TIME, optional=True, from_measurement=True)),
         produces=KIND_OVERALL_LEVEL, fn=_overall_level, config_cls=OverallLevelConfig,
     ),
 }
@@ -204,20 +205,20 @@ def spec_for(block_type: str) -> BlockSpec:
         ) from None
 
 
-def new_block_node(block_type: str, node_id: str,
-                   params: Optional[Mapping[str, Any]] = None) -> WorkflowNode:
+def new_workflow_block(block_type: str, block_id: str,
+                   params: Optional[Mapping[str, Any]] = None) -> WorkflowBlock:
     """
-    A block node ready to drop into a graph (phase 7C "+ Add Block"): empty
+    A workflow block ready to drop into a graph (phase 7C "+ Add Block"): empty
     params -- the adapter fills them from the `config_cls` defaults, so adding a
     Spectrum block gives the standard FFT settings with no ribbon involved --
     the current `algorithm_version` stamped, and every non-primary port
-    auto-bound to a same-named channel. The same node shape
+    auto-bound to a same-named channel. The same block shape
     `workflow_from_configs` builds per step, minus the caller-supplied config.
     """
     spec = spec_for(block_type)
     bindings = {port.name: PortBinding(channel_type=port.name) for port in spec.extra_ports}
-    return WorkflowNode(
-        node_id=node_id, block_type=block_type,
+    return WorkflowBlock(
+        block_id=block_id, block_type=block_type,
         params=resolve_block_params(block_type, params or {}), bindings=bindings,
         algorithm_version=authoring_version(block_type),
     )
@@ -231,38 +232,32 @@ def resolve_block_params(block_type: str, params: Mapping[str, Any]) -> Dict[str
 
 def build_workflow_with_block(workflow: Workflow, block_type: str,
                               source_id: Optional[str] = None) -> Tuple[Workflow, str]:
-    """Append a node, wiring its primary port only to a compatible single output.
+    """Append a block, wiring its primary port only to a compatible single output.
 
-    Missing or unknown sources leave the node unconnected. Input nodes always
+    Missing or unknown sources leave the block unconnected. Input blocks always
     start unconnected and select the whole pool. Returns the new workflow and
-    the added node's id.
+    the added block's id.
     """
-    existing = set(workflow.node_ids)
-    node_id = block_type
+    existing = set(workflow.block_ids)
+    block_id = block_type
     index = 2
-    while node_id in existing:
-        node_id = f"{block_type}_{index}"
+    while block_id in existing:
+        block_id = f"{block_type}_{index}"
         index += 1
     if block_type == INPUT_BLOCK_TYPE:
-        return with_node(workflow, WorkflowNode(
-            node_id, INPUT_BLOCK_TYPE, input=InputSpec(whole_pool=True),
-        )), node_id
-    node = new_block_node(block_type, node_id)
-    workflow = with_node(workflow, node)
-    if source_id is not None and source_id in existing:
-        try:
-            _validate_port_source(workflow, source_id, node, spec_for(block_type).primary,
-                                  KIND_TIME_RESPONSE)
-        except ValueError:
-            pass
-        else:
-            workflow = with_edge(workflow, WorkflowEdge(source_id, node_id))
-    return workflow, node_id
+        return with_block(workflow, WorkflowBlock(
+            block_id, INPUT_BLOCK_TYPE, input=InputSpec(whole_pool=True),
+        )), block_id
+    workflow = with_block(workflow, new_workflow_block(block_type, block_id))
+    if (source_id is not None and source_id in existing
+            and not resolve_wire_refusal(workflow, source_id, block_id, spec_for(block_type).primary.name)):
+        workflow = with_wire(workflow, WorkflowWire(source_id, block_id))
+    return workflow, block_id
 
 
 def authoring_version(block_type: str) -> Optional[int]:
     """
-    The algorithm version to stamp on a node of this type when a workflow is
+    The algorithm version to stamp on a block of this type when a workflow is
     authored -- looked up per result kind from `DSP_ALGORITHM_VERSIONS`. Every
     kind a block can produce has an entry today; a block whose kind has none
     stamps nothing.
@@ -272,193 +267,233 @@ def authoring_version(block_type: str) -> Optional[int]:
 
 # -- graph shape ---------------------------------------------------------------
 
-def _incoming_on_port(workflow: Workflow, node_id: str, port: str) -> Optional[WorkflowEdge]:
-    """The one edge feeding `port` of `node_id`, or None. `validate_graph`
+def resolve_wire_port(workflow: Workflow, wire: WorkflowWire) -> str:
+    """The name of the port `wire` feeds. A stored wire names the primary port
+    either "" (`PRIMARY_PORT`) or by its name; nothing outside this module needs
+    to know that."""
+    if wire.to_port != PRIMARY_PORT:
+        return wire.to_port
+    spec = BLOCKS.get(workflow.block(wire.to_block).block_type)
+    return spec.primary.name if spec is not None else wire.to_port
+
+
+def _stored_port(workflow: Workflow, block_id: str, port_name: str) -> str:
+    """How a wire into `port_name` is stored: the primary port as `PRIMARY_PORT`."""
+    spec = BLOCKS.get(workflow.block(block_id).block_type)
+    return PRIMARY_PORT if spec is not None and port_name == spec.primary.name else port_name
+
+
+def build_workflow_without_wire(workflow: Workflow, block_id: str, port_name: str) -> Workflow:
+    """Drop whatever wire feeds `port_name` of `block_id`; unchanged (the same
+    object) when nothing does."""
+    wires = tuple(wire for wire in workflow.wires if wire.to_block != block_id
+                  or resolve_wire_port(workflow, wire) != port_name)
+    return workflow if len(wires) == len(workflow.wires) else replace(workflow, wires=wires)
+
+
+def build_workflow_with_wire(workflow: Workflow, source_id: str, block_id: str,
+                             port_name: str) -> Workflow:
+    """Wire `source_id` into `port_name` of `block_id`, replacing what fed it.
+    Unchecked -- ask `resolve_wire_refusal` first."""
+    wire = WorkflowWire(source_id, block_id, _stored_port(workflow, block_id, port_name))
+    return with_wire(build_workflow_without_wire(workflow, block_id, port_name), wire)
+
+
+def _incoming_on_port(workflow: Workflow, block_id: str, port: str) -> Optional[WorkflowWire]:
+    """The one wire feeding `port` of `block_id`, or None. `validate_graph`
     guarantees at most one; unvalidated, the first wins."""
-    for edge in workflow.incoming(node_id):
-        if edge.to_port == port:
-            return edge
+    for wire in workflow.incoming(block_id):
+        if resolve_wire_port(workflow, wire) == port:
+            return wire
     return None
 
 
 def topological_order(workflow: Workflow) -> List[str]:
     """
-    Node ids in an order where every node comes after everything that feeds it.
+    Block ids in an order where every block comes after everything that feeds it.
 
-    Raises ValueError naming a node on the cycle if the graph is not acyclic --
+    Raises ValueError naming a block on the cycle if the graph is not acyclic --
     a graph editor can wire a loop, and running one would spin forever.
     """
     WHITE, GRAY, BLACK = 0, 1, 2
-    colour: Dict[str, int] = {node_id: WHITE for node_id in workflow.node_ids}
+    colour: Dict[str, int] = {block_id: WHITE for block_id in workflow.block_ids}
     order: List[str] = []
 
-    def visit(node_id: str) -> None:
-        colour[node_id] = GRAY
-        for edge in workflow.outgoing(node_id):
-            nxt = edge.to_node
+    def visit(block_id: str) -> None:
+        colour[block_id] = GRAY
+        for wire in workflow.outgoing(block_id):
+            nxt = wire.to_block
             if colour[nxt] == GRAY:
-                raise ValueError(f"Workflow has a cycle through node '{nxt}'.")
+                raise ValueError(f"Workflow has a cycle through block '{nxt}'.")
             if colour[nxt] == WHITE:
                 visit(nxt)
-        colour[node_id] = BLACK
-        order.append(node_id)
+        colour[block_id] = BLACK
+        order.append(block_id)
 
-    for node_id in workflow.node_ids:
-        if colour[node_id] == WHITE:
-            visit(node_id)
+    for block_id in workflow.block_ids:
+        if colour[block_id] == WHITE:
+            visit(block_id)
     order.reverse()
     return order
 
 
-def terminal_node_ids(workflow: Workflow) -> Tuple[str, ...]:
+def terminal_block_ids(workflow: Workflow) -> Tuple[str, ...]:
     """
-    Non-input nodes with no outgoing edge. The runner persists `save_node_ids`,
-    not these (7B); `terminal_node_ids` stays for `default_result_set_label` and
-    the ribbon duplicate check, which reason about the single-node fast path
-    where the sole terminal is the sole save node.
+    Non-input blocks with no outgoing wire. The runner persists `save_block_ids`,
+    not these (7B); `terminal_block_ids` stays for `default_result_set_label` and
+    the ribbon duplicate check, which reason about the single-block fast path
+    where the sole terminal is the sole save block.
     """
     return tuple(
-        node.node_id for node in workflow.nodes
-        if not node.is_input and not workflow.outgoing(node.node_id)
+        workflow_block.block_id for workflow_block in workflow.blocks
+        if not workflow_block.is_input and not workflow.outgoing(workflow_block.block_id)
     )
 
 
-def save_node_ids(workflow: Workflow) -> Tuple[str, ...]:
+def save_block_ids(workflow: Workflow) -> Tuple[str, ...]:
     """
-    The nodes whose output is written to disk -- those carrying a `SaveSpec`
+    The blocks whose output is written to disk -- those carrying a `SaveSpec`
     (decision 4). A branching graph can mark several; the ribbon fast path marks
     exactly one (its terminal, stamped by `workflow_from_configs`). Saving is
-    opt-in per node, so a graph with none marked writes nothing, and the runner
+    opt-in per block, so a graph with none marked writes nothing, and the runner
     refuses it rather than guessing.
     """
-    return tuple(node.node_id for node in workflow.nodes if node.save is not None)
+    return tuple(workflow_block.block_id for workflow_block in workflow.blocks if workflow_block.save is not None)
 
 
-def sole_input_node_id(workflow: Workflow) -> str:
-    """The single input node's id, for the runner's one-input fast path. Raises
+def sole_input_block_id(workflow: Workflow) -> str:
+    """The single input block's id, for the runner's one-input fast path. Raises
     if the graph has none or several -- 7A does not run a multi-input graph."""
-    inputs = [node.node_id for node in workflow.nodes if node.is_input]
+    inputs = [workflow_block.block_id for workflow_block in workflow.blocks if workflow_block.is_input]
     if len(inputs) != 1:
         raise ValueError(
-            f"Expected exactly one input node, found {len(inputs)}: {', '.join(inputs) or '(none)'}."
+            f"Expected exactly one input block, found {len(inputs)}: {', '.join(inputs) or '(none)'}."
         )
     return inputs[0]
 
 
-def sole_terminal_node(workflow: Workflow) -> WorkflowNode:
-    """The single terminal node, for the runner's one-output fast path (7A)."""
-    terminals = terminal_node_ids(workflow)
+def sole_terminal_block(workflow: Workflow) -> WorkflowBlock:
+    """The single terminal block, for the runner's one-output fast path (7A)."""
+    terminals = terminal_block_ids(workflow)
     if len(terminals) != 1:
         raise ValueError(
-            f"Expected exactly one terminal node, found {len(terminals)}: "
+            f"Expected exactly one terminal block, found {len(terminals)}: "
             f"{', '.join(terminals) or '(none)'}."
         )
-    return workflow.node(terminals[0])
+    return workflow.block(terminals[0])
 
 
-def needed_node_ids(workflow: Workflow, roots: Optional[Set[str]] = None) -> Set[str]:
+def needed_block_ids(workflow: Workflow, roots: Optional[Set[str]] = None) -> Set[str]:
     """
-    The nodes a run actually has to compute, plus everything upstream of those.
+    The blocks a run actually has to compute, plus everything upstream of those.
 
-    `roots` overrides the default outputs -- the runner passes a save node's id
-    fewer than `save_node_ids(workflow)` when a save node's ancestry needs a
+    `roots` overrides the default outputs -- the runner passes a save block's id
+    fewer than `save_block_ids(workflow)` when a save block's ancestry needs a
     channel type this measurement does not have (a file with no tacho feeding a
-    branch that saves an order cut): the blocked node is left out of `roots`
+    branch that saves an order cut): the blocked block is left out of `roots`
     rather than raising, so a sibling branch that never touches that channel
-    still runs (#331). `roots=None` keeps the default: the nodes marked to
-    save, or the terminal nodes when none are (the 7A ribbon fast path). Either
+    still runs (#331). `roots=None` keeps the default: the blocks marked to
+    save, or the terminal blocks when none are (the 7A ribbon fast path). Either
     way a branch that leads only to a dead, unsaved terminal is not run.
     """
     if roots is None:
-        roots = {node.node_id for node in workflow.nodes if node.save is not None}
+        roots = {workflow_block.block_id for workflow_block in workflow.blocks if workflow_block.save is not None}
         if not roots:
-            roots = set(terminal_node_ids(workflow))
+            roots = set(terminal_block_ids(workflow))
 
     needed: Set[str] = set()
     stack = list(roots)
     while stack:
-        node_id = stack.pop()
-        if node_id in needed:
+        block_id = stack.pop()
+        if block_id in needed:
             continue
-        needed.add(node_id)
-        for edge in workflow.incoming(node_id):
-            stack.append(edge.from_node)
+        needed.add(block_id)
+        for wire in workflow.incoming(block_id):
+            stack.append(wire.from_block)
     return needed
 
 
 # -- validation --------------------------------------------------------------
 
-def validate_graph(workflow: Workflow, primary_kind: str = KIND_TIME_RESPONSE) -> None:
+def validate_graph(workflow: Workflow) -> None:
     """
     Raises ValueError unless the graph type-checks end to end -- rejected before
     a batch runs over forty files, the way Testlab refuses an incompatible
     connection rather than failing mid-run.
 
-    Checks: at least one node and at least one input node; the graph is acyclic;
-    no port is wired twice; an input node has no incoming edge and no `SaveSpec`;
-    every non-input block type is registered; each node's primary port is fed and
-    accepts what the source produces; every mandatory extra port is fed by an
-    edge or a binding, and no edge/binding names a port the block does not have;
-    a port is not both wired and bound; a multi-output node has no outgoing edge.
+    Checks: at least one block and at least one input block; the graph is acyclic;
+    no port is wired twice; an input block has no incoming wire and no `SaveSpec`;
+    every non-input block type is registered; each block's primary port is fed;
+    every mandatory extra port is fed by a wire or a binding, and no binding names
+    a port the block does not have; a port is not both wired and bound; every wire
+    passes `resolve_wire_refusal`; a multi-output block has no outgoing wire.
     """
-    if not workflow.nodes:
-        raise ValueError("A workflow needs at least one node.")
-    if not any(node.is_input for node in workflow.nodes):
-        raise ValueError("A workflow needs at least one input node.")
+    if workflow.blocks and not any(block.is_input for block in workflow.blocks):
+        raise ValueError("A workflow needs at least one input block.")
+    errors = resolve_block_errors(workflow)
+    if errors:
+        raise ValueError(next(iter(errors.values())))
+
+
+def resolve_block_errors(workflow: Workflow) -> Dict[str, str]:
+    """
+    Every block's first `validate_graph` error, keyed by block id in the order
+    `validate_graph` reports them -- so the canvas can outline each faulty block,
+    not just the first. Graph-wide failures (no block, a cycle) belong to no single
+    block and still raise ValueError. A missing input block is `validate_graph`'s
+    to refuse: a chain without one still has blocks worth naming (the unwired ones).
+    """
+    if not workflow.blocks:
+        raise ValueError("A workflow needs at least one block.")
 
     topological_order(workflow)   # raises on a cycle
 
+    errors: Dict[str, str] = {}
     wired: Set[Tuple[str, str]] = set()
-    for edge in workflow.edges:
-        key = (edge.to_node, edge.to_port)
+    for wire in workflow.wires:
+        key = (wire.to_block, resolve_wire_port(workflow, wire))
         if key in wired:
-            port_label = edge.to_port or "primary"
-            raise ValueError(
-                f"Node '{edge.to_node}' has its {port_label} port wired more than once."
+            errors.setdefault(
+                wire.to_block, f"Block '{wire.to_block}' has its '{key[1]}' port wired more than once."
             )
         wired.add(key)
 
-    for node in workflow.nodes:
-        _validate_node(workflow, node, primary_kind)
+    for workflow_block in workflow.blocks:
+        try:
+            _validate_block(workflow, workflow_block)
+        except ValueError as exc:
+            errors.setdefault(workflow_block.block_id, str(exc))
+    return errors
 
 
-def _validate_node(workflow: Workflow, node: WorkflowNode, primary_kind: str) -> None:
-    """Type-check one node's inputs. Split out of `validate_graph` only for
+def _validate_block(workflow: Workflow, workflow_block: WorkflowBlock) -> None:
+    """Type-check one block's inputs. Split out of `validate_graph` only for
     readability -- the graph-wide checks (cycle, double-wired port) stay there."""
-    incoming = workflow.incoming(node.node_id)
+    incoming = workflow.incoming(workflow_block.block_id)
 
-    if node.is_input:
+    if workflow_block.is_input:
         if incoming:
-            raise ValueError(f"Input node '{node.node_id}' cannot have an incoming edge.")
-        if node.save is not None:
-            # An input node stands for the raw measurement, not a computed
+            raise ValueError(f"Input block '{workflow_block.block_id}' cannot have an incoming wire.")
+        if workflow_block.save is not None:
+            # An input block stands for the raw measurement, not a computed
             # result. Letting it carry a SaveSpec would reach spec_for("input")
             # in the runner and surface as a baffling "Unknown block type
             # 'input'" after the drafts are already open -- catch it here.
             raise ValueError(
-                f"Input node '{node.node_id}' cannot be marked to save -- tick "
-                f"'Save this node's output' on a block instead."
+                f"Input block '{workflow_block.block_id}' cannot be marked to save -- tick "
+                f"'Save this block's output' on a block instead."
             )
         return
 
-    spec = spec_for(node.block_type)
+    spec = spec_for(workflow_block.block_type)
     port_names = {port.name for port in spec.inputs}
 
-    primary_edge = _incoming_on_port(workflow, node.node_id, PRIMARY_PORT)
-    if primary_edge is None:
+    if _incoming_on_port(workflow, workflow_block.block_id, spec.primary.name) is None:
         raise ValueError(
-            f"Node '{node.node_id}' ('{node.block_type}') has nothing wired to its "
+            f"Block '{workflow_block.block_id}' ('{workflow_block.block_type}') has nothing wired to its "
             f"primary input."
         )
-    _validate_port_source(workflow, primary_edge.from_node, node, spec.primary, primary_kind)
-
-    for edge in incoming:
-        if edge.to_port and edge.to_port not in port_names:
-            raise ValueError(
-                f"Node '{node.node_id}' ('{node.block_type}') has an edge to a port "
-                f"'{edge.to_port}' it does not have. Its ports: {', '.join(sorted(port_names))}."
-            )
-    for name in node.bindings:
+    for name in workflow_block.bindings:
         if name == spec.primary.name:
             # A binding here would be silently ignored at run time -- run_graph
             # resolves bindings on `spec.extra_ports` only -- while the runner's
@@ -466,87 +501,111 @@ def _validate_node(workflow: Workflow, node: WorkflowNode, primary_kind: str) ->
             # every file lacking that channel failed for a graph that never
             # needed it (audit 02, finding S1/1.8).
             raise ValueError(
-                f"Node '{node.node_id}' ('{node.block_type}') binds its primary port "
-                f"'{name}' to a channel. The primary input is fed by an edge -- wire it "
-                f"from another node instead."
+                f"Block '{workflow_block.block_id}' ('{workflow_block.block_type}') binds its primary port "
+                f"'{name}' to a channel. The primary input is fed by a wire -- wire it "
+                f"from another block instead."
             )
         if name not in port_names:
             raise ValueError(
-                f"Node '{node.node_id}' ('{node.block_type}') binds a port '{name}' it "
+                f"Block '{workflow_block.block_id}' ('{workflow_block.block_type}') binds a port '{name}' it "
                 f"does not have. Its ports: {', '.join(sorted(port_names))}."
             )
 
     for port in spec.extra_ports:
-        port_edge = _incoming_on_port(workflow, node.node_id, port.name)
-        has_binding = port.name in node.bindings
-        if port_edge is not None and has_binding:
+        port_wire = _incoming_on_port(workflow, workflow_block.block_id, port.name)
+        has_binding = port.name in workflow_block.bindings
+        if port_wire is not None and has_binding:
             raise ValueError(
-                f"Node '{node.node_id}' ('{node.block_type}') has its '{port.name}' port "
+                f"Block '{workflow_block.block_id}' ('{workflow_block.block_type}') has its '{port.name}' port "
                 f"both wired and bound to a channel -- pick one."
             )
-        if port_edge is not None:
-            _validate_port_source(workflow, port_edge.from_node, node, port, primary_kind)
-        elif not has_binding and not port.optional:
+        if port_wire is None and not has_binding and not port.optional:
             raise ValueError(
-                f"Node '{node.node_id}' ('{node.block_type}') needs its '{port.name}' port "
+                f"Block '{workflow_block.block_id}' ('{workflow_block.block_type}') needs its '{port.name}' port "
                 f"bound to a channel (e.g. PortBinding(channel_type='{port.name}'))."
             )
-    if workflow.outgoing(node.node_id):
-        _validate_single_output(node)
+    for wire in incoming:
+        refusal = resolve_wire_refusal(workflow, wire.from_block, workflow_block.block_id,
+                                       resolve_wire_port(workflow, wire))
+        if refusal:
+            raise ValueError(refusal)
+    if workflow.outgoing(workflow_block.block_id):
+        refusal = _resolve_multi_output_refusal(workflow_block)
+        if refusal:
+            raise ValueError(refusal)
 
 
-def _validate_single_output(node: WorkflowNode) -> None:
-    if not node.is_input and spec_for(node.block_type).multi_output:
-        raise ValueError(
-            f"Node '{node.node_id}' ('{node.block_type}') emits one block per order; "
-            f"nothing can consume that, so it cannot have an outgoing edge."
-        )
+def _resolve_multi_output_refusal(workflow_block: WorkflowBlock) -> str:
+    if not workflow_block.is_input and spec_for(workflow_block.block_type).multi_output:
+        return (f"Block '{workflow_block.block_id}' ('{workflow_block.block_type}') emits one block "
+                f"per order; nothing can consume that, so it cannot have an outgoing wire.")
+    return ""
 
 
-def _validate_port_source(workflow: Workflow, source_id: str, node: WorkflowNode,
-                          port: Port, primary_kind: str) -> None:
-    """The same connection rule for authoring and graph validation."""
-    _validate_single_output(workflow.node(source_id))
-    source_kind = _produced_kind(workflow, source_id, primary_kind)
-    if source_kind not in port.accepts:
-        port_label = ("primary input" if port == spec_for(node.block_type).primary
-                      else f"'{port.name}' port")
-        raise ValueError(
-            f"Node '{node.node_id}' ('{node.block_type}') accepts "
-            f"{' or '.join(port.accepts)} on its {port_label}, but "
-            f"'{source_id}' produces '{source_kind}'."
-        )
+def resolve_wire_refusal(workflow: Workflow, source_id: str, block_id: str, port_name: str) -> str:
+    """
+    Why a wire from `source_id` into `port_name` of `block_id` is not allowed,
+    or "" when it is. The one wire rule: graph validation, wiring a newly added
+    block and the canvas wire gesture all ask it.
 
-
-def _produced_kind(workflow: Workflow, node_id: str, primary_kind: str) -> str:
-    """The block kind a node's output is. An input node stands for a loaded
-    measurement, i.e. `primary_kind`."""
-    node = workflow.node(node_id)
-    return primary_kind if node.is_input else spec_for(node.block_type).produces
+    Checked as if the wire were added: it must not close a cycle. Whether the
+    port already holds a wire is not this rule's business -- a gesture replaces
+    it, validation reports it.
+    """
+    if source_id not in workflow.block_ids or block_id not in workflow.block_ids:
+        return "Wire endpoint no longer exists."
+    target = workflow.block(block_id)
+    if target.is_input:
+        return f"Input block '{block_id}' cannot have an incoming wire."
+    source = workflow.block(source_id)
+    try:
+        spec = spec_for(target.block_type)
+        refusal = _resolve_multi_output_refusal(source)
+    except ValueError as exc:
+        return str(exc)
+    label = f"Block '{block_id}' ('{target.block_type}')"
+    port = next((port for port in spec.inputs if port.name == port_name), None)
+    if port is None:
+        return (f"{label} has a wire to a port '{port_name}' it does not have. "
+                f"Its ports: {', '.join(sorted(p.name for p in spec.inputs))}.")
+    if port.from_measurement:
+        # #596: a measurement port takes its channel from a binding, not a wire (yet).
+        return (f"{label} takes its '{port_name}' port from the measurement -- "
+                f"choose its channel in block Properties.")
+    if refusal:
+        return refusal
+    kind = KIND_TIME_RESPONSE if source.is_input else spec_for(source.block_type).produces
+    if kind not in port.accepts:
+        port_label = "primary input" if port == spec.primary else f"'{port_name}' port"
+        return (f"{label} accepts {' or '.join(port.accepts)} on its {port_label}, "
+                f"but '{source_id}' produces '{kind}'.")
+    if block_id in needed_block_ids(workflow, {source_id}):
+        return f"Workflow has a cycle through block '{block_id}'."
+    return ""
 
 
 def check_versions(workflow: Workflow) -> List[str]:
     """
-    Human-readable warnings where a node's recorded `algorithm_version` differs
+    Human-readable warnings where a block's recorded `algorithm_version` differs
     from the one in force now. Never recomputes silently (1.12 pitfall 5) -- the
     caller decides what to do with these.
     """
     warnings: List[str] = []
-    for node in workflow.nodes:
-        if node.is_input:
+    for workflow_block in workflow.blocks:
+        if workflow_block.is_input:
             continue
-        current = authoring_version(node.block_type)
+        current = authoring_version(workflow_block.block_type)
         if current is None:
             continue
-        if node.algorithm_version is None:
+        if workflow_block.algorithm_version is None:
             warnings.append(
-                f"Node '{node.node_id}' ('{node.block_type}'): workflow records no algorithm "
+                f"Block '{workflow_block.block_id}' ('{workflow_block.block_type}'): workflow records no algorithm "
                 f"version; current is {current}."
             )
-        elif node.algorithm_version != current:
+        elif workflow_block.algorithm_version != current:
             warnings.append(
-                f"Node '{node.node_id}' ('{node.block_type}'): workflow was authored with "
-                f"algorithm version {node.algorithm_version}, current is {current} -- "
+                f"Block '{workflow_block.block_id}' ('{workflow_block.block_type}'): workflow was authored with "
+                f"algorithm version {workflow_block.algorithm_version}, current is {current} -- "
                 f"results will differ."
             )
     return warnings
@@ -554,31 +613,31 @@ def check_versions(workflow: Workflow) -> List[str]:
 
 # -- running ----------------------------------------------------------------
 
-def _resolve_extra_ports(workflow: Workflow, node: WorkflowNode, spec: BlockSpec,
+def _resolve_extra_ports(workflow: Workflow, workflow_block: WorkflowBlock, spec: BlockSpec,
                          single: Mapping[str, NVHDataBlock],
                          bound_channels: Mapping[str, NVHDataBlock]) -> Dict[str, NVHDataBlock]:
-    """The non-primary ports of `node`, each fed from its incoming edge or its
+    """The non-primary ports of `block`, each fed from its incoming wire or its
     `PortBinding`. An optional port with neither is left out; a mandatory one
     raises. Split out of `run_graph` for readability only."""
     bound: Dict[str, NVHDataBlock] = {}
     for port in spec.extra_ports:
-        port_edge = _incoming_on_port(workflow, node.node_id, port.name)
-        if port_edge is not None:
-            bound[port.name] = single[port_edge.from_node]
+        port_wire = _incoming_on_port(workflow, workflow_block.block_id, port.name)
+        if port_wire is not None:
+            bound[port.name] = single[port_wire.from_block]
             continue
-        binding = node.bindings.get(port.name)
+        binding = workflow_block.bindings.get(port.name)
         if binding is None:
             if port.optional:
                 continue
             raise ValueError(
-                f"Node '{node.node_id}' ('{node.block_type}') needs its '{port.name}' port bound."
+                f"Block '{workflow_block.block_id}' ('{workflow_block.block_type}') needs its '{port.name}' port bound."
             )
         channel = bound_channels.get(binding.channel_type)
         if channel is None:
             if port.optional:
                 continue
             raise ValueError(
-                f"Node '{node.node_id}' ('{node.block_type}') needs a '{binding.channel_type}' "
+                f"Block '{workflow_block.block_id}' ('{workflow_block.block_type}') needs a '{binding.channel_type}' "
                 f"channel, none was provided for this measurement."
             )
         bound[port.name] = channel
@@ -595,13 +654,13 @@ def run_graph(workflow: Workflow, inputs: Mapping[str, NVHDataBlock],
     Run `workflow` over one set of loaded input blocks. Assumes `validate_graph`
     has already passed.
 
-    `inputs` maps each input node's id to the block that stands for it -- one
+    `inputs` maps each input block's id to the block that stands for it -- one
     channel of one measurement, resolved by the runner (decision 2). This layer
     never reads a file. `bound_channels` maps a channel type ("tacho") to the
     block for it, resolved once per measurement by the caller.
 
-    `roots` overrides which save/terminal nodes this call computes -- see
-    `needed_node_ids`. The caller uses it to leave out a branch whose mandatory
+    `roots` overrides which save/terminal blocks this call computes -- see
+    `needed_block_ids`. The caller uses it to leave out a branch whose mandatory
     bound channel this measurement does not have, instead of this call raising
     and losing every branch's output for the file (#331).
 
@@ -620,61 +679,61 @@ def run_graph(workflow: Workflow, inputs: Mapping[str, NVHDataBlock],
     its own. Omitted (tests, a headless entry point) it degrades to a
     fresh empty bag per call, i.e. no reuse.
 
-    Returns `{node_id: [blocks]}` for every non-input node that had to run: the
-    terminal nodes, the nodes marked to save, and everything between. One block
+    Returns `{block_id: [blocks]}` for every non-input block that had to run: the
+    terminal blocks, the blocks marked to save, and everything between. One block
     for a spectrum or spectrogram, N for order cuts. A branch nobody consumes is
     not computed.
     """
     bound_channels = bound_channels or {}
     scratch = {} if scratch is None else scratch
-    needed = needed_node_ids(workflow, roots)
+    needed = needed_block_ids(workflow, roots)
 
-    single: Dict[str, NVHDataBlock] = {}         # single-output block, by node id
+    single: Dict[str, NVHDataBlock] = {}         # single-output block, by block id
     produced: Dict[str, List[NVHDataBlock]] = {}
 
-    for node_id in topological_order(workflow):
-        if node_id not in needed:
+    for block_id in topological_order(workflow):
+        if block_id not in needed:
             continue
-        node = workflow.node(node_id)
+        workflow_block = workflow.block(block_id)
 
-        if node.is_input:
-            block = inputs.get(node_id)
+        if workflow_block.is_input:
+            block = inputs.get(block_id)
             if block is None:
                 raise ValueError(
-                    f"Input node '{node_id}' was given no loaded measurement block."
+                    f"Input block '{block_id}' was given no loaded measurement block."
                 )
-            single[node_id] = block
+            single[block_id] = block
             continue
 
         if cancel is not None:
             cancel.raise_if_cancelled()
 
-        spec = spec_for(node.block_type)
+        spec = spec_for(workflow_block.block_type)
 
-        primary_edge = _incoming_on_port(workflow, node_id, PRIMARY_PORT)
-        if primary_edge is None or primary_edge.from_node not in single:
+        primary_wire = _incoming_on_port(workflow, block_id, spec.primary.name)
+        if primary_wire is None or primary_wire.from_block not in single:
             raise ValueError(
-                f"Node '{node_id}' ('{node.block_type}') has no usable primary input; "
+                f"Block '{block_id}' ('{workflow_block.block_type}') has no usable primary input; "
                 f"validate_graph should have refused this workflow."
             )
-        primary_block = single[primary_edge.from_node]
+        primary_block = single[primary_wire.from_block]
 
-        bound = _resolve_extra_ports(workflow, node, spec, single, bound_channels)
+        bound = _resolve_extra_ports(workflow, workflow_block, spec, single, bound_channels)
 
-        result = spec.fn(primary_block, bound, dict(node.params), scratch)
+        result = spec.fn(primary_block, bound, dict(workflow_block.params), scratch)
 
         if isinstance(result, list):
             if not spec.multi_output:
                 raise ValueError(
-                    f"Node '{node_id}' ('{node.block_type}') produced a list but is not "
+                    f"Block '{block_id}' ('{workflow_block.block_type}') produced a list but is not "
                     f"multi_output; validate_graph should have refused this workflow."
                 )
-            produced[node_id] = list(result)
+            produced[block_id] = list(result)
         else:
-            single[node_id] = result
-            produced[node_id] = [result]
+            single[block_id] = result
+            produced[block_id] = [result]
 
-    return {node_id: blocks for node_id, blocks in produced.items()}
+    return {block_id: blocks for block_id, blocks in produced.items()}
 
 
 # -- identity / lineage -----------------------------------------------------
@@ -690,11 +749,11 @@ def _config_defaults(config_cls: type) -> Dict[str, Any]:
     return out
 
 
-def identity_params(node: WorkflowNode) -> Dict[str, Any]:
+def identity_params(workflow_block: WorkflowBlock) -> Dict[str, Any]:
     """
-    A node's params as they count for identity: display-only fields dropped,
+    A block's params as they count for identity: display-only fields dropped,
     every remaining field pinned to an explicit value, the algorithm version
-    stamped. The same rule `result_params_from_node` uses, minus the lineage key
+    stamped. The same rule `result_params_from_block` uses, minus the lineage key
     it adds on top.
 
     Missing keys are backfilled from the `config_cls` defaults so a block that
@@ -703,61 +762,67 @@ def identity_params(node: WorkflowNode) -> Dict[str, Any]:
     the same computation authored two ways is two result sets, neither a cache
     hit for the other.
     """
-    spec = spec_for(node.block_type)
-    params = resolve_block_params(node.block_type, {
-        **_config_defaults(spec.config_cls), **node.params,
+    spec = spec_for(workflow_block.block_type)
+    params = resolve_block_params(workflow_block.block_type, {
+        **_config_defaults(spec.config_cls), **workflow_block.params,
     })
-    version = node.algorithm_version
+    version = workflow_block.algorithm_version
     if version is None:
-        # A node authored before its kind was versioned, or before this backfill
+        # A block authored before its kind was versioned, or before this backfill
         # existed: stamp the kind's current version so it hashes the same as a
         # freshly authored one rather than becoming its own result set.
-        version = authoring_version(node.block_type)
+        version = authoring_version(workflow_block.block_type)
     params["algorithm_version"] = version
     return params
 
 
-def _ancestor_repr(workflow: Workflow, node_id: str, seen: Set[str]) -> Any:
+def _identity_port(workflow: Workflow, wire: WorkflowWire) -> str:
+    """The port as identity sees it: `PRIMARY_PORT` for the primary port however
+    the wire names it, so already-saved result sets keep their hash."""
+    return _stored_port(workflow, wire.to_block, resolve_wire_port(workflow, wire))
+
+
+def _ancestor_repr(workflow: Workflow, block_id: str, seen: Set[str]) -> Any:
     """
-    A canonical, node-id-independent description of the subgraph rooted at
-    `node_id`, seen from below. Input nodes collapse to a marker -- their
+    A canonical, block-id-independent description of the subgraph rooted at
+    `block_id`, seen from below. Input blocks collapse to a marker -- their
     `MeasurementSelection` name must not enter the fingerprint (running the same
     DSP over a different folder is the same result set: the duplicate dialog
     still has to appear).
     """
-    node = workflow.node(node_id)
-    if node.is_input:
+    workflow_block = workflow.block(block_id)
+    if workflow_block.is_input:
         return {"input": True}
-    if node_id in seen:                      # defensive: validate_graph rejects cycles
-        return {"cycle": node_id}
-    seen = seen | {node_id}
+    if block_id in seen:                      # defensive: validate_graph rejects cycles
+        return {"cycle": block_id}
+    seen = seen | {block_id}
     return {
-        "block": node.block_type,
-        "params": identity_params(node),
+        "block": workflow_block.block_type,
+        "params": identity_params(workflow_block),
         "bindings": sorted((port, binding.channel_type)
-                           for port, binding in node.bindings.items()),
+                           for port, binding in workflow_block.bindings.items()),
         "inputs": sorted(
-            [edge.to_port, _ancestor_repr(workflow, edge.from_node, seen)]
-            for edge in workflow.incoming(node_id)
+            [_identity_port(workflow, wire), _ancestor_repr(workflow, wire.from_block, seen)]
+            for wire in workflow.incoming(block_id)
         ),
     }
 
 
-def lineage_hash(workflow: Workflow, node_id: str) -> str:
+def lineage_hash(workflow: Workflow, block_id: str) -> str:
     """
-    A fingerprint of the whole subgraph *above* `node_id` (its own params
-    excluded). Empty string when every incoming edge comes straight from an
-    input node: a one-block graph then has the exact identity today's single
+    A fingerprint of the whole subgraph *above* `block_id` (its own params
+    excluded). Empty string when every incoming wire comes straight from an
+    input block: a one-block graph then has the exact identity today's single
     step has, so no already-saved result set turns into a cache miss.
     """
-    incoming = workflow.incoming(node_id)
-    if incoming and all(workflow.node(edge.from_node).is_input for edge in incoming):
+    incoming = workflow.incoming(block_id)
+    if incoming and all(workflow.block(wire.from_block).is_input for wire in incoming):
         return ""
     if not incoming:
         return ""
     structure = sorted(
-        [edge.to_port, _ancestor_repr(workflow, edge.from_node, {node_id})]
-        for edge in incoming
+        [_identity_port(workflow, wire), _ancestor_repr(workflow, wire.from_block, {block_id})]
+        for wire in incoming
     )
     canonical = json.dumps(structure, sort_keys=True, ensure_ascii=False, default=str)
     return hashlib.sha1(canonical.encode("utf-8")).hexdigest()
@@ -770,19 +835,19 @@ def workflow_from_configs(name: str, steps: List[Tuple[str, Any]], *,
                           save: Optional[SaveSpec] = None) -> Workflow:
     """
     Build a linear workflow -- `input -> block -> block -> ...` -- from
-    `(block_type, config)` pairs, stamping each node with the current
+    `(block_type, config)` pairs, stamping each block with the current
     `algorithm_version`, dropping the block's `display_only_params`, and
     auto-adding a same-named binding for every non-primary port.
 
-    The last node is marked to save: `save` when the caller passes a `SaveSpec`
+    The last block is marked to save: `save` when the caller passes a `SaveSpec`
     (the ribbon fast path, carrying its channel scope), otherwise a default
     all-channels one. `workflow_from_configs` only ever builds a graph that is
-    meant to run and persist, so "save = a node carries a SaveSpec" stays the
+    meant to run and persist, so "save = a block carries a SaveSpec" stays the
     single rule with no implicit fallback in the runner (decision 4 / plan
     2026-09-02 answer B).
 
     This is the one place a workflow is built from ribbon configs -- the ribbon's
-    quick "Compute Result Set..." path is a throwaway two-node graph built here,
+    quick "Compute Result Set..." path is a throwaway two-block graph built here,
     not a second model (plan 2026-09-02). The step picker (phase 7C) will call it
     too, so version stamping and binding cannot drift between the two.
 
@@ -792,29 +857,29 @@ def workflow_from_configs(name: str, steps: List[Tuple[str, Any]], *,
     The runner tells the two cases apart: a bound optional channel is used when
     the measurement has it and skipped when it does not.
 
-    `selection_name` is written onto the input node so a workflow that gets
+    `selection_name` is written onto the input block so a workflow that gets
     saved (7B/7C) records what it ran over. The ribbon fast path leaves it blank
     and passes the selection to the runner separately, as it does today.
     """
-    nodes: List[WorkflowNode] = [WorkflowNode(
-        INPUT_NODE_ID, INPUT_BLOCK_TYPE, input=InputSpec(selection_name=selection_name),
+    blocks: List[WorkflowBlock] = [WorkflowBlock(
+        INPUT_BLOCK_ID, INPUT_BLOCK_TYPE, input=InputSpec(selection_name=selection_name),
     )]
-    edges: List[WorkflowEdge] = []
+    wires: List[WorkflowWire] = []
 
-    upstream = INPUT_NODE_ID
+    upstream = INPUT_BLOCK_ID
     used_ids: List[str] = []
     for index, (block_type, config) in enumerate(steps):
         takes_params = config is not None and not isinstance(config, NoConfig)
         params = asdict(config) if takes_params else {}
-        node_id = block_type if block_type not in used_ids and block_type != INPUT_NODE_ID \
+        block_id = block_type if block_type not in used_ids and block_type != INPUT_BLOCK_ID \
             else f"{block_type}_{index}"
-        used_ids.append(node_id)
+        used_ids.append(block_id)
         is_last = index == len(steps) - 1
-        nodes.append(replace(
-            new_block_node(block_type, node_id, params),
+        blocks.append(replace(
+            new_workflow_block(block_type, block_id, params),
             save=(save if save is not None else SaveSpec()) if is_last else None,
         ))
-        edges.append(WorkflowEdge(upstream, node_id))
-        upstream = node_id
+        wires.append(WorkflowWire(upstream, block_id))
+        upstream = block_id
 
-    return Workflow(name=name, nodes=tuple(nodes), edges=tuple(edges))
+    return Workflow(name=name, blocks=tuple(blocks), wires=tuple(wires))

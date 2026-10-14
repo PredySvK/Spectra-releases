@@ -26,14 +26,16 @@ from view_models.analysis_kinds import ANALYSIS_TIME
 class Pen:
     """Line appearance for a trace, Qt-free.
 
-    ``style`` is a plain string ("solid", "dash", "dot", ...) rather than a
-    ``Qt.PenStyle`` so the model stays importable without Qt; the renderer maps
-    it when it draws.
+    A carousel curve holds its carousel ``slot`` and an empty ``color``: its
+    colour and line style depend on the graph's rendering mode, which can
+    change after the curve was built, and are resolved when drawing
+    (``resolve_curve_look``, ADR §1.163). A curve with no slot (the base
+    curve) is drawn in ``color``, solid.
     """
 
     color: str = "#ffcc00"
     width: float = 1.0
-    style: str = "solid"
+    slot: Optional[int] = None
 
 
 @dataclass

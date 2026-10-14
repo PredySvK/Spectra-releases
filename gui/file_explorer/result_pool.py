@@ -37,9 +37,11 @@ from gui.handlers.result_content import unload_result_sets_from_dock
 from selection.trace_filter import format_result_kind
 from selection.parameter_sets import build_parameter_sets
 from io_modules.project_store import project_folder
+from gui.appearance import APP_TOKENS
+
 
 # A result set the project still lists but whose h5 file is gone from disk.
-GHOST_COLOR = "#9e9e9e"
+GHOST_COLOR = APP_TOKENS.item_unreadable
 
 # Marks a top-level row as a Result Kind heading rather than a set. A 2-tuple,
 # so a set row's plain string id can never be mistaken for one.

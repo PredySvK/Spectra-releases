@@ -1,10 +1,10 @@
 """
 The planning half of a batch run: `plan_batch` decides *what* a run over a
 MeasurementSelection would do -- it validates the graph, resolves the selection,
-maps data roots and works out each save node's scope. It touches no disk and no
+maps data roots and works out each save block's scope. It touches no disk and no
 queue, and it says "no" as data: a refusal is a `BatchPlan` with
 `runnable=False` whose messages already spell out why (ARCHITECTURE_DECISIONS
-§1.71). `save_channel_types` hands the save nodes' type scope down to
+§1.71). `save_channel_types` hands the save blocks' type scope down to
 `resolve()` so an `all_channels` selection never feeds the measurement's own
 tacho in as a vibration channel.
 
@@ -20,21 +20,22 @@ from selection.measurement_selection import (
     resolve as resolve_selection,
     resolve_save_sources,
 )
-from signal_processing.workflow import check_versions, save_node_ids, validate_graph
+from signal_processing.workflow import check_versions, save_block_ids
+from signal_processing.workflow_readiness import ISSUE_INPUT_NOT_CHOSEN, resolve_chain_readiness
 
 
 @dataclass(frozen=True)
-class PlannedSaveNode:
+class PlannedSaveBlock:
     """
-    One save node as the plan sees it: everything decided before a draft exists
+    One save block as the plan sees it: everything decided before a draft exists
     -- which measurements it covers, what its result set will be called, which
     existing set (if any) it replaces.
 
     `sink_what` is the name the sink puts in its own messages: the run's `what`
-    when one node saves, and `what '<set label>'` when several do, so two
+    when one block saves, and `what '<set label>'` when several do, so two
     "Saved result set" lines are not left to be told apart by the set they name.
     """
-    node_id: str
+    block_id: str
     set_label: str
     overwrite_result_set_id: Optional[str]
     source_ids: frozenset
@@ -65,7 +66,7 @@ class BatchPlan:
     what: str
     runnable: bool
     messages: Tuple[str, ...] = ()
-    save_nodes: Tuple[PlannedSaveNode, ...] = ()
+    save_blocks: Tuple[PlannedSaveBlock, ...] = ()
     steps: Tuple[BatchStep, ...] = ()
     #: Failures known before the job starts (a file whose data folder is gone).
     #: They ride along to the end and are reported with the run's own errors.
@@ -82,20 +83,20 @@ class BatchPlan:
 
 def save_channel_types(workflow: Workflow) -> Optional[Set[str]]:
     """
-    The channel types the run has to read at all: the union of the save nodes'
-    `SaveSpec.channel_types`, or None as soon as one node imposes no constraint.
+    The channel types the run has to read at all: the union of the save blocks'
+    `SaveSpec.channel_types`, or None as soon as one block imposes no constraint.
 
-    None is "every type", so one unconstrained save node widens the run back to
-    everything -- narrowing on the union would silently drop channels that node
+    None is "every type", so one unconstrained save block widens the run back to
+    everything -- narrowing on the union would silently drop channels that block
     asked to keep. This is what stops an `all_channels` selection from feeding
     the tacho in as a vibration channel (`resolve`'s `channel_types`).
     """
     types: Set[str] = set()
-    for node_id in save_node_ids(workflow):
-        node_types = workflow.node(node_id).save.channel_types
-        if not node_types:
+    for block_id in save_block_ids(workflow):
+        block_types = workflow.block(block_id).save.channel_types
+        if not block_types:
             return None
-        types.update(node_types)
+        types.update(block_types)
     return types or None
 
 
@@ -107,38 +108,37 @@ def plan_batch(workflow: Workflow, selection: MeasurementSelection, *,
                sources: Sequence[Any], schema: Mapping[str, Any],
                project_path: Optional[str], data_roots: Sequence[Any],
                label: str, what: str = "Run workflow",
-               overwrite_by_node: Optional[Mapping[str, str]] = None) -> BatchPlan:
+               overwrite_by_block: Optional[Mapping[str, str]] = None) -> BatchPlan:
     """
     Decide what a run over `selection` would do, without touching a queue or a
     draft folder.
 
     `sources` is the project's whole SourceEntry list -- which of them are in
     the pool is this floor's rule, not the caller's. `schema` is the pool's
-    merged master schema (the metadata facets a save node may filter on), and
+    merged master schema (the metadata facets a save block may filter on), and
     `project_path` with `data_roots` is what turns a root id into a folder on
     this machine.
 
-    `overwrite_by_node` maps a save node id to the id of the result set that
-    node's output should replace in place. A node absent from it starts a fresh
-    set. A branching graph with two save nodes can overwrite one and keep the
+    `overwrite_by_block` maps a save block id to the id of the result set that
+    block's output should replace in place. A block absent from it starts a fresh
+    set. A branching graph with two save blocks can overwrite one and keep the
     other -- there is no `single_save` gate on overwrite, that was a silent trap
-    (the second save node's overwrite id was dropped).
+    (the second save block's overwrite id was dropped).
 
     `what` is what the user pressed, for the log and the job title. The Workflow
     tab's Run button leaves the default; the ribbon fast path passes
     "Calculate & Save Data" so a batch does not report itself under a name that
     appears nowhere in the UI the user was looking at.
     """
-    overwrite_by_node = overwrite_by_node or {}
+    overwrite_by_block = overwrite_by_block or {}
 
-    try:
-        validate_graph(workflow)
-    except ValueError as error:
-        return _refused(label, what, [f"ERROR: {what} skipped -- {error}"])
+    # The selection arrives as an argument, so the Input block's own is not asked.
+    issues = [issue for issue in resolve_chain_readiness(workflow)
+              if issue.code != ISSUE_INPUT_NOT_CHOSEN]
+    if issues:
+        return _refused(label, what, [f"ERROR: {what} skipped -- {issues[0].text}"])
 
-    save_ids = save_node_ids(workflow)
-    if not save_ids:
-        return _refused(label, what, [f"ERROR: {what} skipped -- no node is marked to save."])
+    save_ids = save_block_ids(workflow)
 
     messages = [f"WARNING: {what} -- {warning}" for warning in check_versions(workflow)]
 
@@ -162,30 +162,30 @@ def plan_batch(workflow: Workflow, selection: MeasurementSelection, *,
         if resolved is not None:
             directory_by_root[root.id] = resolved
 
-    # Only decides the default label ("<label>" vs "<label> - <node_id>"),
-    # never overwrite -- that is per node now.
+    # Only decides the default label ("<label>" vs "<label> - <block_id>"),
+    # never overwrite -- that is per block now.
     single_save = len(save_ids) == 1
-    save_nodes: List[PlannedSaveNode] = []
-    for node_id in save_ids:
-        node = workflow.node(node_id)
-        kept = resolve_save_sources(node.save, resolution.sources, schema)
-        set_label = node.save.label or (label if single_save else f"{label} - {node_id}")
+    save_blocks: List[PlannedSaveBlock] = []
+    for block_id in save_ids:
+        workflow_block = workflow.block(block_id)
+        kept = resolve_save_sources(workflow_block.save, resolution.sources, schema)
+        set_label = workflow_block.save.label or (label if single_save else f"{label} - {block_id}")
         sink_what = what if single_save else f"{what} '{set_label}'"
         for note in kept.unevaluable_constraints:
             messages.append(f"WARNING: {sink_what} -- {note}")
-        save_nodes.append(PlannedSaveNode(
-            node_id=node_id, set_label=set_label,
-            overwrite_result_set_id=overwrite_by_node.get(node_id),
-            source_ids=frozenset(source.id for source in kept.sources), save=node.save,
+        save_blocks.append(PlannedSaveBlock(
+            block_id=block_id, set_label=set_label,
+            overwrite_result_set_id=overwrite_by_block.get(block_id),
+            source_ids=frozenset(source.id for source in kept.sources), save=workflow_block.save,
             sink_what=sink_what,
         ))
 
-    wanted_ids = set().union(*(node.source_ids for node in save_nodes))
+    wanted_ids = set().union(*(workflow_block.source_ids for workflow_block in save_blocks))
     errors: List[str] = []
     steps: List[BatchStep] = []
     for entry in resolution.sources:
         if entry.id not in wanted_ids:
-            continue    # filtered out of every save node by its facet
+            continue    # filtered out of every save block by its facet
         directory = directory_by_root.get(entry.root_id)
         if directory is None:
             errors.append(f"{entry.relpath}: its data folder is not available")
@@ -201,14 +201,14 @@ def plan_batch(workflow: Workflow, selection: MeasurementSelection, *,
         # to delete it again.
         messages.append(
             f"WARNING: {what} skipped -- no source file to run "
-            f"(none located, or every one filtered out by a node's save filter)."
+            f"(none located, or every one filtered out by a block's save filter)."
         )
         return _refused(label, what, messages)
 
     set_count = f"{len(save_ids)} result set(s)" if not single_save else "1 result set"
     return BatchPlan(
         label=label, what=what, runnable=True, messages=tuple(messages),
-        save_nodes=tuple(save_nodes), steps=tuple(steps), errors=tuple(errors),
+        save_blocks=tuple(save_blocks), steps=tuple(steps), errors=tuple(errors),
         submit_message=(f"PROJECT: {what} '{label}' over {len(steps)} file(s) "
                         f"-> {set_count}..."),
     )

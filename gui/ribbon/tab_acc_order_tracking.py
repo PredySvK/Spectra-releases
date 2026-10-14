@@ -16,6 +16,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QCheckBox, QComboBox, QDoubleSpinBox, QHBoxLayout, QLineEdit
 
 from core.dsp_configs import OrderTrackingConfig
+from gui.appearance import APP_TOKENS
 from gui.ribbon.ribbon_dsp_tab import RibbonDspTab
 from gui.ribbon.ribbon_widgets import RibbonGroup, build_tab_layout, make_refresh_split_button, stack_buttons, vertical_separator
 from gui.ribbon.save_section import ComputeResultSetButton
@@ -89,7 +90,7 @@ class TabAccOrderTracking(RibbonDspTab):
         )
         self.edit_target_orders.setToolTip(self._default_orders_tooltip)
         if initial_parsed is None or not initial_parsed:
-            self.edit_target_orders.setStyleSheet("border: 1px solid #d9534f;")
+            self.edit_target_orders.setStyleSheet(f"border: 1px solid {APP_TOKENS.input_error};")
         self.edit_target_orders.textChanged.connect(self._on_target_orders_changed)
 
         self.spin_order_width = QDoubleSpinBox()
@@ -162,7 +163,7 @@ class TabAccOrderTracking(RibbonDspTab):
     def _on_target_orders_changed(self, text: str) -> None:
         parsed = parse_orders_text(text)
         if parsed is None or not parsed:
-            self.edit_target_orders.setStyleSheet("border: 1px solid #d9534f;")
+            self.edit_target_orders.setStyleSheet(f"border: 1px solid {APP_TOKENS.input_error};")
             self.edit_target_orders.setToolTip(
                 "Invalid orders: enter positive numbers with decimal dot (.), "
                 "separated by commas or semicolons."

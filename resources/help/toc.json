@@ -8,9 +8,9 @@
   "evaluation_topn_maxima": "evaluation/topn_maxima",
   "evaluation_typed_orders": "evaluation/typed_orders",
   "evaluation_dominant_orders": "evaluation/dominant_orders",
-  "workflow": "quick_start/overview",
+  "workflow": "workflow/intro",
   "project": "general/projects",
-  "settings": "general/intro",
+  "settings": "settings/overview",
   "tools": "tools/intro"
  },
  "topics": [
@@ -113,6 +113,10 @@
    "id": "spectrum/intro"
   },
   {
+   "id": "workflow/intro",
+   "children": [{"id": "workflow/canvas"}]
+  },
+  {
    "id": "evaluation/intro",
    "children": [
     {
@@ -154,6 +158,9 @@
     },
     {
      "id": "graphs/intro"
+    },
+    {
+     "id": "settings/overview"
     },
     {
      "id": "settings/graph_defaults"

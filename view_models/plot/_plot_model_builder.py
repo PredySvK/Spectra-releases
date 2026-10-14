@@ -51,8 +51,8 @@ from view_models.analysis_kinds import (
     ANALYSIS_TIME,
 )
 
+from core.theme import GraphLook, graph_tokens
 from ._display_settings import DisplaySettings
-from ._graph_colours import carousel_pen_spec
 from ._legend_settings import build_legend_text, format_display_unit
 from ._plot_model import (
     BandRmsCursor,
@@ -72,7 +72,9 @@ _AXIS_QUANTITY_LABELS = {
     "tacho": "Speed",
 }
 
-_BASE_CURVE_COLOR = "#ffcc00"
+# The base pen a builder starts with; build_base_model and build_order_cuts_model
+# repaint it in the graph's own base_curve_color.
+_BASE_CURVE_COLOR = graph_tokens(GraphLook.DARK).base_curve
 
 # result_blocks names a computed block after what it was computed from --
 # f"1D Spectrum({name})", f"Waterfall({name})", f"Order {n} [{name}]",
@@ -277,7 +279,7 @@ def build_time_model(
         channel_name=identity_name,
         axis="primary",
         is_base=True,
-        pen=Pen(color=_BASE_CURVE_COLOR, width=1.0, style="solid"),
+        pen=Pen(color=_BASE_CURVE_COLOR, width=1.0),
         meta_ref=source_meta,
         block=actual_block, data_block=actual_block,
     )
@@ -403,6 +405,7 @@ def build_order_cuts_model(
     compute_spec: Optional[Dict[str, Any]] = None,
     x_quantity: str = "",
     title: Optional[str] = None,
+    base_curve_color: str,
 ) -> PlotModel:
     """
     The model behind ``Workspace.plot_order_cuts``: the first cut is the
@@ -424,6 +427,7 @@ def build_order_cuts_model(
         x=x, y=base_y, sensor_name=source_label or first.name, y_unit=base_unit,
         source_meta=source_meta or first.display_meta(), prefs=prefs, block=first,
     )
+    model.traces[0].pen = replace(model.traces[0].pen, color=base_curve_color)
     model.view.x_label = "Speed"
     model.view.x_unit = first.primary_axis.unit
     model.view.title = title or f"Order Tracking: {first.source.file_name}"
@@ -576,8 +580,7 @@ def build_overall_level_overlay_trace(
     legend_text = _level_legend_text(block, base_legend)
 
     base_unit = model.traces[0].unit if model.traces else incoming_unit
-    hex_color, style_name = carousel_pen_spec(overlay_index)
-    pen = Pen(color=hex_color, width=1.0, style=style_name)
+    pen = Pen(color="", width=1.0, slot=overlay_index)
     compute_spec = build_compute_spec(block)
     compute_spec["amplitude_mode"] = amplitude_mode
     compute_spec["tracking_mode"] = axis.quantity
@@ -647,7 +650,7 @@ def build_overall_level_model(
         source_unit=display_value_unit, channel_type=channel_type,
         unit=display_unit, label=legend_text, file_name=f_name,
         channel_name=clean_name, axis="primary", is_base=True,
-        pen=Pen(color=_BASE_CURVE_COLOR, width=1.0, style="solid"),
+        pen=Pen(color=_BASE_CURVE_COLOR, width=1.0),
         meta_ref=source_meta, x_quantity=axis.quantity,
         compute_spec=compute_spec, result_set_id=result_set_id,
         block=block, data_block=block,
@@ -687,6 +690,7 @@ def _order_cut_base(block, settings: DisplaySettings, *, x, y, source_label, inc
         x=x, y=y, source_label=source_label, incoming_unit=incoming_unit, source_meta=source_meta,
         compute_spec=compute_spec, x_quantity=x_quantity,
         title=f"Order Compare: [{file_name}]" if file_name else None,
+        base_curve_color=_BASE_CURVE_COLOR,
     )
 
 
@@ -730,6 +734,7 @@ def build_base_model(
     x_quantity: str = "",
     result_set_id: str = "",
     title: Optional[str] = None,
+    base_curve_color: str,
 ) -> PlotModel:
     """
     The model of an empty graph, its one base curve built by the block kind of ``block``
@@ -743,6 +748,7 @@ def build_base_model(
         block, settings, x=x, y=y, source_label=source_label, incoming_unit=incoming_unit,
         source_meta=source_meta, compute_spec=compute_spec, x_quantity=x_quantity,
     )
+    model.traces[0].pen = replace(model.traces[0].pen, color=base_curve_color)
     if title:
         model.view.title = title
     if result_set_id:
@@ -780,9 +786,9 @@ def build_overlay_trace(
     One overlay curve for ``model``, without rebuilding the rest of it -- order
     cuts and an overlay drop both add curves one at a time in a loop.
 
-    ``overlay_index`` (not ``len(model.traces)``) drives the pen carousel, so
-    the Nth overlay always gets the Nth colour regardless of how the base curve
-    is counted.
+    ``overlay_index`` (not ``len(model.traces)``) is the pen's carousel slot,
+    so the Nth overlay always gets the Nth look regardless of how the base
+    curve is counted.
     """
     prefs = prefs or UnitPreferences()
 
@@ -791,7 +797,6 @@ def build_overlay_trace(
     clean_ch_name = strip_channel_name_prefix(raw_ch_name)
     identity_ch_name = strip_channel_name_prefix(_channel_identity_source(raw_ch_name))
     channel_type = _channel_type(source_meta)
-    hex_color, style_name = carousel_pen_spec(overlay_index)
 
     render_y, converted_incoming_unit = convert_signal_to_global_unit(
         y, incoming_unit, channel_type, prefs
@@ -799,7 +804,7 @@ def build_overlay_trace(
     sanitized_incoming = sanitize_unit_string(converted_incoming_unit)
     base_unit = model.traces[0].unit if model.traces else sanitized_incoming
 
-    pen = Pen(color=hex_color, width=1.0, style=style_name)
+    pen = Pen(color="", width=1.0, slot=overlay_index)
 
     if resolve_overlay_axis(base_unit, sanitized_incoming) == "primary":
         final_y = convert_numeric_array(render_y, from_unit=sanitized_incoming, to_unit=base_unit)

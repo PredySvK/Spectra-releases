@@ -67,7 +67,7 @@ _UNV_UNIT_MAPPING = {
     'mm/s^2': 'mm/s2',
 }
 
-_SW_CANONICAL_GROUPS = [
+CANONICAL_UNIT_GROUPS = [
     ["g", "m/s2", "mm/s2"],  # Domain Index 0: Acceleration
     ["Pa", "bar", "mbar"],   # Domain Index 1: Acoustic / fluid pressure
     ["V", "mV"],             # Domain Index 2: Electrical voltage
@@ -103,7 +103,7 @@ def check_units_compatibility(base_unit: str, incoming_unit: str) -> bool:
     sanitized_base = sanitize_unit_string(base_unit)
     sanitized_incoming = sanitize_unit_string(incoming_unit)
 
-    for group in _SW_CANONICAL_GROUPS:
+    for group in CANONICAL_UNIT_GROUPS:
         if sanitized_base in group and sanitized_incoming in group:
             return True
 
@@ -170,7 +170,7 @@ def convert_numeric_array(y_data: np.ndarray, from_unit: str, to_unit: str, stri
         return y_data
 
 
-_ALL_SUPPORTED_UNITS = [u for group in _SW_CANONICAL_GROUPS for u in group]
+_ALL_SUPPORTED_UNITS = [u for group in CANONICAL_UNIT_GROUPS for u in group]
 
 
 def get_compatible_options(current_unit: str) -> list:
@@ -186,7 +186,7 @@ def get_compatible_options(current_unit: str) -> list:
     canonical_input = _UNV_UNIT_MAPPING.get(cleaned_input, current_unit)
 
     compatible_group = []
-    for group in _SW_CANONICAL_GROUPS:
+    for group in CANONICAL_UNIT_GROUPS:
         if canonical_input in group:
             compatible_group = list(group)
             break
@@ -236,7 +236,7 @@ def determine_channel_type(unit_str: str, channel_name: str) -> str:
     canonical_unit = _UNV_UNIT_MAPPING.get(cleaned_input, unit_str)
 
     # 1. Unambiguous physical unit domain takes absolute precedence
-    for group in _SW_CANONICAL_GROUPS:
+    for group in CANONICAL_UNIT_GROUPS:
         if "g" in group and canonical_unit in group:
             return "accelerometer"
         if "Pa" in group and canonical_unit in group:

@@ -20,6 +20,6 @@ The active graph is the selected workspace tab. Ribbon actions that operate on a
 
 Frequency can be shown on the axis in Hz or RPM, and you can switch between them ([X axis unit](topic:units/intro)).
 
-For controls that affect curve rendering, see [Graph Defaults](topic:settings/graph_defaults). To load saved curves into the active graph, see [Result Pool](topic:results/intro).
+For controls that affect curve rendering, see [Graph Rendering](topic:settings/graph_defaults). To load saved curves into the active graph, see [Result Pool](topic:results/intro).
 
 For the hover readout and the selected-curve highlight, see [Cursor and Highlight](topic:tools/cursor).

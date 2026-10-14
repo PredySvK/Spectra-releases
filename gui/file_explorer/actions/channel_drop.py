@@ -13,7 +13,7 @@ from contextlib import nullcontext
 import numpy as np
 
 from core.dsp_configs import SpectrumConfig
-from core.models import ChannelMetadata, MeasurementRunIndex, resolve_channel_block_kind
+from core.channel_drop import build_drop_descriptor, read_drop_descriptor
 from core.units import strip_channel_name_prefix
 from selection.channel_identity import resolve_channel_at_index
 from view_models.plot import overall_level_band_differs_from_dock
@@ -94,9 +94,6 @@ class _DockDropTarget:
                 key for desc in (live_drops.pending_descriptors() if live_drops is not None else [])
                 for key in drop_keys(desc)),
         )
-
-    def resolve_metadata(self, descriptor):
-        return _resolve_dropped_channel(descriptor, self._context)[1]
 
     def log(self, message):
         self._context.log(message)
@@ -347,16 +344,7 @@ def build_channel_descriptors(rows: list) -> list:
     inverse of `resolve_dropped_channels`, in the shape a drag out of the Data
     Pool carries.
     """
-    return [{
-        "file_path": str(run_index.file_path),
-        "file_name": str(run_index.file_name),
-        "channel_index": int(channel_meta.index),
-        "channel_name": str(channel_meta.name),
-        "channel_type": str(channel_meta.type),
-        "unit": str(channel_meta.unit),
-        "block_kind": resolve_channel_block_kind(channel_meta),
-        "func_type": channel_meta.func_type,
-    } for run_index, channel_meta, _ in rows]
+    return [build_drop_descriptor(run_index, channel_meta) for run_index, channel_meta, _ in rows]
 
 
 def _resolve_dropped_channel(desc, app_context):
@@ -366,12 +354,7 @@ def _resolve_dropped_channel(desc, app_context):
             channel = resolve_channel_at_index(run.available_channels, desc["channel_index"])
             if channel is not None:
                 return run, channel[1]
-    run = MeasurementRunIndex(desc["file_name"], desc["file_path"])
-    channel = ChannelMetadata(
-        desc["channel_index"], desc["channel_name"], desc["channel_type"], desc["unit"])
-    channel.block_kind = desc.get("block_kind")
-    channel.func_type = desc.get("func_type", channel.func_type)
-    return run, channel
+    return read_drop_descriptor(desc)
 
 
 def _update_spectrogram_tab_title(dock_instance):

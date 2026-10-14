@@ -29,6 +29,8 @@ import weakref
 import numpy as np
 
 from core.block_kinds import KIND_ORDER_CUT, KIND_TIME_RESPONSE
+from core.channel_drop import build_drop_descriptor
+from core.data_block import read_display_meta
 from core.units import UnitPreferences, strip_amplitude_suffix
 from selection.channel_identity import build_channel_key
 
@@ -127,14 +129,7 @@ def _build_channel_drop_descriptor(trace: Trace) -> Dict[str, Any]:
         # from it only adds a " RMS" / "(...)^2" spelling around it.
         unit = (block.value_unit if getattr(block, "kind", None) == KIND_TIME_RESPONSE
                 else strip_amplitude_suffix(block.value_unit))
-    return {
-        "file_path": str(meta.get("file_path", "")),
-        "file_name": str(meta.get("file_name", "")),
-        "channel_index": int(meta.get("channel_index", 0)),
-        "channel_name": str(channel_name),
-        "channel_type": str(meta.get("channel_type", "general_dynamic")),
-        "unit": str(unit),
-    }
+    return build_drop_descriptor(*read_display_meta(meta, channel_name, unit))
 
 
 @dataclass(frozen=True)
@@ -214,7 +209,9 @@ class _Batch:
 class GraphCurves:
     """Which curves one graph holds, and every change to them."""
 
-    def __init__(self, on_change: Optional[Callable[[CurvesChange], None]] = None) -> None:
+    def __init__(self, on_change: Optional[Callable[[CurvesChange], None]] = None, *,
+                 base_curve_color: str) -> None:
+        self._base_curve_color = base_curve_color
         self._on_change = _weak_listener(on_change)
         self._model: Optional[PlotModel] = None
         self._mask: Mask = None
@@ -434,12 +431,13 @@ class GraphCurves:
             # overlay built by its own kind's rule.
             is_cut = [getattr(b, "kind", None) == KIND_ORDER_CUT for b in blocks]
             cuts = [b for b, cut in zip(blocks, is_cut) if cut]
-            self.replace(build_order_cuts_model(cuts, settings.prefs, amplitude_mode=settings.amplitude_mode))
+            self.replace(build_order_cuts_model(cuts, settings.prefs, amplitude_mode=settings.amplitude_mode,
+                                                base_curve_color=self._base_curve_color))
             for block in (b for b, cut in zip(blocks, is_cut) if not cut):
                 self.add_curve(block=block, settings=settings)
             return
         self.replace(build_base_model(
-            first, settings,
+            first, settings, base_curve_color=self._base_curve_color,
             x=first.primary_axis.values.astype(np.float64),
             y=first.values.astype(np.float64),
             source_label=first.name,
@@ -482,7 +480,8 @@ class GraphCurves:
                      source_meta=source_meta, compute_spec=compute_spec, x_quantity=x_quantity)
 
         if self.is_empty:
-            model = build_base_model(block, settings, result_set_id=result_set_id, title=title, **curve)
+            model = build_base_model(block, settings, result_set_id=result_set_id, title=title,
+                                     base_curve_color=self._base_curve_color, **curve)
             self.replace(model)
             return model.traces[0]
 
@@ -563,7 +562,7 @@ class GraphCurves:
 
         if batch is not None:
             if trace.pen is not None:
-                pens.hold(trace.pen.color, trace.pen.style)
+                pens.hold(trace.pen.slot)
             batch.pens = pens
             batch.changed = True
             return trace
@@ -722,7 +721,7 @@ class GraphCurves:
         pens = HeldPens()
         for t in self._model.traces:
             if t.pen is not None:
-                pens.hold(t.pen.color, t.pen.style)
+                pens.hold(t.pen.slot)
         return pens
 
     def _resolve(self) -> None:

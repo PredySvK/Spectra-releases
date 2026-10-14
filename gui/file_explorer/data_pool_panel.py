@@ -41,19 +41,25 @@ from gui.file_explorer.actions.edit_unit import (
     execute_selected_fix_unit,
 )
 from core.units import strip_channel_name_prefix
+from core.channel_drop import build_drop_descriptor
 from core.models import is_time_response, resolve_channel_block_kind
 from core.block_kinds import KIND_ORDER_CUT, KIND_TIME_RESPONSE
 from io_modules.measurement_files import canonical_path
 from view_models.data_pool import UNASSIGNED_SETUP, group_by_setup
+from gui.appearance import APP_TOKENS
+
 
 # Marks a tree row as a setup heading. A 2-tuple on purpose: every consumer of
 # a channel row's payload already tests for a tuple of at least three, so a
 # heading can never be mistaken for something draggable.
 SETUP_ROLE = "__setup__"
+# Marks a workbook sheet heading between a measurement and its channels (#639),
+# a 2-tuple for the same reason.
+SHEET_ROLE = "__sheet__"
 
 # A measurement the project still lists but that is not on disk any more.
-MISSING_COLOR = "#c62828"
-UNREADABLE_COLOR = "#9e9e9e"
+MISSING_COLOR = APP_TOKENS.item_missing
+UNREADABLE_COLOR = APP_TOKENS.item_unreadable
 
 
 class ProtectedTreeWidget(QTreeWidget):
@@ -202,7 +208,7 @@ def _is_channel_payload(user_data) -> bool:
 
 def _channel_payload(items, missing_paths=None) -> list:
     """
-    The drag block for a set of tree rows; non-channel rows are skipped.
+    The drop descriptors of a set of tree rows; non-channel rows are skipped.
 
     Channels of a measurement that is no longer on disk are skipped too. The
     alternative is letting the drag land and fail on read, which reports a
@@ -220,16 +226,7 @@ def _channel_payload(items, missing_paths=None) -> list:
             continue
         if resolve_channel_block_kind(ch_meta) is None:
             continue
-        payload_list.append({
-            "file_path": str(run_idx.file_path),
-            "file_name": str(run_idx.file_name),
-            "channel_index": int(ch_meta.index),
-            "channel_name": str(ch_meta.name),
-            "channel_type": str(ch_meta.type),
-            "unit": str(ch_meta.unit),
-            "block_kind": resolve_channel_block_kind(ch_meta),
-            "func_type": ch_meta.func_type,
-        })
+        payload_list.append(build_drop_descriptor(run_idx, ch_meta))
     return payload_list
 
 
@@ -338,7 +335,7 @@ class DataPoolPanel(QWidget):
             setup_item.setText(0, f"🧪 {setup_label}  ({len(runs)})")
             setup_item.setData(0, Qt.ItemDataRole.UserRole, (SETUP_ROLE, setup_label))
             if setup_label == UNASSIGNED_SETUP:
-                setup_item.setForeground(0, QBrush(QColor("#808080")))
+                setup_item.setForeground(0, QBrush(QColor(APP_TOKENS.text_muted)))
             if ("setup", setup_label) in expanded:
                 setup_item.setExpanded(True)
 
@@ -414,14 +411,28 @@ class DataPoolPanel(QWidget):
                 run_matches = setup_matches or needle in run_item.text(0).lower()
                 any_channel_visible = False
 
-                for k in range(run_item.childCount()):
-                    channel_item = run_item.child(k)
+                def show_channel(channel_item, parent_matches):
                     passes_filter = (
                         allowed_labels is None
                         or channel_item.data(0, Qt.ItemDataRole.UserRole)[2] in allowed_labels
                     )
-                    visible = passes_filter and (run_matches or needle in channel_item.text(0).lower())
+                    visible = passes_filter and (parent_matches or needle in channel_item.text(0).lower())
                     channel_item.setHidden(not visible)
+                    return visible
+
+                for k in range(run_item.childCount()):
+                    child = run_item.child(k)
+                    if _is_channel_payload(child.data(0, Qt.ItemDataRole.UserRole)):
+                        visible = show_channel(child, run_matches)
+                    else:
+                        # A sheet heading: it matches like a measurement does (#639).
+                        sheet_matches = run_matches or needle in child.text(0).lower()
+                        visible = False
+                        for m in range(child.childCount()):
+                            visible = show_channel(child.child(m), sheet_matches) or visible
+                        child.setHidden(not visible)
+                        if (needle or allowed is not None) and visible and not sheet_matches:
+                            child.setExpanded(True)
                     any_channel_visible = any_channel_visible or visible
 
                 run_visible = any_channel_visible or (run_matches and not run_item.childCount())
@@ -457,8 +468,20 @@ class DataPoolPanel(QWidget):
         if (setup_label, run_index.file_name) in expanded:
             file_item.setExpanded(True)
 
+        sheet_items = {}
         for unique_label, channel_meta in run_index.available_channels.items():
-            channel_item = QTreeWidgetItem(file_item)
+            # A workbook read sheet by sheet groups its channels under each sheet (#639).
+            sheet = getattr(channel_meta, "sheet", None)
+            parent = file_item
+            if sheet:
+                parent = sheet_items.get(sheet)
+                if parent is None:
+                    parent = sheet_items[sheet] = QTreeWidgetItem(file_item)
+                    parent.setText(0, f"📄 {sheet}")
+                    parent.setData(0, Qt.ItemDataRole.UserRole, (SHEET_ROLE, sheet))
+                    if (setup_label, run_index.file_name, sheet) in expanded:
+                        parent.setExpanded(True)
+            channel_item = QTreeWidgetItem(parent)
 
             icon_prefix = "📊"
             if channel_meta.type == "tacho":
@@ -511,6 +534,11 @@ class DataPoolPanel(QWidget):
                     run_data = run_item.data(0, Qt.ItemDataRole.UserRole)
                     name = run_data.file_name if run_data is not None else run_item.text(0)
                     keys.add((label, name))
+                    for k in range(run_item.childCount()):
+                        sheet_data = run_item.child(k).data(0, Qt.ItemDataRole.UserRole)
+                        if (isinstance(sheet_data, tuple) and sheet_data[0] == SHEET_ROLE
+                                and run_item.child(k).isExpanded()):
+                            keys.add((label, name, sheet_data[1]))
         return keys
 
     # ---- context menu -------------------------------------------------

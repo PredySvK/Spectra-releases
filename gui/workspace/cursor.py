@@ -24,6 +24,7 @@ from PySide6.QtWidgets import QApplication
 
 from core.axis_projections import X_AXIS_NATIVE, resolve_x_axis_display
 from core.cursor_config import CursorConfig
+from gui.workspace.plot_area import GRAPH_TOKENS
 from orchestration.trace_filter import build_identity_context
 from view_models.cursor import (
     AxisTransform, build_cursor_box_lines, read_curve_metadata, resolve_box_position,
@@ -76,7 +77,7 @@ class CursorMixin:
     def _init_cursor(self) -> None:
         """Called at the end of GraphDock.init_ui, once plot_widget exists."""
         vb = self.plot_widget.plotItem.vb
-        self._cursor_box = _CursorBox(anchor=(0, 0), color="#e8edf2", fill=pg.mkBrush(18, 24, 31, 230))
+        self._cursor_box = _CursorBox(anchor=(0, 0), color=GRAPH_TOKENS.cursor_box_line, fill=pg.mkBrush(*GRAPH_TOKENS.cursor_box_fill))
         self._cursor_box.setParentItem(vb)
         _set_box_draggable(self._cursor_box, False)
         self._cursor_box.setZValue(1000)
@@ -169,13 +170,13 @@ class SpectrogramCursorMixin:
     def _init_cursor(self) -> None:
         """Called at the end of SpectrogramDock.init_ui."""
         vb = self.plot_widget.plotItem.vb
-        self._cursor_box = _CursorBox(anchor=(0, 0), color="#e8edf2", fill=pg.mkBrush(18, 24, 31, 230))
+        self._cursor_box = _CursorBox(anchor=(0, 0), color=GRAPH_TOKENS.cursor_box_line, fill=pg.mkBrush(*GRAPH_TOKENS.cursor_box_fill))
         self._cursor_box.setParentItem(vb)
         _set_box_draggable(self._cursor_box, False)
         self._cursor_box.setZValue(1000)
         self._cursor_box.hide()
 
-        pen = pg.mkPen(color="#e8edf2", width=1, style=Qt.PenStyle.DashLine)
+        pen = pg.mkPen(color=GRAPH_TOKENS.cursor_box_line, width=1, style=Qt.PenStyle.DashLine)
         self._crosshair_v = pg.InfiniteLine(angle=90, movable=False, pen=pen)
         self._crosshair_h = pg.InfiniteLine(angle=0, movable=False, pen=pen)
         self._crosshair_v.setAcceptedMouseButtons(Qt.MouseButton.NoButton)

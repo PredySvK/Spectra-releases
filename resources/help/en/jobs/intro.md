@@ -5,7 +5,7 @@ Everything whose duration grows with the data -- computing, reading measurements
 ## Where you see jobs
 
 - **The status strip** at the foot of the left dock column shows the newest running job with a progress bar and a **Cancel** button, and `+N more` when others run. With nothing running it reads **Idle**. When a job ends, its outcome (Done, Failed, Cancelled) stays on the strip for a moment before it returns to Idle. **Double-click** it to open the Jobs tab.
-- **The Jobs tab** (*Settings* &rarr; Panels &rarr; **Jobs**) lists every job, newest on top: **Job**, **Progress**, **State**, **Time**.
+- **The Jobs tab** (**Settings** window, gear &rarr; **Layout** &rarr; **Jobs**) lists every job, newest on top: **Job**, **Progress**, **State**, **Time**.
 
 A job is a queue of steps: *Calculate &amp; Save Data* ([result set](topic:general/projects)) over 40 measurements is one job with 40 steps and the progress `12/40`. A long single step (a large folder) also moves the bar between steps. The last 100 finished jobs are kept.
 

@@ -30,13 +30,14 @@ def is_time_response(func_type: int) -> bool:
 
     A channel without a function code is a time response: ChannelMetadata
     defaults func_type to FUNC_TYPE_TIME_RESPONSE, and so must a reader of a
-    legacy snapshot.
+    project snapshot that stored none.
     """
     return int(func_type) == FUNC_TYPE_TIME_RESPONSE
 
 
 def resolve_channel_block_kind(channel: 'ChannelMetadata') -> Optional[str]:
-    """The readable block kind, including legacy waveform indexes.
+    """The readable block kind: the explicit one an Imported result carries,
+    else what the UNV function code says (waveforms never set ``block_kind``).
 
     Unsupported UNV function codes have no readable block kind.
     """
@@ -51,6 +52,11 @@ class ChannelMetadata:
     Encapsulates serialization algorithms to insulate I/O operations from schema drift.
     """
 
+    # Source amplitude of an Imported result ("rms" | "peak"); empty means the
+    # project has no answer and the reader's default stands. A class attribute,
+    # so a channel nobody answered for adds nothing to to_dict().
+    source_amplitude: str = ""
+
     def __init__(self, index: int, name: str, channel_type: str, unit: str):
         self.index: int = index
         self.name: str = name
@@ -59,7 +65,7 @@ class ChannelMetadata:
 
         # Physics dimension indicators fallback baselines
         self.func_type: int = FUNC_TYPE_TIME_RESPONSE
-        self.block_kind: Optional[str] = None  # Explicit for Imported results; legacy waveforms use func_type.
+        self.block_kind: Optional[str] = None  # Explicit for Imported results; waveforms use func_type.
         self.abscissa_inc: float = 0.0
         self.abscissa_min: float = 0.0
         self.num_pts: int = 0

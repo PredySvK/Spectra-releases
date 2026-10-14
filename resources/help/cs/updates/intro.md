@@ -4,7 +4,7 @@ Spectra může zkontrolovat, zda je dostupná novější stabilní verze, a v na
 
 ## Kontrola aktualizace
 
-Na záložce **Settings** zvolte **Check for Updates**. Po spuštění aplikace Spectra provede stejnou kontrolu poté, co se zobrazí její okno. Informace o nejnovější verzi čte z GitHubu na pozadí, takže okno zůstává responzivní.
+Otevřete okno **Settings** ozubeným kolem v titulkovém pruhu, vyberte **About Spectra** a zvolte **Check for Updates**. Stránka **Maintenance** řídí volbu **Check for updates on startup** (výchozí je zapnuto); při zapnuté volbě Spectra provede stejnou kontrolu poté, co se zobrazí její okno. Informace o nejnovější verzi čte z GitHubu na pozadí, takže okno zůstává responzivní.
 
 Spectra nabídne aktualizaci pouze tehdy, když je vydaná verze novější než používaná, není označená jako draft ani prerelease a obsahuje odpovídající instalační soubor `Spectra-<version>-setup.exe`. Nabídka zobrazí poznámky k vydání, pokud jsou k dispozici; jinak uvede **No patch notes provided.** Pokračujte volbou **Update now**, nebo zvolte **Later** a pokračujte v práci. **Later** je výchozí volba.
 

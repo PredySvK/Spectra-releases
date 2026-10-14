@@ -4,7 +4,17 @@ What changed in Spectra, written for users. Rules for writing it: [docs/agents/r
 
 ## Unreleased
 
-- Starting an Update no longer makes the window show "Not responding" while Windows scans the installer.
+## 0.2.0 - 2026-10-14
+
+- Workflow tab is now a block canvas: drag, wire and arrange blocks, undo / redo, and run all chains or one with Run Chain.
+  ![Workflow canvas with blocks](docs/site/img/whats_new_0_2_0.png)
+- New Settings window (gear icon) replaces the Settings tab, with search, Apply / Revert and Reset All; Run Benchmark moved to the Project tab.
+- Project, cache and settings files from much older versions are no longer read; old results are recomputed.
+- New Theme setting (Dark / Light) switches the whole application look after restart.
+- Graph curves use a new 12-colour palette and stay smooth with many curves.
+- Data Pool asks whether MASTA, processed and ANSYS amplitudes are RMS or Peak, so curves are no longer off by √2.
+- MASTA workbooks with one sheet per order (H1, H4.79, …) are now read sheet by sheet; ANSYS harmonic-response CSV files can be added as a first-order curve.
+- Fixed: opening a project no longer marks it as unsaved, and starting an Update no longer shows "Not responding".
 
 ## 0.1.2 - 2026-10-08
 

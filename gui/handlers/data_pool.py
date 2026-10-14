@@ -99,7 +99,7 @@ class DataPoolHandler(QObject):
         self._start(paths, ask_for_setup=ask_for_setup)
 
     def refresh_directories(self, directories, quiet: bool = False,
-                            on_finished=None) -> None:
+                            on_finished=None, ask_source_amplitude: bool = True) -> None:
         """
         Re-reads folders already in the pool, without undoing what the user did to it.
 
@@ -107,18 +107,40 @@ class DataPoolHandler(QObject):
         measurement written into the folder since the last scan joins the pool --
         which is the point of watching folders at all -- while one the user took
         out of the pool stays out, and an edited file is simply re-read.
+
+        A file the project does not know yet raises the Source amplitude
+        question when it is an Imported result, so no file enters the pool on
+        an assumed basis -- except when `ask_source_amplitude` is False, which
+        opening a project passes: that is a routine action and stays silent.
         """
+        directories = [directory for directory in directories if directory]
+        if ask_source_amplitude:
+            self._start([], refresh=directories, quiet=quiet, admit_unknown=True,
+                        on_finished=on_finished)
+            return
         plan = {directory: set() for directory in directories}
         self._start([], plan=plan, quiet=quiet, admit_unknown=True,
                     on_finished=on_finished)
 
+    def _ask_source_amplitude(self, questions):
+        """The Source amplitude question, with the progress dialog out of its way."""
+        from gui.dialogs.source_amplitude_dialog import ask_source_amplitudes
+        progress = self._dialog
+        if progress is not None:
+            progress.hide()
+        try:
+            return ask_source_amplitudes(self.parent_widget, questions)
+        finally:
+            if progress is not None and self._dialog is progress:
+                progress.show()
+
     def _start(self, paths, ask_for_setup: bool = False, plan=None, quiet: bool = False,
-               admit_unknown: bool = False, on_finished=None):
+               admit_unknown: bool = False, on_finished=None, refresh=None):
         # A re-scan names its folders and is ready to run; a path selection is
         # planned on the worker, because planning walks trees and reads file
-        # headers (#507).
+        # headers (#507). A re-scan that may ask is planned on the worker too.
         ingest_plan = plan_pool_ingest([], plan) if plan is not None else None
-        if not (ingest_plan or paths):
+        if not (ingest_plan or paths or refresh):
             return
 
         # A second Add supersedes the first rather than interleaving with it:
@@ -157,13 +179,16 @@ class DataPoolHandler(QObject):
                 on_finished(outcome)
             self._on_finished(outcome)
 
-        options = dict(quiet=quiet, admit_unknown=admit_unknown,
-                       ask_for_setup=ask_for_setup,
+        options = dict(quiet=quiet, ask_source_amplitude=self._ask_source_amplitude,
                        on_folder=self._on_folder, on_finished=_done)
-        if ingest_plan is not None:
-            self._use_case.start(ingest_plan, **options)
+        if refresh:
+            self._use_case.start_refresh(refresh, **options)
+        elif ingest_plan is not None:
+            self._use_case.start(ingest_plan, admit_unknown=admit_unknown,
+                                 ask_for_setup=ask_for_setup, **options)
         else:
-            self._use_case.start_selection(list(paths), **options)
+            self._use_case.start_selection(list(paths), admit_unknown=admit_unknown,
+                                           ask_for_setup=ask_for_setup, **options)
 
     @property
     def _job_id(self):

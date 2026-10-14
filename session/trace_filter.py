@@ -103,11 +103,8 @@ def serialize_selection(selection: FilterSelection) -> dict:
 
 
 def deserialize_selection(raw: dict) -> FilterSelection:
-    """Inverse of serialize_selection() -- a missing key restores as empty, so an
-    older or partial save still loads. A pre-#349 save's
-    `checked_parameter_set_indices` is dropped: those numbers were per-round
-    positions with nothing left to resolve them against, so the first populate
-    after loading re-ticks every Parameter Set on offer."""
+    """Inverse of serialize_selection() -- a missing key restores as empty, so a
+    partial save still loads."""
     return FilterSelection(
         checked_metadata_values={
             key: set(values) for key, values in raw.get("checked_metadata_values", {}).items()
@@ -149,9 +146,6 @@ class FilterSelectionStore:
     def set_scope(self, card_id: str, scope: str) -> None:
         """Record a card's scope -- called from FilterPanel._add_profile."""
         self._scope[card_id] = scope
-
-    def scope_of(self, card_id: str) -> Optional[str]:
-        return self._scope.get(card_id)
 
     def _is_global(self, card_id: str) -> bool:
         return self._scope.get(card_id) == "global"
@@ -601,17 +595,8 @@ class FilterProfileRegistry:
         import_local_selections_for_dock(): both need the profile to already
         exist to key into."""
         for raw in raw_profiles:
-            scope = raw.get("scope", "local")
-            owner_dock_id = raw.get("owner_dock_id")
-            # Migration (§1.37): a custom Local card saved before
-            # owner_dock_id existed is promoted to Global -- it stays usable
-            # and can be flipped back, rather than vanishing because no dock
-            # will ever match a missing owner.
-            if scope == "local" and "owner_dock_id" not in raw:
-                scope = "global"
-                owner_dock_id = None
-            self.add_profile(raw["name"], scope=scope, profile_id=raw.get("id"),
-                              owner_dock_id=owner_dock_id)
+            self.add_profile(raw["name"], scope=raw.get("scope", "local"),
+                             profile_id=raw.get("id"), owner_dock_id=raw.get("owner_dock_id"))
 
     def resolve_restore_target(self, profile_id: Optional[str]) -> str:
         """Which profile id to activate for a restored `profile_id` --
@@ -655,8 +640,7 @@ def build_filter_state_snapshot(*, filter_data_pool: bool, show_all: bool,
 
 def read_filter_state_snapshot(saved: dict) -> FilterStateSnapshot:
     """Inverse of build_filter_state_snapshot() -- a missing key restores as
-    empty/False, so an older or partial save (including a pre-T5 shape with
-    none of these keys at all) still loads onto clean builtins instead of
+    empty/False, so a partial save still loads onto clean builtins instead of
     crashing (ticket #178)."""
     return FilterStateSnapshot(
         profiles=saved.get("profiles", []),

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from markdown_it import MarkdownIt
 
+from core.theme import Theme, app_tokens
 from io_modules.help import resolve_help_resource_dir
 
 from ._toc import resolve_help_markdown
@@ -19,11 +20,10 @@ _NOT_TRANSLATED = {
     "cs": "Tato stránka zatím není přeložena, zobrazuje se anglická verze.",
 }
 _NOT_TRANSLATED_DEFAULT = "This page is not translated into this language yet; showing the English version."
-_CSS = """html{color-scheme:dark}body{font:15px 'Segoe UI',Arial,sans-serif;margin:1.5em 2em;background:#1e1e1e;color:#d4d4d4;line-height:1.5}
-h1,h2{color:#fff;border-bottom:1px solid #555;padding-bottom:4px}h3{color:#569cd6}a{color:#6aa9ff}
-code{background:#2d2d2d;padding:1px 4px}table{border-collapse:collapse}td,th{border:1px solid #555;padding:3px 8px}
+_CSS_BASE = """body{font:15px 'Segoe UI',Arial,sans-serif;margin:1.5em 2em;line-height:1.5}
+h1,h2{padding-bottom:4px}code{padding:1px 4px}table{border-collapse:collapse}td,th{padding:3px 8px}
 table{display:block;max-width:100%;overflow-x:auto}pre,.katex-display{max-width:100%;overflow-x:auto}
-img{max-width:100%}.help-note{background:#4a3b12;color:#ffe08a;padding:6px 10px;margin-bottom:1em}"""
+img{max-width:100%}.help-note{padding:6px 10px;margin-bottom:1em}"""
 # Runs after katex.min.js + auto-render.min.js; the window and the manual share it.
 HELP_MATH_RENDER_SCRIPT = ('renderMathInElement(document.body,{delimiters:[{left:"$$",right:"$$",display:true},'
                            '{left:"$",right:"$",display:false}]});')
@@ -69,6 +69,15 @@ def _render_markdown(markdown: str, image_dir: Path) -> tuple[str, list[str]]:
     return _MATH_TOKEN.sub(lambda m: html.escape(formulas[int(m.group(1))], quote=False), body), anchors
 
 
+def _css_colours(theme: Theme) -> str:
+    t = app_tokens(theme)
+    return (f"html{{color-scheme:{theme.value}}}body{{background:{t.help_background};color:{t.help_text}}}"
+            f"h1,h2{{color:{t.help_heading};border-bottom:1px solid {t.help_rule}}}"
+            f"h3{{color:{t.help_subheading}}}a{{color:{t.help_link}}}code{{background:{t.help_code_background}}}"
+            f"td,th{{border:1px solid {t.help_rule}}}"
+            f".help-note{{background:{t.help_note_background};color:{t.help_note_text}}}")
+
+
 def build_help_body(topic_id: str, language: str, root: str | None = None) -> HelpPage:
     """One topic with ``html`` = the page body only: English with a visible
     "translation missing" note when that language lacks the page, a "not found" page
@@ -84,13 +93,13 @@ def build_help_body(topic_id: str, language: str, root: str | None = None) -> He
 
 
 def build_help_page(topic_id: str, language: str, fragment: str = "",
-                    root: str | None = None) -> HelpPage:
+                    root: str | None = None, theme: Theme = Theme.DARK) -> HelpPage:
     """``build_help_body`` wrapped into a self-contained HTML document for the window,
     scrolled to ``fragment``."""
     page = build_help_body(topic_id, language, root)
     katex = (resolve_help_resource_dir(root) / "katex").as_uri()
     document = (
-        f'<!doctype html><meta charset="utf-8"><style>{_CSS}</style>'
+        f'<!doctype html><meta charset="utf-8"><style>{_CSS_BASE}{_css_colours(theme)}</style>'
         f'<link rel="stylesheet" href="{katex}/katex.min.css">'
         f'<script src="{katex}/katex.min.js"></script><script src="{katex}/auto-render.min.js"></script>'
         f"{page.html}<script>{HELP_MATH_RENDER_SCRIPT}"

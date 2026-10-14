@@ -1,11 +1,10 @@
 """Background preparation of ordinary drops for paired order curves."""
 
 from core.block_kinds import KIND_ORDER_CUT, KIND_TIME_RESPONSE, PARAM_ORDER
+from core.channel_drop import build_drop_descriptor
 from core.models import resolve_channel_block_kind
 from io_modules.data_accessor import DataAccessor
-from orchestration.open_tabs import build_drop_descriptor
 from selection.companion_curves import CompanionCurve, resolve_companion_curves
-from session.data_pool import ResolvedTrace
 from session.project import ProjectSession
 
 
@@ -55,7 +54,7 @@ def run_companion_curves(project_session, runs, plotted, channel_pairs):
                     imported_orders[key] = None
             if imported_orders[key] != curve.order:
                 continue
-        verified[curve] = build_drop_descriptor(ResolvedTrace(run, meta))
+        verified[curve] = build_drop_descriptor(run, meta)
     result = []
     for identity, origin in origins.items():
         for curve in resolve_companion_curves([origin], verified, channel_pairs):

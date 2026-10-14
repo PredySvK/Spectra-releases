@@ -11,8 +11,9 @@ All internal documentation strings and variable labels are standardly written in
 from dataclasses import replace
 
 from core.benchmark import benchmark_step
-from core.data_block import Acquisition, NVHDataBlock, SourceRef, display_meta_from
+from core.data_block import Acquisition, NVHDataBlock, build_source_ref
 from core.models import MeasurementRunIndex, ChannelMetadata
+from core.source_amplitude import resolve_rms_factor
 
 
 class DataAccessor:
@@ -43,10 +44,12 @@ class DataAccessor:
                 raw = reader.read_single_channel_data(channel_meta.index)
 
             if isinstance(raw, NVHDataBlock):
-                # An Imported result arrives as a finished block of its kind;
-                # only the classification and the source are decided here.
-                return replace(raw, value_unit=channel_meta.unit, channel_type=channel_meta.type,
-                               source=DataAccessor._build_source_ref(run_index, channel_meta))
+                # An Imported result arrives as a finished block of its kind in
+                # the file's own amplitude; the classification, the source and
+                # the conversion to RMS are decided here -- the one place.
+                return replace(raw, values=raw.values * DataAccessor._resolve_rms_factor(reader, channel_meta),
+                               value_unit=channel_meta.unit, channel_type=channel_meta.type,
+                               source=build_source_ref(run_index, channel_meta))
 
             return NVHDataBlock.time_response(
                 name=raw.name,
@@ -55,11 +58,19 @@ class DataAccessor:
                 value_unit=channel_meta.unit,
                 channel_type=channel_meta.type,
                 acquisition=DataAccessor._build_acquisition(raw.acquisition, channel_meta),
-                source=DataAccessor._build_source_ref(run_index, channel_meta),
+                source=build_source_ref(run_index, channel_meta),
             )
 
         except Exception as e:
             raise IOError(f"DATA_ACCESS_FAILURE: Failed to read file structure: {str(e)}") from e
+
+    @staticmethod
+    def _resolve_rms_factor(reader, channel_meta: ChannelMetadata) -> float:
+        """The project's answer for this file, else the reader's default (Source amplitude)."""
+        from io_modules.measurement_files import resolve_default_source_amplitude
+        source_amplitude = (getattr(channel_meta, "source_amplitude", "")
+                            or resolve_default_source_amplitude(type(reader).__name__))
+        return resolve_rms_factor(source_amplitude)
 
     @staticmethod
     def _build_acquisition(raw_acquisition: Acquisition, channel_meta: ChannelMetadata) -> Acquisition:
@@ -77,26 +88,4 @@ class DataAccessor:
             raw_acquisition,
             dt=channel_meta.abscissa_inc,
             abscissa_min=channel_meta.abscissa_min,
-        )
-
-    @staticmethod
-    def _build_source_ref(run_index: MeasurementRunIndex, channel_meta: ChannelMetadata) -> SourceRef:
-        return SourceRef(
-            file_path=run_index.file_path,
-            file_name=run_index.file_name,
-            channel_index=channel_meta.index,
-            channel_name=channel_meta.name,
-            excel_metadata=run_index.metadata or {},
-        )
-
-    @staticmethod
-    def build_display_meta(run_index: MeasurementRunIndex, channel_meta: ChannelMetadata) -> dict:
-        """
-        The same flat dict NVHDataBlock.display_meta() produces, built without
-        touching the file. A result-cache hit has no block to derive it from --
-        it has arrays and a label -- but the legend and unit-conversion code
-        below still expect the shape.
-        """
-        return display_meta_from(
-            DataAccessor._build_source_ref(run_index, channel_meta), channel_meta.type
         )

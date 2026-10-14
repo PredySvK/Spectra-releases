@@ -9,6 +9,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
 
+from core.channel_drop import build_drop_descriptor
 from core.measurement_selection import (
     MODE_EXPLICIT,
     MODE_QUERY,
@@ -394,14 +395,6 @@ def build_channel_drop_descriptors(resolution: SelectionResolution,
         file_path, file_name = files_by_source[source.id]
         for label in resolution.channels_by_source[source.id]:
             facts = source.channels[label]
-            descriptors.append({
-                "file_path": str(file_path),
-                "file_name": str(file_name),
-                "channel_index": int(facts.get("index", 0)),
-                "channel_name": str(facts.get("name") or label),
-                "channel_type": str(facts.get("type", "")),
-                "unit": str(facts.get("unit", "")),
-                "block_kind": resolve_channel_block_kind(ChannelMetadata.from_dict(facts)),
-                "func_type": facts.get("func_type", FUNC_TYPE_TIME_RESPONSE),
-            })
+            channel = ChannelMetadata.from_dict({**facts, "name": facts.get("name") or label})
+            descriptors.append(build_drop_descriptor(MeasurementRunIndex(file_name, file_path), channel))
     return descriptors

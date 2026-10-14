@@ -44,7 +44,8 @@ _SCAN_PARSE_MAX_WORKERS = 4
 # 3: UNV 58b channel units read by column, not by whitespace split (issue #323)
 # 4: Imported channels carry their readable block kind for navigation (#496).
 # 5: MASTA channels carry their header as Raw metadata (#520).
-WORKSPACE_CACHE_FORMAT_VERSION = 5
+# 6: MASTA workbooks read every H<order> sheet, not only the first (#639).
+WORKSPACE_CACHE_FORMAT_VERSION = 6
 
 
 def scan_cache_basename(directory_path: str) -> str:
@@ -82,10 +83,9 @@ class CacheLoadResult:
     What survived a cache read.
 
     `runs` holds only entries still believed to describe the file on disk, so the
-    caller re-parses whatever is missing. The two flags separate the two reasons
-    the caller cannot simply return early: the Excel sheet changed and every run
-    needs re-linking, or entries were adopted from a pre-stamp cache and must be
-    written back with stamps before the next open can detect anything.
+    caller re-parses whatever is missing. `metadata_is_stale` means the Excel
+    sheet changed and every run needs re-linking, so the caller cannot simply
+    return early.
 
     `parent_source` is the dataset-root sheet the scan should link against: the
     one the caller passed, or -- when the caller did not know it -- the one the
@@ -94,7 +94,6 @@ class CacheLoadResult:
     runs: Dict[str, MeasurementRunIndex] = field(default_factory=dict)
     schema_master: dict = field(default_factory=dict)
     metadata_is_stale: bool = False
-    needs_restamp: bool = False
     parent_source: Optional[str] = None
 
 
@@ -179,10 +178,7 @@ class MeasurementScanner:
         # a single .unv runs to a hundred megabytes.
         stale_files = [path for path in discovered_files if path not in cached_runs]
 
-        # needs_restamp has to be part of this: adopting a pre-stamp cache and
-        # then returning early would never write the stamps back, leaving the
-        # folder permanently unable to notice a file had changed.
-        if cached_runs and not stale_files and not cached.metadata_is_stale and not cached.needs_restamp:
+        if cached_runs and not stale_files and not cached.metadata_is_stale:
             return [cached_runs[path] for path in discovered_files], cached.schema_master
 
         metadata_lookup = self._build_excel_metadata_lookup(
@@ -415,28 +411,17 @@ class MeasurementScanner:
             with open(cache_path, "r", encoding="utf-8") as f:
                 composite_package = json.load(f)
 
-            if isinstance(composite_package, dict) and "_workspace_runs_data" in composite_package:
-                cached_format_version = composite_package.get("_cache_format_version", 0)
-                if cached_format_version != WORKSPACE_CACHE_FORMAT_VERSION:
-                    # Older/newer entry shape than this build expects -- treat as a
-                    # full miss rather than risk feeding an incompatible dict to
-                    # ChannelMetadata.from_dict()/MeasurementRunIndex. The next
-                    # save_workspace_cache() call re-stamps the current version.
-                    return _cold_miss()
-                schema_master = composite_package.get("_metadata_schema_master", {})
-                cached_parent_source = composite_package.get("_parent_metadata_source")
-                cached_stamps = composite_package.get("_metadata_source_stamps")
-                if cached_stamps is None:
-                    # Pre-dual-source cache format: one stamp for the (then
-                    # single, folder-adjacent) Excel sheet.
-                    cached_stamps = {"primary": None, "fallback": composite_package.get("_metadata_source_stamp")}
-                cache_data = composite_package["_workspace_runs_data"]
-            else:
-                # Pre-schema cache format: the file was the runs mapping itself.
-                schema_master = {}
-                cached_stamps = {"primary": None, "fallback": None}
-                cached_parent_source = None
-                cache_data = composite_package
+            if (not isinstance(composite_package, dict)
+                    or composite_package.get("_cache_format_version") != WORKSPACE_CACHE_FORMAT_VERSION):
+                # Older/newer entry shape than this build expects -- treat as a
+                # full miss rather than risk feeding an incompatible dict to
+                # ChannelMetadata.from_dict()/MeasurementRunIndex. The next
+                # save_workspace_cache() call re-stamps the current version.
+                return _cold_miss()
+            schema_master = composite_package.get("_metadata_schema_master", {})
+            cached_parent_source = composite_package.get("_parent_metadata_source")
+            cached_stamps = composite_package.get("_metadata_source_stamps") or {}
+            cache_data = composite_package["_workspace_runs_data"]
 
             if parent_source is None:
                 parent_source = cached_parent_source
@@ -465,23 +450,13 @@ class MeasurementScanner:
             cache_by_key = {canonical_path(key): entry for key, entry in cache_data.items()}
 
             loaded_runs: Dict[str, MeasurementRunIndex] = {}
-            needs_restamp = False
 
             for file_path in active_files:
                 cached_run = cache_by_key.get(canonical_path(file_path))
                 if not cached_run:
                     continue
 
-                cached_stamp = cached_run.get("source_stamp")
-                if cached_stamp is None:
-                    # Written before stamps existed. Adopted rather than discarded:
-                    # manual unit fixes made through the file explorer live only in
-                    # this file, so dropping the entry would silently undo them the
-                    # first time an existing workspace is opened after an upgrade.
-                    # Flagged so the caller writes stamps back -- without that the
-                    # blind spot would never close.
-                    needs_restamp = True
-                elif not _stamps_match(cached_stamp, file_stamp(file_path)):
+                if not _stamps_match(cached_run.get("source_stamp"), file_stamp(file_path)):
                     continue
 
                 run_index = MeasurementRunIndex(cached_run["file_name"], file_path)
@@ -508,7 +483,6 @@ class MeasurementScanner:
                 runs=loaded_runs,
                 schema_master=schema_master,
                 metadata_is_stale=metadata_is_stale,
-                needs_restamp=needs_restamp,
                 parent_source=parent_source,
             )
         except Exception as e:

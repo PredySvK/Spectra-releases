@@ -22,20 +22,24 @@ def resolve_companion_curves(
 ) -> list[CompanionCurve]:
     """Return available partners once, in input order, excluding plotted curves.
 
-    The channel pairs are undirected and hold for every file (#511). An unknown
-    order cannot establish a match. Channels are compared by identity, not by
-    label: the same sensor carries another reader prefix ("Set #N: ") from file
-    to file (#508).
+    A partner is the same channel in another file or the paired channel in any
+    file (#624). The pairs are undirected and hold for every file (#511). An
+    unknown order cannot establish a match. Channels are compared by identity,
+    not by label: the same sensor carries another reader prefix ("Set #N: ")
+    from file to file (#508).
     """
     plotted = set(plotted)
-    channels = {edge for left, right in channel_pairs for edge in ((left, right), (right, left))}
+    group = {}
+    for left, right in channel_pairs:
+        group[left] = {left, right}
+        group[right] = {left, right}
     result = []
     for candidate in available:
         if candidate.order is None or candidate in plotted or candidate in result:
             continue
+        identity = split_channel_base_and_direction(candidate.channel_label)
         if any(curve.order == candidate.order
-               and (split_channel_base_and_direction(curve.channel_label),
-                    split_channel_base_and_direction(candidate.channel_label)) in channels
+               and identity in group.get(split_channel_base_and_direction(curve.channel_label), ())
                for curve in plotted):
             result.append(candidate)
     return result

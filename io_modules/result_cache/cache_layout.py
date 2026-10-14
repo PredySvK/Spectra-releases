@@ -35,14 +35,8 @@ Two properties are worth spelling out, because both were bought deliberately:
     and a spectrogram batch is gigabytes, which is exactly why the unit written
     whole is one measurement rather than a whole set.
 
-**Format 1 (legacy, read-only).** One .h5 for the entire set, order-cut shaped:
-
-    /sources/{source_id}/{channel_hash}/
-        rpm float32[N] · orders float32[K] · amplitude float32[K, N]
-
-Nothing writes it any more. It is still read because recomputing hundreds of
-saved order cuts to change a file format would be exactly the loss the cache
-exists to prevent; cache_reader.py adapts it to the same block-shaped API.
+**Format 1** (one .h5 for the whole set, order-cut shaped) is no longer read
+or written; a project that still points at one sees it skipped.
 """
 import hashlib
 import json
@@ -51,14 +45,11 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from selection.parameter_sets import orders_equal
 
 FORMAT_VERSION = 2
-FORMAT_VERSION_LEGACY = 1
 
 # Format 2: a result set on disk
 SET_MANIFEST_NAME = "_set.json"
 INDEX_NAME = "index.json"
 MANIFEST_FORMAT_VERSION = 1
-
-SOURCES_GROUP = "sources"          # format 1 only -- a shard's channels sit at its root
 
 ATTR_FORMAT_VERSION = "format_version"
 ATTR_KIND = "kind"
@@ -82,11 +73,6 @@ ATTR_NAME = "name"
 
 DATASET_VALUES = "values"
 DATASET_AXIS_PREFIX = "axis_"
-
-# Format 1 datasets. Kept because the legacy reader still names them.
-DATASET_RPM = "rpm"
-DATASET_ORDERS = "orders"
-DATASET_AMPLITUDE = "amplitude"
 
 
 def shard_name(source_id: str) -> str:
@@ -171,40 +157,36 @@ def block_params_match(wanted: Mapping[str, Any], stored: Mapping[str, Any]) -> 
     return True
 
 
-def result_params_from_node(workflow, node_id: str) -> Dict[str, Any]:
+def result_params_from_block(workflow, block_id: str) -> Dict[str, Any]:
     """
-    The params a result set computed at one workflow node is identified by.
+    The params a result set computed at one workflow block is identified by.
 
-    A node's `params` is already a flat mirror of the block's dsp_configs
-    dataclass, so this is that dict plus the algorithm version the node was
+    A block's `params` is already a flat mirror of the block's dsp_configs
+    dataclass, so this is that dict plus the algorithm version the block was
     authored with. The duplicate check and writing side both use this identity,
     and a historical hash test catches a change that would miss saved results.
 
-    Plus a `lineage` key -- a fingerprint of the subgraph *above* the node --
+    Plus a `lineage` key -- a fingerprint of the subgraph *above* the block --
     when there is one. In a branching graph `spectrum(2048)` and
     `lowpass(500) -> spectrum(2048)` carry the same own-params; without lineage
     they would hash identically and a cache lookup would hand back the wrong
-    numbers. `lineage_hash` returns "" when the node is fed only by input nodes,
+    numbers. `lineage_hash` returns "" when the block is fed only by input blocks,
     so a one-block graph keeps the exact identity today's single step has and no
     already-saved result set becomes a cache miss.
     """
     # io_modules -> signal_processing is allowed; kept local so cache_layout stays cheap to import
     from signal_processing.workflow import identity_params, lineage_hash
 
-    node = workflow.node(node_id)
+    workflow_block = workflow.block(block_id)
     # One identity rule, shared with `_ancestor_repr`: display-only params (a
     # spectrogram's colour scale) dropped and missing keys backfilled from the
-    # config defaults, so a node authored in the tree hashes the same as the
+    # config defaults, so a block authored in the tree hashes the same as the
     # ribbon's `asdict(config)` (audit 02 findings 2.1 / 2.11).
-    params = identity_params(node)
-    lineage = lineage_hash(workflow, node_id)
+    params = identity_params(workflow_block)
+    lineage = lineage_hash(workflow, block_id)
     if lineage:
         params["lineage"] = lineage
     return params
-
-
-def source_group_path(source_id: str) -> str:
-    return f"{SOURCES_GROUP}/{source_id}"
 
 
 def channel_group_key(channel_name: str) -> str:
@@ -216,7 +198,3 @@ def channel_group_key(channel_name: str) -> str:
     attrs[ATTR_CHANNEL_NAME] so the file still explains itself.
     """
     return hashlib.sha1(channel_name.encode("utf-8")).hexdigest()
-
-
-def channel_group_path(source_id: str, channel_name: str) -> str:
-    return f"{source_group_path(source_id)}/{channel_group_key(channel_name)}"

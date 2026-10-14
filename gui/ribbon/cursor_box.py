@@ -12,25 +12,23 @@ from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QLabel, QToolButton
 
+from gui.appearance import APP_TOKENS
 from gui.ribbon.icons import ribbon_icon
 
 _SIZE = 92
 _CHIP = 24
-_ACCENT = "#2ec4b6"
-_TEXT_OFF = "#8a9a9a"
-_TEXT_ON = "#e8fffd"
 
 _MAIN_QSS = (
-    "QToolButton { background: #2e3436; border: 2px solid #444c4e; border-radius: 10px; }"
-    f"QToolButton:hover {{ border-color: {_ACCENT}; }}"
-    f"QToolButton:checked {{ background: #1f4a4a; border: 2px solid {_ACCENT}; }}"
+    f"QToolButton {{ background: {APP_TOKENS.cursor_background}; border: 2px solid {APP_TOKENS.cursor_border}; border-radius: 10px; }}"
+    f"QToolButton:hover {{ border-color: {APP_TOKENS.cursor_accent}; }}"
+    f"QToolButton:checked {{ background: {APP_TOKENS.cursor_checked}; border: 2px solid {APP_TOKENS.cursor_accent}; }}"
 )
 _CHIP_QSS = (
-    "QToolButton { background-color: rgba(255,255,255,20); border: 1px solid rgba(255,255,255,45);"
+    f"QToolButton {{ background-color: {APP_TOKENS.cursor_chip_background}; border: 1px solid {APP_TOKENS.cursor_chip_border};"
     f"  border-radius: {_CHIP // 2}px; padding: 0; }}"
-    "QToolButton:hover { background-color: rgba(255,255,255,50); }"
-    "QToolButton:checked { background-color: #1f9e92; border: 1px solid rgba(255,255,255,120); }"
-    "QToolButton:disabled { background-color: rgba(255,255,255,8); border: 1px solid rgba(255,255,255,20); }"
+    f"QToolButton:hover {{ background-color: {APP_TOKENS.cursor_chip_hover}; }}"
+    f"QToolButton:checked {{ background-color: {APP_TOKENS.cursor_chip_checked}; border: 1px solid {APP_TOKENS.cursor_chip_checked_border}; }}"
+    f"QToolButton:disabled {{ background-color: {APP_TOKENS.cursor_chip_disabled}; border: 1px solid {APP_TOKENS.cursor_chip_disabled_border}; }}"
 )
 
 
@@ -109,4 +107,4 @@ class CursorBox(QToolButton):
         self._icon.setPixmap(self._glyph.pixmap(32, 32, QIcon.Mode.Normal, state))
         self._text.setStyleSheet(
             f"background: transparent; font-weight: bold; font-size: 12px;"
-            f" color: {_TEXT_ON if on else _TEXT_OFF};")
+            f" color: {APP_TOKENS.cursor_text_on if on else APP_TOKENS.cursor_text_off};")

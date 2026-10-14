@@ -23,13 +23,14 @@ in English.
 
 import os
 from collections import Counter
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from core.axis_projections import X_AXIS_NATIVE, X_AXIS_UNITS
 from core.measurement_selection import MeasurementSelection
 from core.models import ChannelIdentity
 from core.project_model import DataRoot, NVHProject, SourceEntry
+from core.source_amplitude import VALID_SOURCE_AMPLITUDES
 from core.workflow_graph import Workflow
 from selection.measurement_selection import WHOLE_POOL_SELECTION_NAME
 from io_modules.project_store import (
@@ -63,6 +64,12 @@ PathProvider = Callable[[], Optional[str]]
 # Injected by the GUI window to run scan-cache adoption asynchronously (via
 # QtJobRunner) rather than copying files synchronously on the GUI thread.
 CacheAdopter = Callable[[str, Sequence[DataRoot]], None]
+
+
+@dataclass
+class _WorkflowHistory:
+    snapshots: List[Workflow] = field(default_factory=list)
+    cursor: int = -1
 
 
 def correct_run_channel(run, channel_label: str, unit: str) -> bool:
@@ -138,6 +145,7 @@ class ProjectSession(ResultSetsMixin):
         self._dirty = False
         self._channel_pairs: List[Tuple[ChannelIdentity, ChannelIdentity]] = []
         self._cache_adopter = cache_adopter
+        self._workflow_history: Dict[str, _WorkflowHistory] = {}
 
     # ---- state --------------------------------------------------------
 
@@ -217,6 +225,7 @@ class ProjectSession(ResultSetsMixin):
 
     def new_project(self, name: str = UNTITLED_NAME) -> NVHProject:
         self._project = NVHProject(name=name)
+        self._workflow_history.clear()
         self._channel_pairs = []
         self._path = None
         self._dirty = False
@@ -234,6 +243,7 @@ class ProjectSession(ResultSetsMixin):
         the time the call returns.
         """
         self._project = load_project(project_path)
+        self._workflow_history.clear()
         self._channel_pairs = []
         self._path = os.path.abspath(project_path)
         self._dirty = False
@@ -389,15 +399,6 @@ class ProjectSession(ResultSetsMixin):
 
     # ---- metadata -----------------------------------------------------
 
-    def set_metadata(self, source_id: str, field: str, value: str) -> bool:
-        """Edits run-level metadata. Never touches the measurement file itself."""
-        entry = self._project.source_by_id(source_id)
-        if entry is None:
-            return False
-        entry.metadata[field] = value
-        self.mark_dirty()
-        return True
-
     def set_unit_override(self, source_id: str, channel_label: str, unit: str) -> bool:
         """
         Corrects a channel whose file-declared unit is wrong.
@@ -439,6 +440,41 @@ class ProjectSession(ResultSetsMixin):
         self._channel_pairs = [tuple(pair) for pair in channel_pairs]
 
     # ---- applying project decisions to loaded data --------------------
+
+    def set_source_amplitude(self, source_id: str, source_amplitude: str) -> bool:
+        """
+        Records what the amplitude in an Imported result file means ("rms" | "peak").
+
+        A user decision about the file, so it lives here and never in the file
+        itself. Returns True when the stored answer changed, so asking again
+        with the same answer does not mark the project dirty.
+        """
+        if source_amplitude not in VALID_SOURCE_AMPLITUDES:
+            raise ValueError(f"Unknown source amplitude {source_amplitude!r}.")
+        entry = self._project.source_by_id(source_id)
+        if entry is None or entry.source_amplitude == source_amplitude:
+            return False
+        entry.source_amplitude = source_amplitude
+        self.mark_dirty()
+        return True
+
+    @staticmethod
+    def apply_source_amplitudes(runs, by_path: Dict[str, SourceEntry]) -> int:
+        """
+        Lays the project's Source amplitude answers over freshly loaded runs,
+        the way apply_unit_overrides lays unit corrections: the scan reports
+        the file, the project restates what the user said about it. Returns
+        how many runs were touched. `by_path` is a map from sources_by_path().
+        """
+        touched = 0
+        for run in runs:
+            entry = ProjectSession.entry_for_run(run, by_path)
+            if entry is None or not entry.source_amplitude:
+                continue
+            for channel_meta in getattr(run, "available_channels", {}).values():
+                channel_meta.source_amplitude = entry.source_amplitude
+            touched += 1
+        return touched
 
     def record_unit_override(self, run, channel_label: str, unit: str) -> bool:
         """
@@ -614,15 +650,15 @@ class ProjectSession(ResultSetsMixin):
         return removed
 
     def workflows_using_selection(self, name: str) -> List[str]:
-        """Names of the workflows whose Input node refers to selection `name`."""
+        """Names of the workflows whose Input block refers to selection `name`."""
         return [workflow.name for workflow in self._project.workflows
-                if any(node.is_input and node.input and node.input.selection_name == name
-                       for node in workflow.nodes)]
+                if any(block.is_input and block.input and block.input.selection_name == name
+                       for block in workflow.blocks)]
 
     def rename_selection(self, old_name: str, new_name: str) -> None:
         """
         Renames a selection in place and, in the same step, the `selection_name`
-        of every Input node that refers to it -- a workflow names its selection
+        of every Input block that refers to it -- a workflow names its selection
         by string, so renaming only the selection would orphan them (#463).
         """
         selection = self._project.selection_by_name(old_name)
@@ -636,13 +672,19 @@ class ProjectSession(ResultSetsMixin):
             raise ValueError(f"A selection named '{new_name}' already exists.")
         index = self._project.selections.index(selection)
         self._project.selections[index] = replace(selection, name=new_name)
+        def rename_input(workflow: Workflow) -> Workflow:
+            blocks = tuple(
+                replace(block, input=replace(block.input, selection_name=new_name))
+                if block.is_input and block.input and block.input.selection_name == old_name else block
+                for block in workflow.blocks)
+            return replace(workflow, blocks=blocks) if blocks != workflow.blocks else workflow
+
         for workflow in list(self._project.workflows):
-            nodes = tuple(
-                replace(node, input=replace(node.input, selection_name=new_name))
-                if node.is_input and node.input and node.input.selection_name == old_name else node
-                for node in workflow.nodes)
-            if nodes != workflow.nodes:
-                self._project.put_workflow(replace(workflow, nodes=nodes))
+            self._project.put_workflow(rename_input(workflow))
+        # Selection renames are project edits, not canvas undo steps. Rebase
+        # snapshots so undo cannot resurrect the selection's obsolete name.
+        for history in self._workflow_history.values():
+            history.snapshots = [rename_input(snapshot) for snapshot in history.snapshots]
         self.mark_dirty()
 
     # ---- block-diagram workflows (ADR §1.6) ----------------------------
@@ -654,23 +696,66 @@ class ProjectSession(ResultSetsMixin):
     def find_workflow(self, name: str) -> Optional[Workflow]:
         return self._project.workflow_by_name(name)
 
-    def save_workflow(self, workflow: Workflow) -> Workflow:
+    def save_workflow(self, workflow: Workflow, *, record_history: bool = True) -> Workflow:
         """
         Stores a named workflow, replacing one of the same name.
 
         A project decision -- it marks the project dirty -- exactly like
         save_selection, and for the same reason: it is analysis intent the user
         authored, not a view they merely scrolled to.
+
+        Each distinct edit records an in-memory snapshot for this workflow.
+        Undo/redo uses the same save path with recording disabled; history is
+        discarded when opening another project, never serialized to disk.
         """
         if not workflow.name:
             raise ValueError("A stored workflow needs a name -- it is how a run refers to it.")
+        previous = self.find_workflow(workflow.name)
+        if record_history:
+            history = self._workflow_history.setdefault(workflow.name, _WorkflowHistory())
+            snapshots = history.snapshots
+            if not snapshots and previous is not None:
+                snapshots.append(previous)
+                history.cursor = 0
+            cursor = history.cursor
+            if cursor < 0 or snapshots[cursor] != workflow:
+                del snapshots[cursor + 1:]
+                snapshots.append(workflow)
+                history.cursor = len(snapshots) - 1
         stored = self._project.put_workflow(workflow)
         self.mark_dirty()
+        return stored
+
+    def can_undo_workflow(self, name: str) -> bool:
+        """Whether this workflow has an earlier in-memory snapshot."""
+        history = self._workflow_history.get(name)
+        return history is not None and history.cursor > 0
+
+    def can_redo_workflow(self, name: str) -> bool:
+        """Whether this workflow has a later in-memory snapshot."""
+        history = self._workflow_history.get(name)
+        return history is not None and history.cursor + 1 < len(history.snapshots)
+
+    def undo_workflow(self, name: str) -> Optional[Workflow]:
+        """Restore the preceding snapshot through the normal dirty save path."""
+        return self._restore_workflow(name, -1) if self.can_undo_workflow(name) else None
+
+    def redo_workflow(self, name: str) -> Optional[Workflow]:
+        """Restore the next snapshot without recording another edit."""
+        return self._restore_workflow(name, 1) if self.can_redo_workflow(name) else None
+
+    def _restore_workflow(self, name: str, step: int) -> Workflow:
+        history = self._workflow_history[name]
+        cursor = history.cursor + step
+        workflow = history.snapshots[cursor]
+        stored = self.save_workflow(workflow, record_history=False)
+        history.cursor = cursor
         return stored
 
     def remove_workflow(self, name: str) -> bool:
         removed = self._project.remove_workflow(name)
         if removed:
+            self._workflow_history.pop(name, None)
             self.mark_dirty()
         return removed
 

@@ -104,7 +104,7 @@ class ComputeResultSetButton(QWidget):
         column.addWidget(self.button)
 
         self.status = QLabel("")
-        self.status.setStyleSheet("color: #9aa0a6; font-size: 10px;")
+        self.status.setStyleSheet("color: palette(placeholder-text); font-size: 10px;")
         self.status.setWordWrap(True)
         self.status.hide()  # shown only while it has text, so the button stacks flush under Refresh
         column.addWidget(self.status)

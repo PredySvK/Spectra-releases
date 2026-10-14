@@ -35,6 +35,7 @@ from core.filter_card_config import (
 )
 from gui.dialogs.dialog_state import remember_dialog_geometry
 from selection.trace_filter import schema_field_group
+from gui.appearance import APP_TOKENS
 
 
 class EvaluationColumnSelectionDialog(QDialog):
@@ -128,7 +129,7 @@ class EvaluationColumnSelectionDialog(QDialog):
 
         if not fields:
             empty_lbl = QLabel("(No active fields)", box)
-            empty_lbl.setStyleSheet("color: #808080; font-style: italic;")
+            empty_lbl.setStyleSheet(f"color: {APP_TOKENS.text_muted}; font-style: italic;")
             box_layout.addWidget(empty_lbl)
             return box
 

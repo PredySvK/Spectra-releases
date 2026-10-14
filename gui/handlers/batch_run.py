@@ -53,18 +53,17 @@ from PySide6.QtWidgets import QMessageBox
 from core.measurement_selection import MeasurementSelection
 from core.workflow_graph import Workflow
 from orchestration.batch import (
-    REFUSAL_INVALID_GRAPH,
     REFUSAL_NO_CHANNELS_CHOSEN,
     REFUSAL_NO_LOADED_FOLDER,
     REFUSAL_NO_MATCHING_CHANNELS,
     default_result_set_label,
     find_overwrite_candidates,
     plan_calculate_and_save,
-    plan_workflow_run,
+    plan_workflow_chains,
     resolve_calculate_and_save_refusal,
 )
 from orchestration.data_pool import REGISTRATION_SLOT_KEY, run_pool_registration
-from signal_processing.workflow import sole_terminal_node
+from signal_processing.workflow import sole_terminal_block
 
 WHAT = "Calculate & Save Data"
 
@@ -117,10 +116,10 @@ def ask_overwrite_or_save_new(parent, existing_labels) -> QMessageBox.StandardBu
     return box.exec()
 
 
-def resolve_overwrites(parent, session, workflow: Workflow) -> Optional[dict]:
+def resolve_overwrites(parent, session, workflow: Workflow | tuple[Workflow, ...]) -> Optional[dict]:
     """
     For every node marked to save, decide whether it replaces an existing result
-    set in place. Returns `{node_id: existing result set id}` for the nodes to
+    set in place. Returns `{block_id: existing result set id}` for the nodes to
     overwrite (an empty dict when nothing matches, or the user chose to save new
     copies), or None when the user cancelled.
 
@@ -135,7 +134,7 @@ def resolve_overwrites(parent, session, workflow: Workflow) -> Optional[dict]:
     if choice == QMessageBox.StandardButton.Cancel:
         return None
     if choice == QMessageBox.StandardButton.Yes:
-        return {node_id: ref.id for node_id, ref in duplicates.items()}
+        return {block_id: ref.id for block_id, ref in duplicates.items()}
     return {}
 
 
@@ -147,7 +146,7 @@ def run_workflow(workflow_runner, workflow: Workflow, selection: MeasurementSele
     Run a graph over a selection with no window involved -- it takes the runner
     itself, not a frame that happens to hold one.
     """
-    if not label and workflow.nodes:
+    if not label and workflow.blocks:
         try:
             label = default_result_set_label(workflow, selection)
         except ValueError:
@@ -248,14 +247,14 @@ class BatchRunHandler:
             # The fast path builds a single-save two-node graph, so its one
             # terminal is the one save node the duplicate dialog could have
             # matched.
-            overwrite_by_node = (
-                {sole_terminal_node(workflow).node_id: overwrite_result_set_id}
+            overwrite_by_block = (
+                {sole_terminal_block(workflow).block_id: overwrite_result_set_id}
                 if overwrite_result_set_id else None
             )
             if section is not None and hasattr(section, "set_status"):
                 self._track_status(section, label)
             bridge.start(
-                workflow, selection, label, overwrite_by_node=overwrite_by_node, what=what,
+                workflow, selection, label, overwrite_by_block=overwrite_by_block, what=what,
             )
         return start
 
@@ -301,7 +300,7 @@ class BatchRunHandler:
             workflow = plan.workflow
             selection = plan.selection
             label = plan.label
-            terminal = sole_terminal_node(workflow)
+            terminal = sole_terminal_block(workflow)
 
             overwrites = resolve_overwrites(self.parent_widget, session, workflow)
             if overwrites is None:
@@ -309,7 +308,7 @@ class BatchRunHandler:
                     f"SYSTEM: {WHAT} cancelled -- a result set with these settings already exists."
                 )
                 return
-            overwrite_result_set_id = overwrites.get(terminal.node_id)
+            overwrite_result_set_id = overwrites.get(terminal.block_id)
 
             start(workflow, selection, label, overwrite_result_set_id)
 
@@ -390,6 +389,22 @@ class BatchRunHandler:
     # ---- the Workflow tab's Run button ---------------------------------
 
     def run_selected_workflow(self) -> None:
+        """Run every chain of the active workflow."""
+        self._run_workflow_scope()
+
+    def run_selected_chain(self) -> None:
+        """Run the chain containing the active block."""
+        block_id = self.workflow_view.current_block_id() if self.workflow_view is not None else None
+        if block_id is None:
+            QMessageBox.information(self.parent_widget, "Run Chain", "Select a block to run its chain.")
+            return
+        self._run_workflow_scope(block_id=block_id)
+
+    def run_chain(self, block_id: str) -> None:
+        """Context-menu entry point for a specific block's chain."""
+        self._run_workflow_scope(block_id=block_id)
+
+    def _run_workflow_scope(self, *, block_id: Optional[str] = None) -> None:
         """
         Run the workflow currently shown in the Workflow panel. Every way it cannot
         run yet gets its own message box -- a user who just pressed Run is owed a
@@ -406,28 +421,34 @@ class BatchRunHandler:
             QMessageBox.information(parent, "Run Workflow", "Select a workflow to run.")
             return
 
-        plan = plan_workflow_run(workflow, session.find_selection)
-        if not plan.runnable:
-            if plan.refusal_reason == REFUSAL_INVALID_GRAPH:
-                QMessageBox.warning(
-                    parent, "Run Workflow", f"This workflow cannot run yet:\n\n{plan.message}"
-                )
-            else:
-                QMessageBox.warning(parent, "Run Workflow", plan.message)
+        chains = plan_workflow_chains(workflow, session.find_selection, block_id=block_id)
+        if not any(chain.run.runnable for chain in chains):
+            messages = [f"{chain.workflow.name}: {chain.run.message}" for chain in chains]
+            for message in messages:
+                context.log(f"WARNING: {message}")
+            QMessageBox.warning(parent, "Run Workflow", "\n\n".join(messages) or "No chains to run.")
             return
 
-        selection = plan.selection
-
         def registered(_sources_by_path):
-            overwrites = resolve_overwrites(parent, session, workflow)
+            batches = self.workflow_run_bridge.build_chain_batches(chains)
+            for chain in batches:
+                for message in chain.batch.messages:
+                    context.log(message)
+            refused = [chain for chain in batches if not chain.batch.runnable]
+            if refused:
+                QMessageBox.warning(parent, "Skipped chains", "\n\n".join(
+                    "\n".join(chain.batch.messages) for chain in refused))
+            runnable = tuple(chain for chain in batches if chain.batch.runnable)
+            if not runnable:
+                return
+            overwrites = resolve_overwrites(parent, session, tuple(chain.workflow for chain in runnable))
             if overwrites is None:
                 context.log(
                     "SYSTEM: Run Workflow cancelled -- a matching result set already exists."
                 )
                 return
 
-            self.workflow_run_bridge.start(
-                workflow, selection, workflow.name, overwrite_by_node=overwrites or None,
-            )
+            self.workflow_run_bridge.start_chains(runnable, overwrite_by_block=overwrites or None)
 
+        self.workflow_run_bridge.supersede()
         self.ensure_pool_registered("Run Workflow", registered)

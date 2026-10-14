@@ -5,7 +5,7 @@
 Default result set labeling for batch workflows (ADR §1.6 phase 7C, §1.21).
 
 When a workflow run or batch is executed without an explicit user-given label,
-a default folder name is derived from the terminal node's parameters and the
+a default folder name is derived from the terminal block's parameters and the
 channels in the measurement selection.
 
 All internal documentation strings and variable labels are standardly written
@@ -22,7 +22,7 @@ from io_modules.result_cache.cache_naming import (
     build_kind_result_set_label,
     build_result_set_label,
 )
-from signal_processing.workflow import sole_terminal_node, spec_for
+from signal_processing.workflow import sole_terminal_block, spec_for
 from selection.source_facets import EMPTY_FACET_VALUE
 
 
@@ -42,8 +42,8 @@ def default_result_set_label(workflow: Workflow, selection: MeasurementSelection
     Channels" mode gets the same name as picking "All Channels". A caller that
     does not reads the selection's Channel column constraint or explicit pairs.
     """
-    node = sole_terminal_node(workflow)
-    kind = spec_for(node.block_type).produces
+    workflow_block = sole_terminal_block(workflow)
+    kind = spec_for(workflow_block.block_type).produces
 
     bases = selection.column_values.get(COLUMN_CHANNEL)
     directions = selection.column_values.get(COLUMN_DIRECTION, ())
@@ -62,7 +62,7 @@ def default_result_set_label(workflow: Workflow, selection: MeasurementSelection
     )
     if kind == KIND_ORDER_CUT:
         return build_result_set_label(
-            node.params.get("orders_to_extract") or [], base_directions,
+            workflow_block.params.get("orders_to_extract") or [], base_directions,
             total_available_bases or 0, channel_component=channel_component,
         )
-    return build_kind_result_set_label(kind, node.params, channel_component)
+    return build_kind_result_set_label(kind, workflow_block.params, channel_component)

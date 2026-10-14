@@ -35,6 +35,8 @@ from session.trace_filter import FilterSelectionStore
 
 from gui.dialogs.dialog_state import remember_dialog_geometry
 from gui.filter_panel.facet_grid import FacetGrid
+from gui.appearance import APP_TOKENS
+
 
 # The project's Filter card id the editor's column configuration lives under.
 SELECTION_CARD_ID = "measurement_selection_editor"
@@ -89,7 +91,7 @@ class MeasurementSelectionDialog(QDialog):
         self.txt_name.setObjectName("SelectionNameField")
         self.grid.setObjectName("SelectionGrid")
         self.lbl_count.setObjectName("SelectionCount")
-        self.lbl_problem.setStyleSheet("color: #b00020;")
+        self.lbl_problem.setStyleSheet(f"color: {APP_TOKENS.text_problem};")
         layout.addWidget(self.lbl_count)
         layout.addWidget(self.lbl_problem)
 

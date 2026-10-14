@@ -31,6 +31,7 @@ from core.models import MeasurementRunIndex, ChannelMetadata
 from gui.workspace.band_rms_cursors import BandRmsCursorsMixin
 from gui.workspace.cursor import CursorMixin
 from gui.workspace.highlight import HighlightMixin
+from gui.workspace.plot_area import GRAPH_TOKENS, style_plot_area
 from gui.workspace.channel_drop_target import ChannelDropTargetMixin, CHANNEL_DRAG_MIME
 from gui.workspace.secondary_axis import SecondaryAxis
 from view_models.plot import (
@@ -44,18 +45,24 @@ from view_models.plot import (
     LiveChannelDrops,
     format_display_unit,
     HiddenReason,
+    LARGE_CURVE_POINTS,
+    RenderingMode,
     Trace,
     amplitude_mode_for_kind,
+    resolve_curve_look,
+    resolve_rendering_mode,
 )
 
-
-# Pen-style name (Qt-free, as carried on Trace.pen) -> Qt.PenStyle for drawing.
-_PEN_STYLE_BY_NAME = {
+# The raster carousel's line styles (view_models.plot.LINE_STYLES) as Qt pens.
+# Long dash has no Qt built-in: a custom pattern, in pen widths.
+_QT_LINE_STYLES = {
     "solid": Qt.PenStyle.SolidLine,
     "dash": Qt.PenStyle.DashLine,
     "dot": Qt.PenStyle.DotLine,
     "dashdot": Qt.PenStyle.DashDotLine,
+    "dashdotdot": Qt.PenStyle.DashDotDotLine,
 }
+_LONG_DASH_PATTERN = [12, 4]
 
 
 class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, HighlightMixin, QWidget):
@@ -139,7 +146,8 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
         # the applied mask key. Every change ends in _on_curves_changed, the
         # only thing here that draws. Band RMS cursor state (enabled / band /
         # window corrections) lives on model.band_rms_cursors[0].
-        self.curves = GraphCurves(on_change=self._on_curves_changed)
+        self.curves = GraphCurves(on_change=self._on_curves_changed,
+                                  base_curve_color=GRAPH_TOKENS.base_curve)
         self.live_drops = LiveChannelDrops()
         self.pending_drops = PendingDrops()
         # The dock's Evaluation configuration (ADR §1.64 point 1, issue #138):
@@ -168,8 +176,13 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
 
         self.plot_widget = pg.PlotWidget()
         self.plot_widget.setObjectName("GraphPlot")  # Help figure target
+        # A new plot widget draws as main.py configured (OpenGL); every full
+        # draw then picks the mode its curves need (_apply_rendering_mode).
+        self._rendering_mode = (RenderingMode.OPENGL if pg.getConfigOption('useOpenGL')
+                                else RenderingMode.RASTER)
+        style_plot_area(self.plot_widget)
         self.plot_widget.showGrid(x=True, y=True)
-        self.plot_widget.addLegend()
+        self.plot_widget.addLegend(labelTextColor=GRAPH_TOKENS.axis)
         # PlotItem.addItem/removeItem rebuild the context menu's averaging
         # parameter list from every curve, O(N^2) for a result set of N (#442).
         # No curve here carries plot params, so that list is always empty.
@@ -295,6 +308,7 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
         self.plot_widget.setLabel('bottom', self._x_axis.label, self._x_axis.unit)
         self.plot_widget.setLabel('left', view.y_label, view.y_unit)
 
+        self._apply_rendering_mode(resolve_rendering_mode(visible_traces))
         for trace in visible_traces:
             self._draw_trace(trace)
 
@@ -314,11 +328,7 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
     def _draw_trace(self, trace: Trace) -> None:
         """One curve on screen -- primary axis via plot_widget.plot, an
         incompatible unit onto the secondary ViewBox with its own range sync."""
-        pen = pg.mkPen(
-            color=trace.pen.color,
-            width=trace.pen.width,
-            style=_PEN_STYLE_BY_NAME.get(trace.pen.style, Qt.PenStyle.SolidLine),
-        )
+        pen = self._curve_pen(trace)
 
         # connect='finite' breaks the line at NaN instead of drawing through it.
         # Order cuts use NaN to mark speeds where the order sits above Nyquist or
@@ -339,6 +349,28 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
         item = self.secondary_axis.add(trace, pen, in_legend=self._legend_shown, x=x)
         if item is not None:
             self.remember_highlight_item(trace, item, pen)
+
+    def _curve_pen(self, trace: Trace) -> Any:
+        """The Qt pen ``trace`` is drawn with in the dock's rendering mode."""
+        look = resolve_curve_look(trace.pen, self._rendering_mode, GRAPH_TOKENS.curve_palette)
+        pen = pg.mkPen(color=look.color, width=look.width)
+        if look.style == "longdash":
+            pen.setDashPattern(_LONG_DASH_PATTERN)
+        else:
+            pen.setStyle(_QT_LINE_STYLES[look.style])
+        return pen
+
+    def _apply_rendering_mode(self, mode: RenderingMode) -> None:
+        """Switch the viewport to ``mode`` (ADR §1.163). Rebuilds the viewport
+        widget, so only on a change; the Cursor and Highlight watch the
+        viewport for the mouse leaving and are put on the new one."""
+        if mode is self._rendering_mode:
+            return
+        self._rendering_mode = mode
+        self.plot_widget.useOpenGL(mode is RenderingMode.OPENGL)
+        viewport = self.plot_widget.viewport()
+        viewport.setMouseTracking(True)
+        viewport.installEventFilter(self)
 
     def _resolve_x_axis(self) -> XAxisDisplay:
         """The bottom axis as drawn: read off the dock's X domain rather than
@@ -379,9 +411,12 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
         if outcome is AcceptOutcome.HIDDEN_MASK:
             return
         # Crossing the legend limit redraws in full, so the legend goes
-        # away whole instead of stopping half-filled.
+        # away whole instead of stopping half-filled; so does a large curve
+        # landing on a raster graph, which must switch it to OpenGL.
         if (outcome is AcceptOutcome.NEEDS_RENDER
-                or len(self.curves.visible.draw) == self._LEGEND_CURVE_LIMIT + 1):
+                or len(self.curves.visible.draw) == self._LEGEND_CURVE_LIMIT + 1
+                or (self._rendering_mode is RenderingMode.RASTER
+                    and resolve_rendering_mode([trace]) is RenderingMode.OPENGL)):
             self._draw_all(is_first_trace=False)
             return
 
@@ -534,8 +569,8 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
     # 700-point order cut, 100 curves: 19ms/move with clipping vs 12ms
     # without, against a 16ms frame budget at 60fps (BUGS.md K2-redraw).
     # Above it (a multi-million-sample time signal) the same slicing is what
-    # keeps panning smooth.
-    _CLIP_POINT_THRESHOLD = 20_000
+    # keeps panning smooth. The same value puts a graph on OpenGL (ADR §1.163).
+    _CLIP_POINT_THRESHOLD = LARGE_CURVE_POINTS
 
     def apply_viewport_clipping(self) -> None:
         """Sweep clipping across all curves on this dock if geometry has been initialized (#276)."""
@@ -545,7 +580,7 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
         self._sweep_clip_flag(self.secondary_axis.iter_curves())
 
     def _sweep_clip_flag(self, items):
-        # Graph Defaults can only switch these off (#580): the point-count rule
+        # Graph Rendering preferences can only switch these off (#580): the point-count rule
         # decides where they are worth enabling, the saved preference vetoes it.
         ctx = self.app_context
         allow_auto = getattr(ctx, "perf_auto_mode_active", True) and getattr(ctx, "perf_downsample_enabled", True)

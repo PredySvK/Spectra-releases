@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple, TYPE_CHECKING
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QImage
+from PySide6.QtGui import QColor, QImage
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QListWidget,
     QListWidgetItem, QFrame, QSizePolicy, QTextBrowser,
@@ -29,6 +29,8 @@ from core.jobs import job_step
 from core.recent_projects import RecentProject
 from io_modules.changelog import ChangelogEntry
 from view_models.recent_projects import format_when
+from gui.appearance import APP_TOKENS
+
 
 if TYPE_CHECKING:
     from orchestration.jobs import JobRunner
@@ -71,9 +73,9 @@ class _Tile(QPushButton):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setStyleSheet(
-            "QPushButton { font-size: 18px; font-weight: bold; border: 1px solid #3b5998;"
+            f"QPushButton {{ font-size: 18px; font-weight: bold; border: 1px solid {APP_TOKENS.welcome_accent};"
             " border-radius: 8px; padding: 16px; }"
-            "QPushButton:hover { background-color: #3b5998; color: white; }"
+            f"QPushButton:hover {{ background-color: {APP_TOKENS.welcome_accent}; color: white; }}"
         )
 
 
@@ -106,7 +108,7 @@ class WelcomePage(QWidget):
 
         subtitle = QLabel("Open a project to begin, or drop a .nvhproject file or a data folder here.")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        subtitle.setStyleSheet("color: #888;")
+        subtitle.setStyleSheet(f"color: {APP_TOKENS.text_subtle};")
         column.addWidget(subtitle)
 
         tiles = QHBoxLayout()
@@ -125,28 +127,28 @@ class WelcomePage(QWidget):
         column.addWidget(line)
 
         recent_label = QLabel("Recent")
-        recent_label.setStyleSheet("font-weight: bold; color: #888;")
+        recent_label.setStyleSheet(f"font-weight: bold; color: {APP_TOKENS.text_subtle};")
         column.addWidget(recent_label)
 
         self.recent_list = QListWidget()
         self.recent_list.setMinimumHeight(160)
-        self.recent_list.setStyleSheet("QListWidget { border: 1px solid #444; border-radius: 6px; }")
+        self.recent_list.setStyleSheet(f"QListWidget {{ border: 1px solid {APP_TOKENS.welcome_border}; border-radius: 6px; }}")
         self.recent_list.itemActivated.connect(self._emit_selected)
         self.recent_list.itemDoubleClicked.connect(self._emit_selected)
         column.addWidget(self.recent_list)
 
         self.empty_hint = QLabel("No recent projects yet.")
-        self.empty_hint.setStyleSheet("color: #888;")
+        self.empty_hint.setStyleSheet(f"color: {APP_TOKENS.text_subtle};")
         self.empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         column.addWidget(self.empty_hint)
 
         self.whats_new_label = QLabel("What's new")
-        self.whats_new_label.setStyleSheet("font-weight: bold; color: #888;")
+        self.whats_new_label.setStyleSheet(f"font-weight: bold; color: {APP_TOKENS.text_subtle};")
         column.addWidget(self.whats_new_label)
 
         self.whats_new = QTextBrowser()
         self.whats_new.setMinimumHeight(200)
-        self.whats_new.setStyleSheet("QTextBrowser { border: 1px solid #444; border-radius: 6px; }")
+        self.whats_new.setStyleSheet(f"QTextBrowser {{ border: 1px solid {APP_TOKENS.welcome_border}; border-radius: 6px; }}")
         column.addWidget(self.whats_new, stretch=1)  # takes all the spare height
         self.set_changelog([])
 
@@ -228,7 +230,7 @@ class WelcomePage(QWidget):
 
         if not exists:
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
-            item.setForeground(Qt.GlobalColor.gray)
+            item.setForeground(QColor(APP_TOKENS.text_inactive))
 
             # If the currently selected item was just disabled, move selection
             # to the first selectable (enabled) row.

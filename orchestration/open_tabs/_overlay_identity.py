@@ -1,13 +1,13 @@
-"""An overlay's saved identity, and the drop descriptor it is re-dropped with."""
+"""An overlay's saved identity."""
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Iterable, List, Optional
 
 from core.models import MeasurementRunIndex
 from io_modules.measurement_files import canonical_path
 from selection.channel_identity import resolve_channel_at_index
-from session.data_pool import ResolvedTrace, build_source_lookup
+from session.data_pool import build_source_lookup
 from session.open_tabs import TraceSpec
 from view_models.plot import GraphCurves
 
@@ -52,16 +52,3 @@ def _trace_spec(trace, source_lookup, **extra) -> TraceSpec:
         **extra,
     )
 
-
-def build_drop_descriptor(resolved: ResolvedTrace) -> Dict[str, Any]:
-    """The channel-drop payload of a resolved overlay -- the shape a drag out
-    of the Data Pool carries, with this session's channel index."""
-    run, meta = resolved.run_index, resolved.channel_meta
-    return {
-        "file_path": str(run.file_path),
-        "file_name": str(run.file_name),
-        "channel_index": int(meta.index),
-        "channel_name": str(meta.name),
-        "channel_type": str(meta.type),
-        "unit": str(meta.unit),
-    }

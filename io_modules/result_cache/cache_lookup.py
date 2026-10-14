@@ -59,7 +59,7 @@ from typing import Any, Dict, List, Optional
 from core.block_kinds import KIND_ORDER_CUT
 from core.data_block import NVHDataBlock
 from core.dsp_configs import DSP_ALGORITHM_VERSIONS
-from core.project_model import NVHProject, ResultSetRef, SourceEntry, normalize_result_kind
+from core.project_model import NVHProject, ResultSetRef, SourceEntry
 from core.units import sanitize_unit_string, strip_amplitude_suffix
 from io_modules.project_store import project_folder
 from io_modules.result_cache import cache_index, cache_layout
@@ -85,14 +85,12 @@ def shape_matches(kind: str, cached_params: Dict, live_params: Dict) -> bool:
 def _version_matches(kind: str, cached_params: Dict) -> bool:
     # Each kind is checked against its own algorithm version: a bump to order
     # tracking's math must not invalidate every saved spectrum set, and vice
-    # versa (audit 02 / 1.7). Missing key means a result set saved before this
-    # field existed -- treated as version 1 rather than an automatic miss, so
-    # shipping this check does not invalidate every cache already on disk.
+    # versa (audit 02 / 1.7). A set without the key is a miss (ADR §1.161).
     # Subscript, not .get: an unregistered kind is a programming error, not a
     # data one -- fail loudly rather than turn every set of that kind into a
     # silent permanent miss.
-    expected = DSP_ALGORITHM_VERSIONS[normalize_result_kind(kind)]
-    return cached_params.get("algorithm_version", 1) == expected
+    expected = DSP_ALGORITHM_VERSIONS[kind]
+    return cached_params.get("algorithm_version") == expected
 
 
 def _ranked_candidates(project: NVHProject, project_path: str, kind: str,
@@ -148,7 +146,6 @@ def find_cached_result(
     if not project_path:
         return None  # nothing can have been saved before the project had a file
 
-    kind = normalize_result_kind(kind)
     for rs in _ranked_candidates(project, project_path, kind, source_entry,
                                  channel_name, live_params, write_index):
         path = os.path.join(project_folder(project_path), rs.file)
@@ -187,10 +184,9 @@ def find_cached_result(
                     continue  # the channel's unit was corrected after this set was saved
                 return CachedResult(blocks=selected, result_set_label=rs.label, kind=kind)
         except (OSError, KeyError):
-            # KeyError covers a cache file whose on-disk layout predates a
-            # later format change (e.g. the channel_group_key hashing) --
-            # such a file just misses as a candidate rather than crashing
-            # the caller that was hoping for a fast cache hit.
+            # KeyError covers a shard or channel the manifest lists but the
+            # folder no longer holds -- a miss as a candidate rather than a
+            # crash in the caller that was hoping for a fast cache hit.
             continue
 
     return None
@@ -356,7 +352,6 @@ def find_duplicate_result_set(
     Returns the newest match, or None if this exact combination has never
     been saved before.
     """
-    kind = normalize_result_kind(kind)
     target_hash = cache_layout.params_hash(params)
     candidates = [
         rs for rs in project.result_sets

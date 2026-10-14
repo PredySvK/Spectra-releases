@@ -40,8 +40,7 @@ def shape_signature(kind: str, params: Mapping[str, Any]) -> Tuple:
     What "computed with the same settings" means, for any kind.
 
     Every parameter counts except three sorts. `algorithm_version` is left out
-    and checked separately, because a result set saved before that key existed
-    must be treated as version 1 rather than as an automatic miss. Each kind's
+    and checked separately, against the kind's own current version. Each kind's
     `cache_exempt_params` (core/block_kinds.py) are left out because a wider
     result set legitimately satisfies a narrower request -- a set saved with
     orders "1, 2, 4.5" answers a request for order 2, which is then matched per

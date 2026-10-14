@@ -232,10 +232,10 @@ def _labeled_column(rows):
     for label, widget in rows:
         if isinstance(label, str):
             label_widget = QLabel(label)
-            label_widget.setStyleSheet("color: #b8b8b8; font-size: 11px;")
+            label_widget.setStyleSheet("color: palette(window-text); font-size: 11px;")
         else:
             label_widget = label
-            label_widget.setStyleSheet("color: #b8b8b8; font-size: 11px;")
+            label_widget.setStyleSheet("color: palette(window-text); font-size: 11px;")
         column.addWidget(label_widget)
         column.addWidget(widget)
         column.addSpacing(4)

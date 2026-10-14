@@ -176,9 +176,8 @@ def rebuild_amplitude_mode_display(
     Result Pool into an order-tracking dock, or an order-cut set loaded into
     an Overall Level dock -- issue #128), and toggling Amplitude in either
     dock's View group must rescale every such trace, not just the ones
-    matching this dock's own kind. A trace with no block (older callers that
-    never attached one) falls back to its own ``y_raw``/``source_unit``,
-    which for these two kinds is already the untouched Linear RMS value.
+    matching this dock's own kind. Any other trace rescales from its own
+    ``y_raw``/``source_unit``.
     """
     prefs = prefs or UnitPreferences()
     new_traces: List[Trace] = []

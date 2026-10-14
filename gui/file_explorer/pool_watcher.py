@@ -157,7 +157,10 @@ class PoolWatcher(QObject):
         )
 
     def _on_refresh_finished(self, outcome, directories):
-        if not outcome.completed:
+        # A declined question is an answer: re-reading the same folders would
+        # ask it again every settle cycle. The folder is asked about again the
+        # next time something in it changes.
+        if not outcome.completed and not outcome.declined:
             self._pending.update(directories)
             self._refreshing.difference_update(directories)
             if not self.data_pool.is_running:

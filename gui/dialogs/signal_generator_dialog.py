@@ -28,6 +28,9 @@ from PySide6.QtGui import QIntValidator
 
 from gui.dialogs.dialog_state import remember_dialog_geometry
 from gui.dialogs.library_preset_dialog import LibraryPresetDialog
+from gui.appearance import APP_TOKENS
+from gui.workspace.plot_area import style_plot_area
+
 
 # Component types that carry a swept/fixed tone (value = order or Hz) and so
 # accept amplitude drift and sideband modulation. Everything else is broadband.
@@ -559,6 +562,7 @@ class SignalGeneratorDialog(QDialog):
         self.rpm_plot = pg.PlotWidget(title="Tacho Profile")
         self.rpm_plot.setObjectName("TachoProfilePlot")
         self.rpm_plot.setMinimumWidth(340)
+        style_plot_area(self.rpm_plot)
         self.rpm_plot.showGrid(x=True, y=True)
         self.rpm_plot.setLabel('bottom', 'Time', 's')
         self.rpm_plot.setLabel('left', 'Speed', 'RPM')
@@ -567,6 +571,7 @@ class SignalGeneratorDialog(QDialog):
         self.vib_plot = pg.PlotWidget(title="Active Channel Vibration Preview")
         self.vib_plot.setObjectName("VibrationPreviewPlot")
         self.vib_plot.setMinimumWidth(340)
+        style_plot_area(self.vib_plot)
         self.vib_plot.showGrid(x=True, y=True)
         self.vib_plot.setLabel('bottom', 'Time', 's')
         self.vib_plot.setLabel('left', 'Amplitude', 'g')
@@ -625,7 +630,7 @@ class SignalGeneratorDialog(QDialog):
         self.btn_generate = QPushButton("Export Signal")
         self.btn_generate.setObjectName("ExportSignalButton")
         self.btn_generate.setStyleSheet(
-            "background-color: #2b579a; color: white; font-weight: bold; height: 35px; padding: 0 25px;")
+            f"background-color: {APP_TOKENS.action_primary}; color: white; font-weight: bold; height: 35px; padding: 0 25px;")
         self.btn_generate.clicked.connect(self.accept)
         action_layout.addWidget(self.btn_generate)
         return action_layout

@@ -34,6 +34,8 @@ from gui.ribbon.save_section import (
     SAVE_CHANNEL_TYPE_OPTIONS, identities_to_settings, read_selected_identities,
 )
 from view_models.evaluation import parse_orders_text
+from gui.appearance import APP_TOKENS
+
 
 _DEFAULT_CHANNEL_TYPE = "Acceleration"
 
@@ -81,7 +83,7 @@ class ComputeResultSetDialog(QDialog):
         box_input = QGroupBox("Input Data")
         input_col = QVBoxLayout(box_input)
         self.lbl_folder = QLabel(self._folder_summary(folder_count))
-        self.lbl_folder.setStyleSheet("color: #9aa0a6;")
+        self.lbl_folder.setStyleSheet(f"color: {APP_TOKENS.text_hint};")
         input_col.addWidget(self.lbl_folder)
         return box_input
 
@@ -147,7 +149,7 @@ class ComputeResultSetDialog(QDialog):
         # 5.1); this line shows the result before the batch runs instead of
         # only in the Compare tab afterwards.
         self.lbl_name_preview = QLabel("")
-        self.lbl_name_preview.setStyleSheet("color: #9aa0a6; font-size: 10px;")
+        self.lbl_name_preview.setStyleSheet(f"color: {APP_TOKENS.text_hint}; font-size: 10px;")
         name_col.addWidget(self.lbl_name_preview)
         self.edit_name.textChanged.connect(self._on_name_changed)
         return box_name
@@ -194,7 +196,7 @@ class ComputeResultSetDialog(QDialog):
                 self.edit_orders.setStyleSheet("")
                 self.edit_orders.setToolTip(self._default_orders_tooltip)
             else:
-                self.edit_orders.setStyleSheet("border: 1px solid #d9534f;")
+                self.edit_orders.setStyleSheet(f"border: 1px solid {APP_TOKENS.input_error};")
                 self.edit_orders.setToolTip(
                     "Invalid orders: enter positive numbers with decimal dot (.), "
                     "separated by commas or semicolons."

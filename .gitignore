@@ -50,3 +50,6 @@ graphify-out/
 .build-venv/
 build/
 dist/
+
+# Local MCP config (PyCharm port is machine-specific)
+.mcp.json

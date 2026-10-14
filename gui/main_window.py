@@ -85,10 +85,11 @@ class MainWindowFrame(QWidget):
             self.app_context, self.job_manager,
         )
 
-        # Before init_ui, which wires the Settings tab button to it; the shell
-        # hands in how to install a downloaded Update (None outside the shell).
+        # The shell hands in how to install a downloaded Update
+        # (None outside the shell); Settings uses the same background path.
         from gui.update import UpdateHandler
-        self.update_handler = UpdateHandler(self.job_manager, self, install_update)
+        self.update_handler = UpdateHandler(
+            self.job_manager, self, install_update, shared_settings=self.app_context.shared_settings)
 
         self.init_ui()
         # The layout is restored later, the first time the workspace becomes
@@ -137,6 +138,8 @@ class MainWindowFrame(QWidget):
         master_layout = QVBoxLayout(self)
         master_layout.setContentsMargins(0, 0, 0, 0)
         master_layout.setSpacing(0)
+        self.settings_window = None
+        self._settings_project = self.app_context.project_session.project
 
         self.ribbon = RibbonBar(app_context=self.app_context, parent=self)
         self.ribbon.setObjectName("RibbonBar")
@@ -295,7 +298,7 @@ class MainWindowFrame(QWidget):
         # System Log, Job Manager and Evaluation as one panel of tabs -- the
         # same shape as the Explorer dock. The job status strip in the left column still carries
         # the one job the user is waiting on. Each tab toggles on its own from
-        # the Settings ribbon; the dock's own title strip is dropped (it only
+        # the Settings window’s Layout page; the dock's own title strip is dropped (it only
         # repeated "Output" and cost a row) so the tab bar is the whole chrome.
         bottom_panel = BottomPanel(self.log_panel, self.jobs_panel, self.evaluation_panel)
         bottom_dock = QDockWidget("Output", sub_area)
@@ -362,7 +365,6 @@ class MainWindowFrame(QWidget):
             data_pool=self.data_pool,
         )
 
-        self.ribbon.tab_settings.btn_graph_settings.clicked.connect(self.window_settings.open_graph_settings)
         self.ribbon.tab_project.btn_generate_signal.clicked.connect(self.dataset_authoring.generate_signal)
         self.ribbon.tab_project.btn_realize_dataset.clicked.connect(self.dataset_authoring.realize_dataset)
 
@@ -379,7 +381,7 @@ class MainWindowFrame(QWidget):
             show_welcome=self.show_welcome,
             show_workspace=self.show_workspace,
             set_titlebar_text=self.set_titlebar_text,
-            show_x_axis_unit=self.ribbon.tab_settings.set_x_axis_unit,
+            show_x_axis_unit=self._show_x_axis_unit_in_settings,
             job_runner=self.job_manager,
         )
 
@@ -412,6 +414,10 @@ class MainWindowFrame(QWidget):
         workflow_tab = self.ribbon.tab_workflow
         workflow_tab.btn_new.clicked.connect(self.workflow_authoring.new_workflow)
         workflow_tab.btn_run.clicked.connect(self.batch_run.run_selected_workflow)
+        workflow_tab.btn_run_chain.clicked.connect(self.batch_run.run_selected_chain)
+        self.workflow_view.run_chain_requested.connect(self.batch_run.run_chain)
+        self.workflow_view.block_selection_changed.connect(
+            lambda block_id: workflow_tab.btn_run_chain.setEnabled(block_id is not None))
         workflow_tab.btn_import.clicked.connect(self.workflow_authoring.import_workflow)
         workflow_tab.btn_export.clicked.connect(self.workflow_authoring.export_workflow)
         workflow_tab.btn_delete.clicked.connect(self.workflow_authoring.delete_workflow)
@@ -500,52 +506,13 @@ class MainWindowFrame(QWidget):
         # narrowing at once, checked values kept (ADR §1.32).
         self.filter_panel.show_all_toggled.connect(filter_routing.toggle_show_all)
 
-        settings_tab = self.ribbon.tab_settings
-        settings_tab.btn_check_updates.clicked.connect(self.update_handler.run_manual_check)
         layout = self.workspace_layout
-        settings_tab.btn_toggle_explorer.clicked.connect(
-            lambda: layout.toggle_dock(layout.explorer_dock))
-        settings_tab.btn_toggle_filters.clicked.connect(
-            lambda: layout.toggle_dock(layout.filter_dock))
-        settings_tab.btn_toggle_log.clicked.connect(
-            lambda: layout.toggle_bottom_tab(self.log_panel))
-        settings_tab.btn_toggle_jobs.clicked.connect(
-            lambda: layout.toggle_bottom_tab(self.jobs_panel))
+        for dock in (layout.explorer_dock, layout.filter_dock, layout.bottom_dock):
+            dock.visibilityChanged.connect(self.window_settings.notify_panel_values)
+        layout.bottom_panel.visibility_changed.connect(self.window_settings.notify_panel_values)
         self.job_status_bar.open_jobs_requested.connect(
             lambda: layout.show_bottom_tab(self.jobs_panel))
-        settings_tab.btn_toggle_evaluation.clicked.connect(
-            lambda: layout.toggle_bottom_tab(self.evaluation_panel))
-        settings_tab.btn_global_units.clicked.connect(
-            self.window_settings.open_global_units_dialog)
-        settings_tab.btn_run_benchmark.clicked.connect(self._open_benchmark_dialog)
-
-        # The X axis unit belongs to the open project (issue #459); a project
-        # swap re-syncs the combo through ProjectDocumentHandler.refresh_project_ui.
-        settings_tab.set_x_axis_unit(self.app_context.project_session.x_axis_unit)
-        settings_tab.combo_x_axis_unit.currentIndexChanged.connect(
-            lambda _: self.window_settings.apply_x_axis_unit(settings_tab.x_axis_unit()))
-
-        # Startup behaviour lives in shared_settings so both windows agree on it;
-        # ProjectDocumentHandler.run_startup reads it on the next launch.
-        shared = self.app_context.shared_settings
-        settings_tab.cb_open_last_project.setChecked(
-            shared.value("open_last_project_on_startup", False, type=bool))
-        settings_tab.cb_open_last_project.toggled.connect(
-            lambda on: shared.setValue("open_last_project_on_startup", on))
-
-        # Result-cache compression is application-wide (shared_settings) and is
-        # read at write time from AppContext, so a change takes effect on the
-        # next batch without touching anything already on disk (ADR §1.21).
-        settings_tab.set_cache_compression(self.app_context.result_cache_compression)
-        settings_tab.combo_cache_compression.currentIndexChanged.connect(
-            lambda _: self.window_settings.apply_cache_compression(
-                settings_tab.cache_compression()))
-        settings_tab.set_use_result_cache_lookup(self.app_context.use_result_cache_lookup)
-        settings_tab.cb_use_result_cache_lookup.toggled.connect(
-            self.window_settings.apply_use_result_cache_lookup)
-
-        settings_tab.btn_reset_layout.clicked.connect(self.window_settings.reset_layout)
-        settings_tab.btn_reset_all_settings.clicked.connect(self.window_settings.reset_all_settings)
+        self.ribbon.tab_project.btn_run_benchmark.clicked.connect(self._open_benchmark_dialog)
 
         # The window has two states: the Welcome page (no project) and the
         # workspace (docks + graphs). One stack, one place that swaps them, so
@@ -576,6 +543,41 @@ class MainWindowFrame(QWidget):
         dialog.exec()
         dialog.deleteLater()
 
+    def _show_x_axis_unit_in_settings(self, x_axis_unit: str) -> None:
+        """
+        Called on every project UI refresh; only a different project replaces an
+        unapplied X axis unit edit (a finished run refreshes the same project).
+        """
+        project = self.app_context.project_session.project
+        if project is self._settings_project:
+            return
+        self._settings_project = project
+        if self.settings_window is not None:
+            self.settings_window.adopt_project_values({"x_axis_unit": x_axis_unit})
+
+    def open_settings(self) -> None:
+        """Show the one Settings window, creating it (with fresh values) if none is open."""
+        from gui.settings import SettingsWindow
+
+        if self.settings_window is None:
+            window = SettingsWindow(
+                self.window_settings.read_settings_values(),
+                self.window_settings.apply_settings,
+                settings=self.app_context.settings,
+                parent=self,
+                preview=self.window_settings.apply_panel_values,
+                reset_layout=self.window_settings.reset_layout,
+                reset_all_settings=self.window_settings.reset_all_settings,
+                check_updates=self.update_handler.run_manual_check,
+                read_values=self.window_settings.read_settings_values,
+            )
+            self.app_context.settings_changed.connect(window.adopt_external_values)
+            window.finished.connect(lambda _result: setattr(self, "settings_window", None))
+            self.settings_window = window
+        self.settings_window.show()
+        self.settings_window.raise_()
+        self.settings_window.activateWindow()
+
     def _build_window_chrome(self, master_layout) -> None:
         """
         One top row (the title bar): app icon, Save, the ribbon's tabs, the
@@ -583,10 +585,11 @@ class MainWindowFrame(QWidget):
         window's drag caption -- registered later in bind_frameless_window.
         """
         from PySide6.QtCore import QSize
-        from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPixmap
+        from PySide6.QtGui import QIcon, QImage, QPainter, QPixmap, QPalette
         from PySide6.QtWidgets import QLabel, QTabBar
         from core.asset_paths import resource_path
         from core.app_metadata import window_title
+        from gui.ribbon.icons import ribbon_icon
         from gui.ribbon.ribbon_widgets import make_ribbon_button
         from gui.shell.title_bar import DraggableTabBar, TitleStrip, WindowControls
 
@@ -605,7 +608,7 @@ class MainWindowFrame(QWidget):
         ).convertToFormat(QImage.Format_Grayscale8)
         mask.invertPixels()
         disk = QImage(mask.size(), QImage.Format_ARGB32)
-        disk.fill(QColor("#ffffff"))
+        disk.fill(self.palette().color(QPalette.ColorRole.ButtonText))
         disk.setAlphaChannel(mask)
         # Downscaling thins the strokes to faint half-alpha; stacking the glyph
         # on itself makes them solid.
@@ -617,15 +620,18 @@ class MainWindowFrame(QWidget):
         painter.end()
         disk = bold
         self.btn_titlebar_save.setIcon(QIcon(QPixmap.fromImage(disk)))
-        # Icon-only style: with the default text-beside-icon and no text the
-        # glyph sits off-centre.
-        self.btn_titlebar_save.setToolButtonStyle(Qt.ToolButtonIconOnly)
-        self.btn_titlebar_save.setIconSize(QSize(16, 16))
-        self.btn_titlebar_save.setStyleSheet(
-            self.btn_titlebar_save.styleSheet()
-            + "QToolButton { padding: 0; border-radius: 3px; }")
-        self.btn_titlebar_save.setFixedSize(_TITLEBAR_HEIGHT - 4, _TITLEBAR_HEIGHT - 4)
-        self.btn_titlebar_save.setFocusPolicy(Qt.NoFocus)
+        # The Settings gear uses the neutral ribbon glyph.
+        self.btn_titlebar_settings = make_ribbon_button("", kind="neutral", tooltip="Settings")
+        self.btn_titlebar_settings.setIcon(ribbon_icon("gear", size=32))
+        for button in (self.btn_titlebar_settings, self.btn_titlebar_save):
+            # Icon-only style: with the default text-beside-icon and no text the
+            # glyph sits off-centre.
+            button.setToolButtonStyle(Qt.ToolButtonIconOnly)
+            button.setIconSize(QSize(16, 16))
+            button.setStyleSheet(
+                button.styleSheet() + "QToolButton { padding: 0; border-radius: 3px; }")
+            button.setFixedSize(_TITLEBAR_HEIGHT - 4, _TITLEBAR_HEIGHT - 4)
+            button.setFocusPolicy(Qt.NoFocus)
 
         # The ribbon's own tab row is hidden; this bar mirrors it in the title
         # strip, so the tabs and the strip share one row.
@@ -635,9 +641,9 @@ class MainWindowFrame(QWidget):
         tabs.setFocusPolicy(Qt.NoFocus)
         tabs.setStyleSheet(
             "QTabBar::tab { min-height: 22px; padding: 0 12px; margin: 0;"
-            "  border: 1px solid rgba(128,128,128,110); background: transparent; }"
-            "QTabBar::tab:selected { background: rgba(128,128,128,80); }"
-            "QTabBar::tab:hover:!selected { background: rgba(128,128,128,40); }")
+            "  border: 1px solid palette(mid); background: transparent; }"
+            "QTabBar::tab:selected { background: palette(button); }"
+            "QTabBar::tab:hover:!selected { background: palette(midlight); }")
         for i in range(self.ribbon.count()):
             tabs.addTab(self.ribbon.tabText(i))
         self.ribbon.tabBar().hide()
@@ -648,7 +654,8 @@ class MainWindowFrame(QWidget):
         self.title_tabs.setObjectName("RibbonTabs")
 
         self.window_controls = WindowControls()
-        strip = TitleStrip([icon, self.btn_titlebar_save, tabs], self.window_controls)
+        strip = TitleStrip(
+            [icon, self.btn_titlebar_settings, self.btn_titlebar_save, tabs], self.window_controls)
         strip.setFixedHeight(_TITLEBAR_HEIGHT)
         self.lbl_titlebar_title = strip.title
         strip.set_title(window_title())
@@ -658,6 +665,7 @@ class MainWindowFrame(QWidget):
         # Late-bound: _build_window_chrome runs at the top of init_ui(), long
         # before the handler exists.
         self.btn_titlebar_save.clicked.connect(lambda: self.project_document.save_project())
+        self.btn_titlebar_settings.clicked.connect(self.open_settings)
 
     def bind_frameless_window(self, window) -> None:
         """Called by the shell so it can treat the ribbon strip as its title

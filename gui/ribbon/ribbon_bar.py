@@ -12,7 +12,6 @@ from gui.ribbon.tab_acc_spectrogram import TabAccSpectrogram
 from gui.ribbon.tab_acc_order_tracking import TabAccOrderTracking
 from gui.ribbon.tab_acc_overall_level import TabAccOverallLevel
 from gui.ribbon.tab_workflow import TabWorkflow
-from gui.ribbon.tab_settings import TabSettings
 from gui.ribbon.tab_tools import TabTools
 
 
@@ -38,7 +37,6 @@ class RibbonBar(QTabWidget):
         self.tab_acc_order_tracking = TabAccOrderTracking(self)
         self.tab_acc_overall_level = TabAccOverallLevel(self)
         self.tab_workflow = TabWorkflow(self)
-        self.tab_settings = TabSettings(self)
         self.tab_tools = TabTools(self)
 
         self.addTab(self.tab_project, "📁 Project")
@@ -47,7 +45,6 @@ class RibbonBar(QTabWidget):
         self.addTab(self.tab_acc_spectrogram, "🎛️ Spectrogram 2D")
         self.addTab(self.tab_acc_spectrum, "📈 Spectrum 1D")
         self.addTab(self.tab_workflow, "🧩 Workflow")
-        self.addTab(self.tab_settings, "⚙️ Settings")
         self.addTab(self.tab_tools, "🔧 Tools")
 
         self.app_context.current_analysis_mode = ANALYSIS_MODE_PROJECT
@@ -62,8 +59,7 @@ class RibbonBar(QTabWidget):
             3: ANALYSIS_MODE_ACC_SPECTROGRAM,
             4: ANALYSIS_MODE_ACC_SPECTRUM,
             5: "workflow",
-            6: "settings",
-            7: "tools",
+            6: "tools",
         }
         self.app_context.current_analysis_mode = mode_mapping.get(active_tab_index, ANALYSIS_MODE_PROJECT)
         self.app_context.log(f"WORKSPACE: Mode shifted to [{self.app_context.current_analysis_mode.upper()}] via '{tab_label}'.")

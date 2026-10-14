@@ -17,7 +17,14 @@ from PySide6.QtGui import QSurfaceFormat, QIcon
 from PySide6.QtCore import Qt, QTimer, QByteArray, QEventLoop
 import pyqtgraph as pg
 
+from core.theme import Theme
 from gui.shell import FramelessWindow
+
+
+def apply_theme(style_hints, theme) -> None:
+    """Apply the saved Theme, keeping Spectra independent of the operating-system theme."""
+    scheme = Qt.ColorScheme.Light if theme is Theme.LIGHT else Qt.ColorScheme.Dark
+    style_hints.setColorScheme(scheme)
 
 
 def run_keeping_gui_alive(func, *args) -> None:
@@ -325,6 +332,9 @@ if __name__ == "__main__":
         app = BenchmarkApplication(sys.argv)
     else:
         app = QApplication(sys.argv)
+
+    from gui.appearance import THEME
+    apply_theme(app.styleHints(), THEME)
 
     from core.app_metadata import APP_NAME, APP_USER_MODEL_ID, APP_VERSION
     from core.asset_paths import resource_path

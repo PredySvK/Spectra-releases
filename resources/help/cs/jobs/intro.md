@@ -5,7 +5,7 @@ Vše, čeho délka roste s daty -- výpočty, čtení měření, skenování slo
 ## Kde úlohy vidíte
 
 - **Stavový pruh** na konci levého sloupce dock oken ukazuje nejnovější běžící úlohu s ukazatelem postupu a tlačítkem **Cancel**, a `+N more`, když běží další. Když nic neběží, stojí tam **Idle**. Po skončení úlohy její výsledek (Done, Failed, Cancelled) chvíli zůstane na pruhu, pak se vrátí Idle. **Dvojklikem** otevřete záložku Jobs.
-- **Záložka Jobs** (*Settings* &rarr; Panels &rarr; **Jobs**) vypisuje každou úlohu, nejnovější nahoře: **Job**, **Progress**, **State**, **Time**.
+- **Záložka Jobs** (okno **Settings**, ozubené kolo &rarr; **Layout** &rarr; **Jobs**) vypisuje každou úlohu, nejnovější nahoře: **Job**, **Progress**, **State**, **Time**.
 
 Úloha je fronta kroků: *Calculate &amp; Save Data* ([sada výsledků](topic:general/projects)) nad 40 měřeními je jedna úloha se 40 kroky a postupem `12/40`. Dlouhý jednotlivý krok (velká složka) posouvá ukazatel i mezi kroky. Uchovává se posledních 100 dokončených úloh.
 

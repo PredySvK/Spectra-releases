@@ -24,7 +24,7 @@ import typing
 from typing import Any, Dict, Tuple
 
 from PySide6.QtWidgets import (
-    QCheckBox, QDoubleSpinBox, QFormLayout, QLineEdit, QSpinBox, QWidget,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QLineEdit, QSpinBox, QWidget,
 )
 
 # Wide enough for any FFT size / step / hysteresis the DSP configs carry, without
@@ -66,9 +66,48 @@ def _optional_inner(ftype: Any) -> Any:
     return None
 
 
-def _make_widget(f: dataclasses.Field, value: Any) -> QWidget:
+# Fields with a closed set of values get the same dropdown the analysis tab's
+# ribbon shows: (label, stored value) pairs. Same labels/order as the ribbons.
+_FFT_SIZES = [(str(n), n) for n in (256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536)]
+_CHOICES: Dict[str, list] = {
+    "fft_size": _FFT_SIZES,
+    "window_type": [("Hanning", "hann"), ("Hamming", "hamming"), ("Blackman", "blackman"),
+                    ("Flat-top", "flattop"), ("Rectangular", "boxcar")],
+    "amplitude_mode": [("RMS", "rms"), ("Peak", "peak")],
+    "spectrum_format": [("Linear", "linear"), ("Power", "power"), ("PSD", "psd")],
+    "tracking_mode": [("RPM Tracked", "rpm"), ("Free Run (Time)", "time")],
+    "direction": [("Up (Run-Up)", "up"), ("Down (Run-Down)", "down"), ("Any (Both)", "any")],
+    "averaging_type": [("Linear", "linear"), ("Peak hold", "peak_hold"),
+                       ("Exponential", "exponential")],
+    "color_scale": [("Linear", "Linear"), ("dB (Log)", "dB (Log)")],
+}
+
+
+def _choices_for(config_cls: Any, name: str) -> list:
+    choices = _CHOICES.get(name, [])
+    # The spectrogram refuses "any" for RPM tracking (ADR §1.58 point 8); its ribbon omits it.
+    if name == "direction" and config_cls.__name__ == "SpectrogramConfig":
+        return [c for c in choices if c[1] != "any"]
+    return choices
+
+
+def _make_combo(choices: list, value: Any) -> QComboBox:
+    w = QComboBox()
+    for label, data in choices:
+        w.addItem(label, data)
+    idx = w.findData(value)
+    if idx < 0:  # a value saved outside the list stays visible instead of being replaced
+        w.addItem(str(value), value)
+        idx = w.count() - 1
+    w.setCurrentIndex(idx)
+    return w
+
+
+def _make_widget(f: dataclasses.Field, value: Any, choices: list = ()) -> QWidget:
     ftype = _field_type(f)
 
+    if choices:
+        return _make_combo(choices, value)
     if ftype is bool:
         w = QCheckBox()
         w.setChecked(bool(value))
@@ -98,6 +137,8 @@ def _make_widget(f: dataclasses.Field, value: Any) -> QWidget:
 
 def _read_widget(f: dataclasses.Field, widget: QWidget) -> Any:
     ftype = _field_type(f)
+    if isinstance(widget, QComboBox):
+        return widget.currentData()
     if isinstance(widget, QCheckBox):
         return widget.isChecked()
     if isinstance(widget, QSpinBox):
@@ -154,7 +195,7 @@ class BlockParamForm(QWidget):
         params = dict(params or {})
         for f in dataclasses.fields(config_cls):
             value = params.get(f.name, _field_default(f))
-            widget = _make_widget(f, value)
+            widget = _make_widget(f, value, _choices_for(config_cls, f.name))
             widget.setEnabled(not read_only)
             self._form.addRow(_pretty(f.name), widget)
             self._widgets[f.name] = (f, widget)

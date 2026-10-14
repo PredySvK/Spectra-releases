@@ -82,8 +82,15 @@ class TabProject(QWidget):
         self.btn_realize_dataset = make_ribbon_button(
             "Realize Test Dataset", "database",
             tooltip="Developer utility: write a whole version-controlled dataset to disk as .asc")
+        self.btn_run_benchmark = make_ribbon_button(
+            "Run Benchmark…", "activity", tooltip="Time the analyses on this machine and show the report")
         tools = RibbonGroup("Tools")
-        tools.add_column(self.btn_generate_signal, self.btn_realize_dataset, spacing=4)
+        tools.add_column(
+            self.btn_generate_signal,
+            self.btn_realize_dataset,
+            self.btn_run_benchmark,
+            spacing=4,
+        )
         layout.addWidget(tools)
 
         build_tab_layout(self, layout, "project")

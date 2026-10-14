@@ -2,7 +2,7 @@
 The lifecycle half of a batch run: `run_batch` performs a runnable `BatchPlan`
 against a `JobRunner` as one background job (ARCHITECTURE_DECISIONS §1.6, §1.13,
 Epic P phases 5 / 7A / 7B). It supersedes the previous run *before* opening any
-draft, opens one draft per save node, submits a step per measurement, and
+draft, opens one draft per save block, submits a step per measurement, and
 reports the whole run once, through `on_finished`.
 
 The other two thirds of the runner: `_batch_plan` decides what a run would do,
@@ -23,10 +23,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from core.jobs import JobRecord, JobState, job_step
 from core.workflow_graph import Workflow
-from io_modules.result_cache.cache_layout import result_params_from_node
+from io_modules.result_cache.cache_layout import result_params_from_block
 from orchestration.batch._batch_plan import BatchPlan
 from orchestration.batch._result_set_sink import ResultSetSink
-from orchestration.batch._source_chain import _NodeSavePlan, _run_source_chain
+from orchestration.batch._source_chain import _BlockSavePlan, _run_source_chain
 from orchestration.jobs import JobRunner
 from signal_processing.workflow import spec_for
 
@@ -60,7 +60,7 @@ class _RunState:
     sinks: Dict[str, ResultSetSink]
     entries: List[Any]
     errors: List[str]
-    node_errors: Dict[str, List[str]] = field(default_factory=dict)
+    block_errors: Dict[str, List[str]] = field(default_factory=dict)
     # The session and the project file the drafts were opened under. The
     # session is one object that swaps its project on New / Open / Save As, so
     # by the time `on_done` arrives it may name another project; committing
@@ -72,24 +72,24 @@ class _RunState:
 
 def _open_save_plan(plan: BatchPlan, workflow: Workflow, session, *, compression) -> tuple:
     """
-    Open one result-set draft per save node and pair it with its sink and its
-    `_NodeSavePlan`. Returns (sinks, save_plan).
+    Open one result-set draft per save block and pair it with its sink and its
+    `_BlockSavePlan`. Returns (sinks, save_plan).
 
     Its own function because it is the one block that has to unwind itself:
-    `begin_result_set` can fail on the second of two save nodes, and the first
-    node's draft is a staging folder already on disk. On any failure every draft
+    `begin_result_set` can fail on the second of two save blocks, and the first
+    block's draft is a staging folder already on disk. On any failure every draft
     opened so far in this call is aborted and the original OSError/ValueError is
     re-raised for `run_batch` to report.
     """
     sinks: Dict[str, ResultSetSink] = {}
-    save_plan: Dict[str, _NodeSavePlan] = {}
+    save_plan: Dict[str, _BlockSavePlan] = {}
     opened: List[object] = []
-    for node in plan.save_nodes:
+    for workflow_block in plan.save_blocks:
         try:
             draft = session.begin_result_set(
-                spec_for(workflow.node(node.node_id).block_type).produces,
-                result_params_from_node(workflow, node.node_id), label=node.set_label,
-                overwrite_result_set_id=node.overwrite_result_set_id,
+                spec_for(workflow.block(workflow_block.block_id).block_type).produces,
+                result_params_from_block(workflow, workflow_block.block_id), label=workflow_block.set_label,
+                overwrite_result_set_id=workflow_block.overwrite_result_set_id,
                 compression=compression,
             )
         except (OSError, ValueError):
@@ -97,13 +97,13 @@ def _open_save_plan(plan: BatchPlan, workflow: Workflow, session, *, compression
                 session.abort_result_set(spent)
             raise
         opened.append(draft)
-        sinks[node.node_id] = ResultSetSink(
-            session, draft, all_channels=node.save.all_channels,
-            overwrite_result_set_id=node.overwrite_result_set_id, what=node.sink_what,
+        sinks[workflow_block.block_id] = ResultSetSink(
+            session, draft, all_channels=workflow_block.save.all_channels,
+            overwrite_result_set_id=workflow_block.overwrite_result_set_id, what=workflow_block.sink_what,
         )
-        save_plan[node.node_id] = _NodeSavePlan(
-            node_id=node.node_id, draft=draft,
-            source_ids=set(node.source_ids), save=node.save,
+        save_plan[workflow_block.block_id] = _BlockSavePlan(
+            block_id=workflow_block.block_id, draft=draft,
+            source_ids=set(workflow_block.source_ids), save=workflow_block.save,
         )
     return sinks, save_plan
 
@@ -184,14 +184,14 @@ def _say(on_message: Optional[Callable[[str], None]], message: str) -> None:
 
 
 def _on_source_done(state: _RunState, payload, index: int) -> None:
-    manifest_by_node, errors, node_errors, clipped_nodes = payload
+    manifest_by_block, errors, block_errors, clipped_blocks = payload
     state.errors.extend(f"{message}" for message in errors)
-    for node_id, messages in node_errors.items():
-        state.node_errors.setdefault(node_id, []).extend(messages)
-    for node_id, entry in manifest_by_node.items():
-        sink = state.sinks.get(node_id)
+    for block_id, messages in block_errors.items():
+        state.block_errors.setdefault(block_id, []).extend(messages)
+    for block_id, entry in manifest_by_block.items():
+        sink = state.sinks.get(block_id)
         if sink is not None:
-            sink.add(entry, index, f_stop_clipped=node_id in clipped_nodes)
+            sink.add(entry, index, f_stop_clipped=block_id in clipped_blocks)
 
 
 def _on_source_failed(state: _RunState, message: str, index: int) -> None:
@@ -234,20 +234,20 @@ def _on_run_done(plan: BatchPlan, state: _RunState, record: JobRecord,
         _finish(on_finished, plan, False, messages, record.state)
         return
 
-    # dict.fromkeys, not a set: a failure that hit two save nodes is one
+    # dict.fromkeys, not a set: a failure that hit two save blocks is one
     # event and belongs in the log once, in the order it happened.
     owned = dict.fromkeys(
-        message for node_messages in state.node_errors.values() for message in node_messages
+        message for block_messages in state.block_errors.values() for message in block_messages
     )
     for message in [*state.errors, *owned]:
         messages.append(f"ERROR: {what} -- {message}")
 
     written = False
-    for node_id, sink in state.sinks.items():
-        # Only this node's own failures downgrade its set. Marking every set
-        # "partial" because a sibling node's channel failed made a set that
+    for block_id, sink in state.sinks.items():
+        # Only this block's own failures downgrade its set. Marking every set
+        # "partial" because a sibling block's channel failed made a set that
         # is in fact complete miss the cache forever (audit 02, finding S1/1.11).
-        failed = bool(state.errors) or bool(state.node_errors.get(node_id))
+        failed = bool(state.errors) or bool(state.block_errors.get(block_id))
         sink_written, sink_messages = sink.finish("partial" if failed else "complete")
         messages.extend(sink_messages)
         written = sink_written or written

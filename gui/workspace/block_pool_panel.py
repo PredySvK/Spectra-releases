@@ -6,17 +6,14 @@ The Block Pool: the palette of processing blocks you drop into a workflow
 (ARCHITECTURE_DECISIONS §1.6, Epic P phase 7C).
 
 One row per entry in `signal_processing.workflow.BLOCKS`. A row can be
-double-clicked -- adds the block wired to the workflow's currently selected node
--- or dragged onto the WorkflowView node tree, which adds it wired to the node
-it is dropped on (or unconnected, on blank space). This replaces the "+ Add
-Block" menu that used to live inside WorkflowView.
+double-clicked -- adds the block wired to the workflow's currently selected block
+-- or dragged onto the Workflow canvas, which places it unconnected at the cursor.
+This replaces the "+ Add Block" menu that used to live inside WorkflowView.
 
 Sits in gui/ because it is a Qt widget; it may import signal_processing/. It is
 built by UnvChannelExplorer as a sub-tab of the Explorer dock, shown only while
 the ribbon's Workflow tab is active (main_window.show_workflow_view ->
-UnvChannelExplorer.set_block_pool_visible). The node tree
-that receives the drops lives in workflow_view.py, which owns the drop side of
-the same BLOCK_MIME_TYPE contract.
+UnvChannelExplorer.set_block_pool_visible). The canvas consumes the BLOCK_MIME_TYPE contract.
 
 All internal documentation strings and variable labels are standardly written
 in English.
@@ -28,11 +25,8 @@ from PySide6.QtWidgets import (
 )
 
 from core.workflow_graph import INPUT_BLOCK_TYPE
+from gui.workflow import BLOCK_MIME_TYPE, apply_workflow_style
 from signal_processing.workflow import BLOCKS, spec_for
-
-# The drag payload the WorkflowView node tree recognises: one block type name,
-# UTF-8. Kept here because this is the side that produces it.
-BLOCK_MIME_TYPE = "application/x-nvh-block-type"
 
 # The input node is a node, not a registered block: it has no adapter in BLOCKS
 # (signal_processing stays I/O-free). It still belongs in the palette -- it is
@@ -74,19 +68,20 @@ class _BlockList(QListWidget):
 
 class BlockPoolPanel(QWidget):
     """The palette. Emits `block_activated(block_type)` on a double-click; the
-    drag side is handled by `_BlockList` and consumed by the node tree."""
+    drag side is handled by `_BlockList` and consumed by the canvas."""
 
     block_activated = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        apply_workflow_style(self)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(4)
 
-        hint = QLabel("Double-click a block, or drag it onto a workflow node.")
+        hint = QLabel("Drag a block onto the canvas, or double-click to auto-wire to the selected block.")
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: #9aa0a6; font-size: 10px;")
+        hint.setProperty("workflowCaption", True)
         layout.addWidget(hint)
 
         self.list = _BlockList(self)
@@ -100,7 +95,9 @@ class BlockPoolPanel(QWidget):
 
         input_item = QListWidgetItem("Input Data")
         input_item.setData(_BLOCK_TYPE_ROLE, INPUT_BLOCK_TYPE)
-        input_item.setToolTip(_INPUT_BLURB)
+        gestures = "Drag onto the canvas to place a block. Double-click to add with compatible auto-wire. Select blocks on the canvas; Delete or right-click > Delete blocks removes them and their wires."
+        self.list.setToolTip(gestures)
+        input_item.setToolTip(f"{_INPUT_BLURB}\n{gestures}")
         self.list.addItem(input_item)
 
         for block_type in BLOCKS:
@@ -108,5 +105,5 @@ class BlockPoolPanel(QWidget):
             item = QListWidgetItem(_pretty_block(block_type))
             item.setData(_BLOCK_TYPE_ROLE, block_type)
             blurb = _BLOCK_BLURB.get(block_type, "")
-            item.setToolTip(f"{blurb}\nProduces: {spec.produces}".strip())
+            item.setToolTip(f"{blurb}\nProduces: {spec.produces}\n{gestures}".strip())
             self.list.addItem(item)

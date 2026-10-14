@@ -1,86 +1,102 @@
 """
-Qt-free color palette and carousel styling configuration.
+Qt-free curve carousel and the rendering mode a graph draws in (ADR §1.163).
 
-Provides the master high-luminescence palette and line style cycling for
-graph overlays without importing Qt.
+A graph holding a curve above ``LARGE_CURVE_POINTS`` draws through OpenGL,
+every other one through the raster viewport. A carousel curve keeps its slot;
+its colour and line style follow from the slot and the graph's mode.
 """
 
-from typing import Set, Tuple
+from enum import Enum
+from dataclasses import dataclass
+from typing import Iterable, Optional, Set, Tuple
 
-# MASTER NVH POWERTRAIN HIGH-LUMINESCENCE PALETTE
-# 18 distinct high-brightness colors carefully picked for clean contrast on dark grids
-NVH_COLOR_PALETTE = [
-    '#ff3333',  # Bright Red
-    '#3399ff',  # Electric Blue
-    '#00ff66',  # Lime Green
-    '#cc33ff',  # Neon Purple
-    '#ff6600',  # Industrial Orange
-    '#00ffff',  # Cyan
-    '#ffffff',  # Pure White
-    '#ff66cc',  # Soft Pink
-    '#ffff33',  # Neon Yellow-Green
-    '#99ff33',  # Bright Chartreuse
-    '#33ffcc',  # Turquoise
-    '#3333ff',  # Deep Royal Blue
-    '#ff3399',  # Hot Magenta
-    '#ffa07a',  # Light Salmon
-    '#98fb98',  # Pale Green
-    '#87cefa',  # Light Sky Blue
-    '#e6e6fa',  # Lavender
-    '#f4a460',  # Sandy Brown
-]
+from ._plot_model import Pen, Trace
 
-# Dash pattern per full rollover of the color palette. Plain strings, not
-# Qt.PenStyle, so the plot model builder can pick a pen without importing Qt;
-# the renderer maps the name back when it draws.
-_CAROUSEL_STYLES = ("solid", "dash", "dot", "dashdot")
+# Above this many points a curve is large: it gets clipToView/autoDownsample
+# and puts its graph on the OpenGL viewport (ADR §1.163).
+LARGE_CURVE_POINTS = 20_000
+
+# The raster carousel's line styles, one per round of hues. Qt-free names;
+# gui/ maps them to Qt pen styles.
+LINE_STYLES = ("solid", "dash", "dot", "dashdot", "dashdotdot", "longdash")
+
+# How many hues one lightness round of the curve palette has (§1.158).
+_HUES = 12
 
 
-def carousel_pen_spec(index_counter: int) -> Tuple[str, str]:
+class RenderingMode(Enum):
+    """How a graph's viewport draws its curves."""
+
+    OPENGL = "opengl"
+    RASTER = "raster"
+
+
+@dataclass(frozen=True)
+class CurveLook:
+    """The colour, line style (one of ``LINE_STYLES``) and width a curve is drawn with."""
+
+    color: str
+    style: str
+    width: float
+
+
+def resolve_rendering_mode(traces: Iterable[Trace]) -> RenderingMode:
+    """OpenGL when any drawn curve is large, raster otherwise. ``traces`` are
+    the curves actually drawn, on either Y axis."""
+    if any(len(trace.x) > LARGE_CURVE_POINTS for trace in traces):
+        return RenderingMode.OPENGL
+    return RenderingMode.RASTER
+
+
+def resolve_curve_look(pen: Pen, mode: RenderingMode, palette: Tuple[str, ...]) -> CurveLook:
+    """How a curve with ``pen`` is drawn in ``mode``.
+
+    A pen without a slot (the base curve) keeps its own colour, solid. OpenGL
+    walks the whole palette solid (§1.162); raster walks the first round's
+    twelve hues, then the next line style, and starts over after 72 slots.
     """
-    Qt-free (hex_color, style_name) for overlay curve N.
+    if pen.slot is None:
+        return CurveLook(color=pen.color, style="solid", width=pen.width)
+    if mode is RenderingMode.OPENGL:
+        return CurveLook(color=resolve_carousel_colour(pen.slot, palette), style="solid", width=pen.width)
+    if not palette:
+        raise ValueError("Curve palette must not be empty")
+    hues = palette[:_HUES]
+    style = LINE_STYLES[(pen.slot // len(hues)) % len(LINE_STYLES)]
+    return CurveLook(color=hues[pen.slot % len(hues)], style=style, width=pen.width)
 
-    Cycles the 18-color palette; each full rollover shifts the dash pattern
-    (solid -> dash -> dot -> dashdot, then held).
+
+def resolve_carousel_colour(index_counter: int, palette: Tuple[str, ...]) -> str:
     """
-    palette_length = len(NVH_COLOR_PALETTE)
-    cycle_count = index_counter // palette_length
-    selected_hex_color = NVH_COLOR_PALETTE[index_counter % palette_length]
-    style_name = _CAROUSEL_STYLES[min(cycle_count, len(_CAROUSEL_STYLES) - 1)]
-    return selected_hex_color, style_name
+    Hex colour for overlay curve N.
+
+    Walks the palette in order, so past the twelfth curve the same hues come
+    back in the next lightness round; past the last round it starts over.
+    """
+    if not palette:
+        raise ValueError("Curve palette must not be empty")
+    return palette[index_counter % len(palette)]
 
 
 class HeldPens:
-    """The pens of the held curves, kept so a caller adding curves one by one
-    picks the next one without rescanning every held curve (#442)."""
+    """The carousel slots of the held curves, kept so a caller adding curves
+    one by one picks the next one without rescanning every held curve (#442)."""
 
     def __init__(self) -> None:
-        self._colors: Set[str] = set()
-        self._pens: Set[Tuple[str, str]] = set()
+        self._slots: Set[int] = set()
+        self._lowest_free = 0
 
-    def hold(self, color: str, style: str) -> None:
-        if color:
-            normalized = color.strip().lower()
-            self._colors.add(normalized)
-            self._pens.add((normalized, style))
+    def hold(self, slot: Optional[int]) -> None:
+        if slot is not None:
+            self._slots.add(slot)
 
     def free_index(self) -> int:
-        """The lowest pen carousel index not in use by any held curve.
+        """The lowest carousel slot no held curve uses.
 
-        Picks the smallest index whose color is not held. When all colors in
-        the palette are in use, picks the smallest index whose (color, style)
-        combination is unused, so curves stay visually distinct even after
-        earlier overlays are removed or hidden by a trace filter.
+        Curves stay visually distinct even after earlier overlays are removed
+        or hidden by a trace filter. Slots only get held, never released, so
+        the search resumes where the last one stopped.
         """
-        for index in range(len(NVH_COLOR_PALETTE)):
-            color, _ = carousel_pen_spec(index)
-            if color.lower() not in self._colors:
-                return index
-
-        max_distinct_combinations = len(NVH_COLOR_PALETTE) * len(_CAROUSEL_STYLES)
-        for index in range(len(NVH_COLOR_PALETTE), max_distinct_combinations):
-            color, style = carousel_pen_spec(index)
-            if (color.lower(), style) not in self._pens:
-                return index
-
-        return 0
+        while self._lowest_free in self._slots:
+            self._lowest_free += 1
+        return self._lowest_free

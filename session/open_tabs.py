@@ -22,8 +22,6 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple, Union
 
 from core.evaluation import EvaluationConfig
-from io_modules.measurement_files import canonical_path
-from selection.channel_identity import strip_order_overlay_prefix
 from session.data_pool import DeadLink, ResolvedTrace, build_source_lookup, resolve_trace
 
 
@@ -59,33 +57,6 @@ class TraceSpec:
         )
 
 
-def _legacy_overlay_trace(desc: Mapping[str, Any]) -> TraceSpec:
-    """One saved ``overlay_specs`` drop dict as the ``TraceSpec`` it stands for.
-
-    Its "channel_name" was the curve's legend label: "[file_name] " in front,
-    and possibly an "O:N " order-overlay tag. Both are peeled off, leaving the
-    channel name a base curve is saved under. ``channel_index`` is dropped --
-    it is what a re-recorded file with reordered channels gets wrong.
-    """
-    name = str(desc.get("channel_name", ""))
-    file_tag = f"[{desc.get('file_name', '')}] "
-    if name.startswith(file_tag):
-        name = name[len(file_tag):]
-    return TraceSpec(
-        source_id=canonical_path(str(desc.get("file_path", ""))),
-        channel_name=strip_order_overlay_prefix(name),
-        compute_spec=desc.get("compute_spec"),
-    )
-
-
-def _traces_from(data: Mapping[str, Any]) -> List[TraceSpec]:
-    traces = [TraceSpec.from_dict(t) for t in data.get("traces", [])]
-    if traces:
-        # Without a base there is no tab to put the overlays on.
-        traces.extend(_legacy_overlay_trace(d) for d in data.get("overlay_specs", []))
-    return traces
-
-
 @dataclass
 class TabSpec:
     """
@@ -108,15 +79,12 @@ class TabSpec:
 
     analysis_kind: str = "time"
     # The base curve first, then every curve dragged onto the dock afterwards
-    # -- one identity for both, resolved the same way on reopen. A project
-    # saved before overlays were ``TraceSpec``s holds them as drop dicts under
-    # "overlay_specs"; ``from_dict`` reads those into ``traces`` and
-    # ``to_dict`` never writes that key again (ARCHITECTURE_DECISIONS §1.86).
+    # -- one identity for both, resolved the same way on reopen
+    # (ARCHITECTURE_DECISIONS §1.86).
     traces: List[TraceSpec] = field(default_factory=list)
     # The dock's own id, handed back to the rebuilt dock on reopen so a custom
     # Local filter card's `owner_dock_id` still names it (ARCHITECTURE_DECISIONS
-    # §1.94, issue #65). None for a project saved before ids were persisted,
-    # and for a duplicate `build_restore_plan` refuses -- the dock then gets a
+    # §1.94, issue #65). None for a duplicate `build_restore_plan` refuses -- the dock then gets a
     # fresh id, and any card still naming the old one is pruned as orphaned.
     dock_id: Optional[str] = None
     # This dock's own Local-scope filter content, one entry per profile id
@@ -170,7 +138,7 @@ class TabSpec:
 
         return cls(
             analysis_kind=str(data.get("analysis_kind", "time")),
-            traces=_traces_from(data),
+            traces=[TraceSpec.from_dict(t) for t in data.get("traces", [])],
             dock_id=str(data["dock_id"]) if data.get("dock_id") else None,
             filter_selections={k: dict(v) for k, v in data.get("filter_selections", {}).items()},
             loaded_result_set_ids=[str(rid) for rid in data.get("loaded_result_set_ids", [])],

@@ -66,11 +66,9 @@ class ResultSetsMixin:
         if not self.has_file:
             raise ValueError("Project must be saved before a result set can be written.")
 
-        from core.project_model import normalize_result_kind
         from io_modules.result_cache import cache_layout, cache_naming
         from io_modules.result_cache.cache_writer import ResultSetDraft
 
-        kind = normalize_result_kind(kind)
         if overwrite_result_set_id:
             existing = self._result_set_by_id(overwrite_result_set_id)
             label = existing.label
@@ -118,7 +116,6 @@ class ResultSetsMixin:
         deleted -- so a failure never leaves cache files on disk that the
         project does not know about, or vice versa.
         """
-        from io_modules.result_cache import cache_layout
         from io_modules.result_cache.cache_writer import build_manifest, write_set_manifest
 
         manifest = build_manifest(draft, entries, status, all_channels)
@@ -134,7 +131,7 @@ class ResultSetsMixin:
                 label=draft.label, kind=draft.kind,
                 file=os.path.join(CACHE_DIR_NAME, draft.label),
                 params=dict(draft.params), params_hash=draft.params_hash,
-                created_utc=draft.created_utc, format_version=cache_layout.FORMAT_VERSION,
+                created_utc=draft.created_utc,
                 status=status, source_ids=source_ids, all_channels=all_channels,
             )
             self._project.add_result_set(result_set)
@@ -161,14 +158,12 @@ class ResultSetsMixin:
         the folder restore itself fail, the swapped-in manifest still carries
         the new params_hash, and find_cached_result skips it as a mismatch.
         """
-        from io_modules.result_cache import cache_layout
-
         existing = self._result_set_by_id(result_set_id)
         final_folder = os.path.join(cache_folder(self._path), existing.label)
 
         previous = (existing.params, existing.params_hash, existing.status,
                     existing.source_ids, existing.all_channels, existing.created_utc,
-                    existing.file, existing.format_version, existing.kind)
+                    existing.file, existing.kind)
 
         existing.params = dict(draft.params)
         existing.params_hash = draft.params_hash
@@ -178,7 +173,6 @@ class ResultSetsMixin:
         existing.created_utc = draft.created_utc
         existing.kind = draft.kind
         existing.file = os.path.join(CACHE_DIR_NAME, existing.label)
-        existing.format_version = cache_layout.FORMAT_VERSION
 
         try:
             cache_folders.swap_in_overwrite(final_folder, draft.folder)
@@ -186,7 +180,7 @@ class ResultSetsMixin:
         except Exception:
             (existing.params, existing.params_hash, existing.status,
              existing.source_ids, existing.all_channels, existing.created_utc,
-             existing.file, existing.format_version, existing.kind) = previous
+             existing.file, existing.kind) = previous
             cache_folders.restore_retired(final_folder, draft.folder)
             cache_folders.remove_tree(draft.folder)
             raise

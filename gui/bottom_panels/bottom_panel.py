@@ -11,8 +11,7 @@ hiding behind the log. They are the same kind of thing (a running account of
 what the application is doing) so they now share one panel, the same way the
 Explorer dock carries File Browser / Data Pool / Block Pool.
 
-Each tab is shown or hidden on its own from the Settings ribbon's Panels
-group (the same add/remove-a-tab trick the Explorer's Block Pool uses -- the
+Each tab is shown or hidden on its own from Settings › Layout (the same add/remove-a-tab trick the Explorer's Block Pool uses -- the
 widget stays alive, re-adding it is free). The window hides the whole dock
 once the last tab is gone. Canonical left-to-right order is fixed here so a
 tab that was toggled off and back on lands where it was.
@@ -25,6 +24,7 @@ All internal documentation strings and variable labels are standardly written
 in English.
 """
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QTabWidget, QVBoxLayout, QWidget
 
 LOG_TAB_LABEL = "System Log"
@@ -33,6 +33,8 @@ EVALUATION_TAB_LABEL = "Evaluation"
 
 
 class BottomPanel(QWidget):
+    visibility_changed = Signal()
+
     def __init__(self, log_widget, jobs_widget, evaluation_widget, parent=None):
         super().__init__(parent)
         self.log_widget = log_widget
@@ -67,8 +69,10 @@ class BottomPanel(QWidget):
             self.tabs.insertTab(self._insertion_index(widget), widget,
                                 self._label_for(widget))
             self.tabs.setCurrentWidget(widget)
+            self.visibility_changed.emit()
         elif not on and idx != -1:
             self.tabs.removeTab(idx)
+            self.visibility_changed.emit()
 
     def visible_tab_count(self) -> int:
         return self.tabs.count()

@@ -1,155 +1,89 @@
 # =====================================================================
 # FILE: gui/workspace/workflow_view.py
 # =====================================================================
-"""
-The Workflow panel (ARCHITECTURE_DECISIONS §1.6, Epic P phase 7C).
+"""Canvas workflow editor with workflow tabs and Properties.
 
-An interim editor for the block-diagram workflows a project stores. It is
-universal -- not tied to any analysis tab: you make an empty workflow, add
-blocks from the palette (each gets its `core/dsp_configs.py` defaults, no ribbon
-involved), edit a block's params in place, and pick the measurement selection on
-the input node. Wiring is auto-linear here: a new block connects to the selected
-node's output when the kinds are compatible.
-
-The node *tree* is a stand-in until phase 8's node canvas, which replaces it as
-the authoring surface. What survives that: `core/workflow_graph.py` (the model +
-JSON), `signal_processing/workflow.py` (validation, run, BLOCKS), `BlockParamForm`
-(the canvas reuses it in a block's settings dialog) and the 7B runner.
-
-Sits in gui/ because it is a Qt widget; it may import signal_processing/. The
-central area of sub_area swaps between the analysis docks and this view when the
-ribbon's Workflow tab is selected (main_window.show_workflow_view).
-
-All internal documentation strings and variable labels are standardly written
-in English.
+The scene projects the immutable Workflow; edits are stored through the project
+session. Existing parameter, Input selection and Save settings forms are reused.
 """
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-    QMenu, QPlainTextEdit, QPushButton, QSplitter, QTreeWidget,
-    QTreeWidgetItem, QVBoxLayout, QWidget,
+    QApplication, QComboBox, QHBoxLayout, QLabel, QLayout,
+    QPushButton, QScrollArea, QSplitter, QTabBar,
+    QToolBar, QVBoxLayout, QWidget,
 )
 
 from core.workflow_graph import (
     INPUT_BLOCK_TYPE, InputSpec, Workflow,
-    with_node_replaced, without_node,
+    with_block_replaced,
 )
 from selection.source_facets import all_pool_sources, build_channel_facet
 from selection.measurement_selection import WHOLE_POOL_SELECTION_NAME
-from gui.workspace.block_pool_panel import BLOCK_MIME_TYPE
-from gui.workspace.channel_drop_target import SELECTION_DRAG_MIME
 from gui.workspace.save_spec_editor import SaveSpecEditor
+from gui.workflow import WorkflowCanvasView, apply_workflow_style
 from signal_processing.workflow import (
-    BLOCKS, build_workflow_with_block, resolve_block_params, spec_for,
+    BLOCKS, resolve_block_params, spec_for,
 )
 from view_models.workflow import (
-    WorkflowStatus, format_input_summary, format_node_summary, format_workflow_status,
+    format_workflow_status,
+    build_workflow_canvas, resolve_block_move, resolve_block_add, resolve_block_delete,
+    resolve_wire_connect, resolve_wire_targets, resolve_wire_disconnect,
 )
 
-_NODE_ID_ROLE = Qt.ItemDataRole.UserRole
 _NO_SELECTION = "(none)"
 _INPUT_NONE = "none"
 _INPUT_WHOLE_POOL = "whole_pool"
 _INPUT_SELECTION = "selection"
 
-_STATUS_STYLES = {
-    WorkflowStatus.NOT_READY: "color: #d9534f; font-size: 10px;",
-    WorkflowStatus.READY: "color: #4a9a4a; font-size: 10px;",
-}
-
-# `add_block`'s default `wire_to`: connect the new block to the tree's selected
-# node. A caller passing an explicit node id (a drop target) or None (a drop on
+# `add_block`'s default `wire_to`: connect the new block to the canvas's selected
+# block. A caller passing an explicit block id (a drop target) or None (a drop on
 # blank space) overrides it.
 _USE_SELECTED = object()
 
 
-class _NodeTree(QTreeWidget):
-    """The node tree, plus a drop target for Block Pool drags. Emits
-    `block_dropped(block_type, node_id_or_None)` -- the id of the node the block
-    was dropped on, or None for blank space. Node-to-node rewiring is a later
-    7C step, so nothing is draggable out of here yet.
-
-    `delete_requested(node_id)` fires on the Delete key: without a way to remove
-    a node, one stray double-click in the Block Pool wedged the workflow forever
-    (audit 02 finding 2.4)."""
-
-    block_dropped = Signal(str, object)
-    selection_dropped = Signal(str, object)
-    delete_requested = Signal(str)
-
-    def keyPressEvent(self, event) -> None:
-        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
-            item = self.currentItem()
-            node_id = item.data(0, _NODE_ID_ROLE) if item is not None else None
-            if node_id:
-                self.delete_requested.emit(node_id)
-                return
-        super().keyPressEvent(event)
-
-    def dragEnterEvent(self, event) -> None:
-        if event.mimeData().hasFormat(BLOCK_MIME_TYPE) or event.mimeData().hasFormat(SELECTION_DRAG_MIME):
-            event.acceptProposedAction()
-        else:
-            super().dragEnterEvent(event)
-
-    def dragMoveEvent(self, event) -> None:
-        if event.mimeData().hasFormat(BLOCK_MIME_TYPE) or event.mimeData().hasFormat(SELECTION_DRAG_MIME):
-            event.acceptProposedAction()
-        else:
-            super().dragMoveEvent(event)
-
-    def dropEvent(self, event) -> None:
-        mime = event.mimeData()
-        if mime.hasFormat(SELECTION_DRAG_MIME):
-            item = self.itemAt(event.position().toPoint())
-            self.selection_dropped.emit(
-                bytes(mime.data(SELECTION_DRAG_MIME)).decode("utf-8"),
-                item.data(0, _NODE_ID_ROLE) if item is not None else None)
-            event.acceptProposedAction()
-            return
-        if not mime.hasFormat(BLOCK_MIME_TYPE):
-            super().dropEvent(event)
-            return
-        block_type = bytes(mime.data(BLOCK_MIME_TYPE)).decode("utf-8")
-        item = self.itemAt(event.position().toPoint())
-        node_id = item.data(0, _NODE_ID_ROLE) if item is not None else None
-        self.block_dropped.emit(block_type, node_id)
-        event.acceptProposedAction()
-
-
 def _caption(text: str) -> QLabel:
     label = QLabel(text)
-    label.setStyleSheet("color: #9aa0a6; font-size: 10px;")
+    label.setProperty("workflowCaption", True)
     return label
 
 
 class WorkflowView(QWidget):
-    """
-    Left: the project's workflows by name. Middle: the selected workflow's nodes
-    as a tree (the input node is the root, an edge is a parent->child step, a
-    fan-out is siblings). Right: the selected node's editor -- a parameter form
-    plus a "Save result set" box (`SaveSpecEditor`) for a block, an
-    input-selection picker for the input node -- and a plain-text summary of its
-    wiring, save spec and lineage. "Apply node settings" writes params and save
-    spec together.
-
-    Blocks are added from the Block Pool dock (`block_pool_panel.py`): a
-    double-click there calls `add_block`, a drag onto the node tree lands as
-    `block_dropped` -> `_on_block_dropped`.
-    """
+    """Author the active workflow on the canvas and edit selected block properties."""
 
     # The composition root opens the Selection editor and answers with
     # `select_input_selection` (#464).
     create_selection_requested = Signal()
+    block_selection_changed = Signal(object)
+    run_chain_requested = Signal(str)
 
     def __init__(self, app_context, parent=None):
         super().__init__(parent)
+        apply_workflow_style(self)
         self._app_context = app_context
         self._workflow: Optional[Workflow] = None
-        self._selected_node_id: Optional[str] = None
+        self._selected_block_id: Optional[str] = None
         self._build_ui()
+        QApplication.instance().installEventFilter(self)
+
+    def eventFilter(self, watched, event) -> bool:
+        # Editable Properties fields normally claim Ctrl+Z for their own text.
+        # Within this editor the shortcuts restore committed workflow snapshots.
+        if (event.type() in (QEvent.Type.ShortcutOverride, QEvent.Type.KeyPress)
+                and isinstance(watched, QWidget) and self.isAncestorOf(watched)
+                and self.isVisible()
+                and event.modifiers() == Qt.KeyboardModifier.ControlModifier
+                and event.key() in (Qt.Key.Key_Z, Qt.Key.Key_Y)):
+            event.accept()
+            if event.type() == QEvent.Type.KeyPress:
+                if event.key() == Qt.Key.Key_Z:
+                    self.undo()
+                else:
+                    self.redo()
+            return True
+        return super().eventFilter(watched, event)
 
     # ---- construction -----------------------------------------------------
 
@@ -157,93 +91,108 @@ class WorkflowView(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(6, 6, 6, 6)
 
+        toolbar = QToolBar("Workflow history", self)
+        self.undo_action = toolbar.addAction("Undo")
+        self.redo_action = toolbar.addAction("Redo")
+        self.undo_action.setToolTip("Undo the last workflow edit (Ctrl+Z)")
+        self.redo_action.setToolTip("Redo the last undone workflow edit (Ctrl+Y)")
+        self.undo_action.triggered.connect(self.undo)
+        self.redo_action.triggered.connect(self.redo)
+        self._undo_shortcut = QShortcut(QKeySequence("Ctrl+Z"), self)
+        self._redo_shortcut = QShortcut(QKeySequence("Ctrl+Y"), self)
+        self._undo_shortcut.activated.connect(self.undo)
+        self._redo_shortcut.activated.connect(self.redo)
+        outer.addWidget(toolbar)
+        self._refresh_history_actions()
+
+        self.workflow_tabs = QTabBar()
+        self.workflow_tabs.setExpanding(False)
+        self.workflow_tabs.setUsesScrollButtons(True)
+        self.workflow_tabs.setToolTip("Click a workflow tab to open its canvas.")
+        self.workflow_tabs.currentChanged.connect(lambda *_: self._load_selected_workflow())
+        outer.addWidget(self.workflow_tabs)
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
         outer.addWidget(splitter, stretch=1)
-        splitter.addWidget(self._build_workflow_list())
-        splitter.addWidget(self._build_node_tree())
-        splitter.addWidget(self._build_node_detail())
-        splitter.setSizes([170, 250, 380])
+
+        self.canvas = WorkflowCanvasView()
+        self.canvas.block_selected.connect(self._on_canvas_block_selected)
+        self.canvas.run_chain_requested.connect(self.run_chain_requested)
+        self.canvas.properties_requested.connect(self._focus_properties)
+        self.canvas.selection_dropped.connect(self._on_selection_dropped)
+        self.canvas.block_moved.connect(self._on_canvas_block_moved)
+        self.canvas.block_dropped.connect(self._on_canvas_block_dropped)
+        self.canvas.delete_requested.connect(self._delete_blocks)
+        self.canvas.wire_started.connect(self._on_wire_started)
+        self.canvas.wire_requested.connect(self._on_wire_requested)
+        self.canvas.wire_delete_requested.connect(self._delete_wires)
+        canvas_box = self._boxed("Workflow canvas", self.canvas)
+        self.lbl_wire_reason = QLabel("")
+        self.lbl_wire_reason.setWordWrap(True)
+        self.lbl_wire_reason.setProperty("workflowError", True)
+        canvas_box.layout().addWidget(self.lbl_wire_reason)
+        splitter.addWidget(canvas_box)
+        self.lbl_status = QLabel("")
+        self.lbl_status.setWordWrap(True)
+        self.lbl_status.setToolTip("Readiness of the whole workflow. Run skips refused chains; Run Chain uses the selected block's chain.")
+        canvas_box.layout().addWidget(self.lbl_status)
+        self.properties_scroll = QScrollArea()
+        self.properties_scroll.setObjectName("WorkflowProperties")
+        self.properties_scroll.setWidgetResizable(True)
+        self.properties_scroll.setToolTip("Double-click a canvas block to focus Properties. Ctrl+Z / Ctrl+Y restore committed workflow edits, including while a field has focus.")
+        self.properties_scroll.setWidget(self._build_block_detail())
+        splitter.addWidget(self.properties_scroll)
+        splitter.setSizes([900, 360])
         self._splitter = splitter
 
         self.lbl_empty = QLabel(
             "No workflows yet. Workflow → New Workflow, then add blocks here."
         )
         self.lbl_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_empty.setStyleSheet("color: #9aa0a6;")
+        self.lbl_empty.setProperty("workflowCaption", True)
         outer.addWidget(self.lbl_empty)
 
-        self._show_node_editor(None)
+        self._show_block_editor(None)
 
-    def _build_workflow_list(self) -> QWidget:
-        self.list_workflows = QListWidget()
-        self.list_workflows.setMinimumWidth(150)
-        self.list_workflows.currentItemChanged.connect(lambda *_: self._load_selected_workflow())
-        return self._boxed("Workflows", self.list_workflows)
-
-    def _build_node_tree(self) -> QWidget:
-        # Blocks come from the Block Pool dock.
-        middle = QWidget()
-        mid_col = QVBoxLayout(middle)
-        mid_col.setContentsMargins(0, 0, 0, 0)
-        mid_col.setSpacing(2)
-        mid_col.addWidget(_caption("Nodes"))
-
-        self.tree_nodes = _NodeTree()
-        self.tree_nodes.setHeaderHidden(True)
-        self.tree_nodes.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.tree_nodes.setAcceptDrops(True)
-        self.tree_nodes.setDragDropMode(QAbstractItemView.DragDropMode.DropOnly)
-        self.tree_nodes.currentItemChanged.connect(lambda *_: self._on_node_selected())
-        self.tree_nodes.block_dropped.connect(self._on_block_dropped)
-        self.tree_nodes.selection_dropped.connect(self._on_selection_dropped)
-        self.tree_nodes.delete_requested.connect(self._delete_node)
-        self.tree_nodes.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.tree_nodes.customContextMenuRequested.connect(self._show_tree_menu)
-        mid_col.addWidget(self.tree_nodes, stretch=1)
-
-        # Whether the Workflow tab's Run button would do anything, spelled out
-        # rather than left for the user to discover by pressing it.
-        self.lbl_status = QLabel("")
-        self.lbl_status.setWordWrap(True)
-        mid_col.addWidget(self.lbl_status)
-        return middle
-
-    def _build_node_detail(self) -> QWidget:
+    def _build_block_detail(self) -> QWidget:
         from gui.workspace.block_param_form import BlockParamForm
         detail = QWidget()
         right_col = QVBoxLayout(detail)
-        right_col.setContentsMargins(0, 0, 0, 0)
-        right_col.addWidget(_caption("Node detail"))
+        right_col.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
+        right_col.setContentsMargins(8, 8, 8, 8)
+        right_col.addWidget(_caption("Properties"))
 
-        self.lbl_node_title = QLabel("Select a node")
-        self.lbl_node_title.setStyleSheet("font-weight: bold;")
-        right_col.addWidget(self.lbl_node_title)
+        self.lbl_block_title = QLabel("Select a block")
+        self.lbl_block_title.setStyleSheet("font-weight: bold;")
+        self.lbl_block_title.setWordWrap(True)
+        right_col.addWidget(self.lbl_block_title)
 
         self.input_row = QWidget()
         input_layout = QHBoxLayout(self.input_row)
         input_layout.setContentsMargins(0, 0, 0, 0)
         input_layout.addWidget(QLabel("Input selection:"))
         self.combo_input_selection = QComboBox()
+        self.combo_input_selection.setToolTip("Choose Whole Data Pool or a saved Selection; applies immediately. You can also drag a Selection onto an Input block.")
         self.combo_input_selection.currentIndexChanged.connect(self._on_input_selection_changed)
         input_layout.addWidget(self.combo_input_selection, stretch=1)
         self.btn_create_selection = QPushButton("Create…")
+        self.btn_create_selection.setToolTip("Open the Selection editor to create an Input selection.")
         self.btn_create_selection.clicked.connect(self.create_selection_requested)
         input_layout.addWidget(self.btn_create_selection)
         right_col.addWidget(self.input_row)
 
         self.param_form = BlockParamForm()
+        self.param_form.layout().setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         right_col.addWidget(self.param_form)
 
         self.save_editor = SaveSpecEditor(settings=getattr(self._app_context, "settings", None))
         right_col.addWidget(self.save_editor)
 
-        self.btn_apply = QPushButton("Apply node settings")
+        self.btn_apply = QPushButton("Apply block settings")
+        self.btn_apply.setToolTip("Commit parameters and Save settings together. Ctrl+Z / Ctrl+Y undo or redo committed edits; Ctrl+S saves the project.")
         self.btn_apply.clicked.connect(self._on_apply_params)
         right_col.addWidget(self.btn_apply)
-
-        self.txt_summary = QPlainTextEdit()
-        self.txt_summary.setReadOnly(True)
-        right_col.addWidget(self.txt_summary, stretch=1)
+        right_col.addStretch(1)
         return detail
 
     @staticmethod
@@ -274,174 +223,164 @@ class WorkflowView(QWidget):
         names = [w.name for w in workflows]
 
         previous = self.current_workflow_name()
-        self.list_workflows.blockSignals(True)
-        self.list_workflows.clear()
+        self.workflow_tabs.blockSignals(True)
+        while self.workflow_tabs.count():
+            self.workflow_tabs.removeTab(0)
         for name in names:
-            self.list_workflows.addItem(QListWidgetItem(name))
-        self.list_workflows.blockSignals(False)
+            self.workflow_tabs.addTab(name)
+        self.workflow_tabs.blockSignals(False)
 
         has_any = bool(names)
+        self.workflow_tabs.setVisible(has_any)
         self._splitter.setVisible(has_any)
         self.lbl_empty.setVisible(not has_any)
         if not has_any:
             self._workflow = None
-            self.tree_nodes.clear()
-            self._show_node_editor(None)
+            self.canvas.set_description(build_workflow_canvas(None))
+            self._show_block_editor(None)
             self._refresh_status()
+            self._refresh_history_actions()
             return
 
         target = names.index(previous) if previous in names else 0
-        self.list_workflows.setCurrentRow(target)
+        self.workflow_tabs.setCurrentIndex(target)
         self._load_selected_workflow()
 
     def select_workflow(self, name: str) -> None:
-        for row in range(self.list_workflows.count()):
-            if self.list_workflows.item(row).text() == name:
-                self.list_workflows.setCurrentRow(row)
+        for row in range(self.workflow_tabs.count()):
+            if self.workflow_tabs.tabText(row) == name:
+                self.workflow_tabs.setCurrentIndex(row)
                 return
 
     def current_workflow_name(self) -> Optional[str]:
-        item = self.list_workflows.currentItem()
-        return item.text() if item is not None else None
+        index = self.workflow_tabs.currentIndex()
+        return self.workflow_tabs.tabText(index) if index >= 0 else None
+
+    def current_block_id(self) -> Optional[str]:
+        """The active block whose connected chain Run Chain will use."""
+        return self._selected_block_id
 
     def _load_selected_workflow(self) -> None:
         session = self._session()
         name = self.current_workflow_name()
         self._workflow = session.find_workflow(name) if (session is not None and name) else None
-        self._selected_node_id = None
-        self._rebuild_tree()
+        self._selected_block_id = None
+        self._refresh_canvas()
+        self.canvas.reset_view()
 
-    # ---- node tree -----------------------------------------------------
+    # ---- canvas ----------------------------------------------------------
 
-    def _rebuild_tree(self, keep_node_id: Optional[str] = None) -> None:
-        self.tree_nodes.blockSignals(True)
-        self.tree_nodes.clear()
-        workflow = self._workflow
-        first_item = None
-        if workflow is not None:
-            with_incoming = {edge.to_node for edge in workflow.edges}
-            roots = [n.node_id for n in workflow.nodes if n.node_id not in with_incoming]
-            if not roots:
-                roots = list(workflow.node_ids)
-            seen: set = set()
-            for root in roots:
-                item = self._tree_item(workflow, root, seen)
-                self.tree_nodes.addTopLevelItem(item)
-                if first_item is None:
-                    first_item = item
-            self.tree_nodes.expandAll()
-        self.tree_nodes.blockSignals(False)
-
-        target = self._find_item(keep_node_id) if keep_node_id else None
-        self.tree_nodes.setCurrentItem(target or first_item)
-        self._on_node_selected()
+    def _refresh_canvas(self, keep_block_id: Optional[str] = None) -> None:
+        self._refresh_history_actions()
+        self.lbl_wire_reason.clear()
+        self.canvas.set_description(build_workflow_canvas(
+            self._workflow, getattr(self._session(), "find_selection", None)))
+        block_ids = [block.block_id for block in self._workflow.blocks] if self._workflow is not None else []
+        block_id = keep_block_id if keep_block_id in block_ids else (block_ids[0] if block_ids else None)
+        self.canvas.select_block(block_id)
+        self._on_canvas_block_selected(block_id)
         self._refresh_status()
 
+    def _focus_properties(self, _block_id: str) -> None:
+        if self.input_row.isVisibleTo(self):
+            target = self.combo_input_selection
+        else:
+            widgets = self.param_form.findChildren(QWidget)
+            target = next((widget for widget in widgets if widget.isVisibleTo(self)
+                           and widget.focusPolicy() != Qt.FocusPolicy.NoFocus), self.properties_scroll)
+        self.properties_scroll.ensureWidgetVisible(target)
+        target.setFocus()
+
     def _refresh_status(self) -> None:
-        """A one-line 'can this run?' under the tree, redrawn on every edit and
-        every workflow switch (both go through _rebuild_tree)."""
+        """A one-line 'can this run?' under the canvas, redrawn on every edit and
+        every workflow switch (both go through _refresh_canvas)."""
         find_selection = getattr(self._session(), "find_selection", None)
         status, text = format_workflow_status(self._workflow, find_selection)
         self.lbl_status.setText(text)
-        if status is not WorkflowStatus.EMPTY:
-            self.lbl_status.setStyleSheet(_STATUS_STYLES[status])
+        self.lbl_status.setProperty("workflowStatus", status.value)
+        self.lbl_status.style().unpolish(self.lbl_status)
+        self.lbl_status.style().polish(self.lbl_status)
 
-    def _tree_item(self, workflow: Workflow, node_id: str, seen: set) -> QTreeWidgetItem:
-        item = QTreeWidgetItem([self._node_label(workflow, node_id)])
-        item.setData(0, _NODE_ID_ROLE, node_id)
-        if node_id in seen:
-            return item
-        seen.add(node_id)
-        for edge in workflow.outgoing(node_id):
-            item.addChild(self._tree_item(workflow, edge.to_node, seen))
-        return item
+    # ---- Properties ------------------------------------------------------
 
-    def _find_item(self, node_id: str) -> Optional[QTreeWidgetItem]:
-        stack = [self.tree_nodes.topLevelItem(i) for i in range(self.tree_nodes.topLevelItemCount())]
-        while stack:
-            item = stack.pop()
-            if item is None:
-                continue
-            if item.data(0, _NODE_ID_ROLE) == node_id:
-                return item
-            stack.extend(item.child(i) for i in range(item.childCount()))
-        return None
+    def _on_canvas_block_selected(self, block_id: str | None) -> None:
+        self._selected_block_id = block_id
+        self.block_selection_changed.emit(block_id)
+        block = self._workflow.block(block_id) if self._workflow is not None and block_id is not None else None
+        self._show_block_editor(block)
 
-    def _node_label(self, workflow: Workflow, node_id: str) -> str:
-        node = workflow.node(node_id)
-        if node.is_input:
-            base = f"{node_id}  ‹input: {format_input_summary(node.input)}›"
-        else:
-            base = f"{node_id}  [{node.block_type}]"
-        if node.save is not None:
-            base += f"  💾 {node.save.label or '(auto name)'}"
-        return base
+    def _on_canvas_block_moved(self, block_id: str, x: float, y: float) -> None:
+        if self._workflow is None or not self._editable():
+            return
+        moved = resolve_block_move(self._workflow, block_id, (x, y))
+        if moved is not self._workflow:
+            self._save(moved, keep_block_id=block_id)
 
-    # ---- right panel --------------------------------------------------
+    def _on_wire_started(self, source_id: str) -> None:
+        self.lbl_wire_reason.clear()
+        if self._workflow is not None:
+            self.canvas.set_wire_targets(resolve_wire_targets(self._workflow, source_id))
 
-    def _on_node_selected(self) -> None:
+    def _on_wire_requested(self, source_id: str, target_id: str, port_name: str) -> None:
+        if self._workflow is None or not self._editable():
+            return
+        workflow, reason = resolve_wire_connect(self._workflow, source_id, target_id, port_name)
+        if reason:
+            self.lbl_wire_reason.setText(reason)
+        elif workflow is not self._workflow:
+            self._save(workflow, keep_block_id=target_id)
+
+    def _delete_wires(self, ports) -> None:
+        if self._workflow is None or not self._editable():
+            return
         workflow = self._workflow
-        item = self.tree_nodes.currentItem()
-        node = None
-        if workflow is not None and item is not None:
-            try:
-                node = workflow.node(item.data(0, _NODE_ID_ROLE))
-            except KeyError:
-                node = None
-        self._selected_node_id = node.node_id if node is not None else None
-        self._show_node_editor(node)
+        for target_id, port_name in ports:
+            workflow = resolve_wire_disconnect(workflow, target_id, port_name)
+        if workflow is not self._workflow:
+            self._save(workflow, keep_block_id=self._selected_block_id)
 
-    def _show_node_editor(self, node) -> None:
+    def _show_block_editor(self, workflow_block) -> None:
         editable = self._editable()
 
-        if node is None:
-            self.lbl_node_title.setText("Select a node")
+        if workflow_block is None:
+            self.lbl_block_title.setText("Select a block")
             self.input_row.setVisible(False)
             self.param_form.setVisible(False)
             self.save_editor.setVisible(False)
             self.btn_apply.setVisible(False)
             self.param_form.clear()
-            self.txt_summary.clear()
             return
 
-        if node.is_input:
-            self.lbl_node_title.setText(f"{node.node_id} — input node")
+        if workflow_block.is_input:
+            self.lbl_block_title.setText(f"{workflow_block.block_id} — Input block")
             self.input_row.setVisible(True)
             self.param_form.setVisible(False)
             self.save_editor.setVisible(False)
             self.btn_apply.setVisible(False)
             self.param_form.clear()
-            self._populate_input_combo(node.input)
+            self._populate_input_combo(workflow_block.input)
             self.combo_input_selection.setEnabled(editable)
-            self.txt_summary.setPlainText(
-                "Input node. Pick what this workflow runs over:\n"
-                f"  • '{WHOLE_POOL_SELECTION_NAME}' -- every measurement in the Data Pool, all "
-                "channels, growing as the pool grows (the default).\n"
-                "  • a saved selection -- a named subset, if one exists in the project.\n"
-                "Resolved by the runner per file; not a registered block."
-            )
             return
 
-        self.lbl_node_title.setText(f"{node.node_id} — {node.block_type}")
+        self.lbl_block_title.setText(f"{workflow_block.block_id} — {workflow_block.block_type}")
         self.input_row.setVisible(False)
         try:
-            spec = spec_for(node.block_type)
+            spec = spec_for(workflow_block.block_type)
         except ValueError as exc:
+            self.lbl_block_title.setText(f"{workflow_block.block_id} — {exc}")
             self.param_form.setVisible(False)
             self.save_editor.setVisible(False)
             self.btn_apply.setVisible(False)
             self.param_form.clear()
-            self.txt_summary.setPlainText(str(exc))
             return
         self.param_form.setVisible(True)
         self.save_editor.setVisible(True)
         self.btn_apply.setVisible(True)
         self.btn_apply.setEnabled(editable)
-        self.param_form.set_config(spec.config_cls, node.params, read_only=not editable)
+        self.param_form.set_config(spec.config_cls, workflow_block.params, read_only=not editable)
         self.save_editor.set_spec(
-            node.save, channel_groups=self._channel_groups(), read_only=not editable
+            workflow_block.save, channel_groups=self._channel_groups(), read_only=not editable
         )
-        self.txt_summary.setPlainText(format_node_summary(self._workflow, node, spec))
 
     def _channel_groups(self) -> dict:
         """`{base name: [directions]}` across the whole Data Pool -- what the
@@ -458,7 +397,7 @@ class WorkflowView(QWidget):
 
     def select_input_selection(self, name: str) -> None:
         """Pick the stored selection `name` in the Input combo (and so on the
-        Input node on screen) -- the Selection editor just saved it (#464)."""
+        Input block on screen) -- the Selection editor just saved it (#464)."""
         self.refresh_input_selections()
         combo = self.combo_input_selection
         for index in range(combo.count()):
@@ -467,22 +406,22 @@ class WorkflowView(QWidget):
                 return
 
     def refresh_input_selections(self) -> None:
-        """Re-offer the project's selections in the Input combo of the node on
+        """Re-offer the project's selections in the Input combo of the block on
         screen, keeping its pick -- a Selection was stored, renamed or deleted
         elsewhere (#462, #463)."""
         session = self._session()
         if self._workflow is not None and session is not None:
-            # A rename rewrote the Input nodes behind the view's back (#463).
+            # A rename rewrote the Input blocks behind the view's back (#463).
             self._workflow = session.find_workflow(self._workflow.name) or self._workflow
-            self._refresh_status()
-        if self._workflow is None or self._selected_node_id is None:
+            self._refresh_canvas(self._selected_block_id)
+        if self._workflow is None or self._selected_block_id is None:
             return
         try:
-            node = self._workflow.node(self._selected_node_id)
+            workflow_block = self._workflow.block(self._selected_block_id)
         except KeyError:
             return
-        if node.is_input:
-            self._populate_input_combo(node.input)
+        if workflow_block.is_input:
+            self._populate_input_combo(workflow_block.input)
 
     def _populate_input_combo(self, spec: Optional[InputSpec]) -> None:
         session = self._session()
@@ -505,27 +444,50 @@ class WorkflowView(QWidget):
 
     # ---- edits -------------------------------------------------------
 
-    def _save(self, workflow: Workflow, keep_node_id: Optional[str]) -> None:
+    def _refresh_history_actions(self) -> None:
+        session = self._session()
+        name = self._workflow.name if self._workflow is not None else None
+        self.undo_action.setEnabled(bool(name and session and session.can_undo_workflow(name)))
+        self.redo_action.setEnabled(bool(name and session and session.can_redo_workflow(name)))
+
+    def undo(self) -> None:
+        """Undo one committed edit of the active workflow."""
+        session = self._session()
+        if self._workflow is not None and session is not None:
+            self._show_restored(session.undo_workflow(self._workflow.name))
+
+    def redo(self) -> None:
+        """Redo one edit of the active workflow."""
+        session = self._session()
+        if self._workflow is not None and session is not None:
+            self._show_restored(session.redo_workflow(self._workflow.name))
+
+    def _show_restored(self, workflow: Optional[Workflow]) -> None:
+        if workflow is not None:
+            self._workflow = workflow
+            self._refresh_canvas(self._selected_block_id)
+
+    def _save(self, workflow: Workflow, keep_block_id: Optional[str]) -> None:
         session = self._session()
         if session is None:
             return
         session.save_workflow(workflow)
         self._workflow = workflow
-        self._rebuild_tree(keep_node_id)
+        self._refresh_canvas(keep_block_id)
 
     def add_block(self, block_type: str, wire_to=_USE_SELECTED) -> None:
         """
         Add a block of `block_type` to the current workflow. `wire_to` is the id
-        of the node to connect the block's primary input to, None to leave it
+        of the block to connect the block's primary input to, None to leave it
         unconnected, or the `_USE_SELECTED` sentinel (the default, used by the
-        Block Pool's double-click) to use the tree's selected node.
+        Block Pool's double-click) to use the canvas's selected block.
 
-        The edge is only made when the source is single-output and its kind is
+        The wire is only made when the source is single-output and its kind is
         one the new block's primary port accepts; otherwise the block lands
         unconnected, the same as today's "+ Add Block".
 
-        `INPUT_BLOCK_TYPE` is not in `BLOCKS` -- it is a node, not a block -- so
-        it takes its own path: a new input node, never wired, defaulting to the
+        `INPUT_BLOCK_TYPE` is not in `BLOCKS` -- it is a block, not a block -- so
+        it takes its own path: a new input block, never wired, defaulting to the
         whole pool. A graph may carry several (phase 8's canvas branches from
         two inputs); the 7A runner still only runs a single-input graph.
         """
@@ -535,71 +497,58 @@ class WorkflowView(QWidget):
 
         if block_type != INPUT_BLOCK_TYPE and block_type not in BLOCKS:
             return
-        source_id = self._selected_node_id if wire_to is _USE_SELECTED else wire_to
-        workflow, node_id = build_workflow_with_block(workflow, block_type, source_id)
-        self._app_context.log(f"WORKFLOW: added '{node_id}' to '{workflow.name}'.")
-        self._save(workflow, keep_node_id=node_id)
+        source_id = self._selected_block_id if wire_to is _USE_SELECTED else wire_to
+        workflow, block_id = resolve_block_add(workflow, block_type, source_id)
+        self._app_context.log(f"WORKFLOW: added '{block_id}' to '{workflow.name}'.")
+        self._save(workflow, keep_block_id=block_id)
 
-    def _on_block_dropped(self, block_type: str, node_id) -> None:
-        """A Block Pool row was dragged onto the node tree. `node_id` is the
-        node it landed on, or None for blank space (adds it unconnected)."""
-        self.add_block(block_type, wire_to=node_id)
-
-    def _on_selection_dropped(self, name: str, node_id) -> None:
-        """A Selection was dragged onto the node tree: on the Input node it becomes the input (#465)."""
-        workflow = self._workflow
-        if workflow is None or node_id is None or not workflow.node(node_id).is_input:
+    def _on_canvas_block_dropped(self, block_type: str, x: float, y: float) -> None:
+        if self._workflow is None or not self._editable():
             return
-        self.tree_nodes.setCurrentItem(self._find_item(node_id))
+        workflow, block_id = resolve_block_add(self._workflow, block_type, position=(x, y))
+        self._save(workflow, keep_block_id=block_id)
+
+    def _on_selection_dropped(self, name: str, block_id) -> None:
+        workflow = self._workflow
+        if workflow is None or block_id is None or not workflow.block(block_id).is_input:
+            return
+        self.canvas.select_block(block_id)
+        self._on_canvas_block_selected(block_id)
         self.select_input_selection(name)
 
-    def _show_tree_menu(self, pos) -> None:
-        item = self.tree_nodes.itemAt(pos)
-        node_id = item.data(0, _NODE_ID_ROLE) if item is not None else None
-        if not node_id or not self._editable():
+    def _delete_blocks(self, block_ids) -> None:
+        if self._workflow is None or not self._editable():
             return
-        menu = QMenu(self)
-        menu.addAction("Delete node", lambda: self._delete_node(node_id))
-        menu.exec(self.tree_nodes.viewport().mapToGlobal(pos))
-
-    def _delete_node(self, node_id: str) -> None:
-        """Drop a node (and its edges) from the current workflow. Without this a
-        stray block or a second input node wedged the workflow with no way back
-        through the UI (audit 02 finding 2.4). The status line flags whatever the
-        removal leaves not-ready."""
-        workflow = self._workflow
-        if workflow is None or not self._editable() or node_id not in workflow.node_ids:
-            return
-        workflow = without_node(workflow, node_id)
-        self._app_context.log(f"WORKFLOW: removed '{node_id}' from '{workflow.name}'.")
-        self._save(workflow, keep_node_id=None)
+        workflow = resolve_block_delete(self._workflow, block_ids)
+        if workflow is not self._workflow:
+            self._save(workflow, keep_block_id=None)
 
     def _on_apply_params(self) -> None:
-        """"Apply node settings" -- writes the parameter form *and* the save spec
-        in one rebuild, so a node is one save to the project and one tree
+        """"Apply block settings" -- writes the parameter form *and* the save spec
+        in one rebuild, so a block is one save to the project and one canvas
         redraw, not two."""
         workflow = self._workflow
-        node_id = self._selected_node_id
-        if workflow is None or node_id is None or not self._editable():
+        block_id = self._selected_block_id
+        if workflow is None or block_id is None or not self._editable():
             return
-        node = workflow.node(node_id)
-        if node.is_input:
+        workflow_block = workflow.block(block_id)
+        if workflow_block.is_input:
             return
-        params = resolve_block_params(node.block_type, self.param_form.values())
-        workflow = with_node_replaced(
-            workflow, node_id,
+        params = resolve_block_params(workflow_block.block_type, self.param_form.values())
+        workflow = with_block_replaced(
+            workflow, block_id,
             params=params,
             save=self.save_editor.current_spec(),
         )
-        self._save(workflow, keep_node_id=node_id)
+        self._save(workflow, keep_block_id=block_id)
 
     def _on_input_selection_changed(self, index: int) -> None:
         workflow = self._workflow
-        node_id = self._selected_node_id
-        if workflow is None or node_id is None or not self._editable():
+        block_id = self._selected_block_id
+        if workflow is None or block_id is None or not self._editable():
             return
-        node = workflow.node(node_id)
-        if not node.is_input:
+        workflow_block = workflow.block(block_id)
+        if not workflow_block.is_input:
             return
         data = self.combo_input_selection.itemData(index)
         if data == _INPUT_WHOLE_POOL:
@@ -608,7 +557,7 @@ class WorkflowView(QWidget):
             new_spec = InputSpec(selection_name=data[1])
         else:
             new_spec = InputSpec()
-        if node.input == new_spec:
+        if workflow_block.input == new_spec:
             return
-        workflow = with_node_replaced(workflow, node_id, input=new_spec)
-        self._save(workflow, keep_node_id=node_id)
+        workflow = with_block_replaced(workflow, block_id, input=new_spec)
+        self._save(workflow, keep_block_id=block_id)

@@ -47,6 +47,8 @@ from signal_processing.evaluation.registry import EVALUATIONS
 from signal_processing.evaluation.runner import evaluate
 from signal_processing.evaluation.topn_eval import DEFAULT_MIN_PROMINENCE_DB, DEFAULT_N
 from signal_processing.evaluation.typed_orders_eval import DEFAULT_ORDER_WIDTH
+from gui.appearance import APP_TOKENS
+
 
 _NO_DOCK_MESSAGE = "No graph is open."
 _UNSUPPORTED_MESSAGE = "This dock has no curves Evaluation supports."
@@ -584,7 +586,7 @@ class EvaluationPanel(QWidget):
     def _current_typed_orders_params(self) -> Optional[Dict[str, Any]]:
         orders = parse_orders_text(self.edit_orders.text())
         if orders is None:
-            self.edit_orders.setStyleSheet("border: 1px solid #d9534f;")
+            self.edit_orders.setStyleSheet(f"border: 1px solid {APP_TOKENS.input_error};")
             self.edit_orders.setToolTip(
                 "Invalid orders: enter positive numbers with decimal dot (.), "
                 "separated by commas or semicolons."

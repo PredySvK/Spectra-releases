@@ -140,10 +140,6 @@ def resolve_date_format(values: Iterable[Any]) -> Optional[str]:
     return None
 
 
-# Backward-compatible alias
-infer_date_format = resolve_date_format
-
-
 def infer_field_kind(values: Iterable[Any]) -> str:
     """
     The tightest kind that fits every non-blank value seen for a column.
@@ -344,6 +340,8 @@ def generate_baseline_schema_master(indexed_runs: List[MeasurementRunIndex]) -> 
         "design": ("Design", True, "str"),
         "scenario": ("Scenario", True, "str"),
         "damping": ("Damping", True, "str"),
+        # ANSYS's DP<n> file name prefix (reader_ansys).
+        "design_point": ("Design point", True, "str"),
     }
     # MASTA's Description N: as many as the scanned channels carry, off by default.
     description_count = max(

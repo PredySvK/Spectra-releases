@@ -24,7 +24,7 @@ the code moved 1:1 out of AppContext.
 
 import os
 from dataclasses import dataclass, field, replace
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
 from core.models import ChannelMetadata, MeasurementRunIndex
 from core.project_model import NVHProject, SourceEntry
@@ -242,8 +242,8 @@ class IntegrateResult:
 def run_from_entry(entry: SourceEntry, directory: str) -> Optional[MeasurementRunIndex]:
     """
     Rebuilds one measurement from its project entry, or None if it is not in
-    the pool, or if the project never stored its channels -- an entry indexed
-    by an older build, or one added but not yet scanned. Such a file is not
+    the pool, or if the project never stored its channels -- an entry added
+    but not yet scanned. Such a file is not
     shown as an empty node; it appears once the background scan reaches it.
     """
     if not entry.channels or not entry.in_pool:
@@ -267,6 +267,10 @@ def run_from_entry(entry: SourceEntry, directory: str) -> Optional[MeasurementRu
     for channel_label, unit in entry.unit_overrides.items():
         correct_run_channel(run, channel_label, unit)
         correct_entry_channel(entry, channel_label, unit)
+
+    if entry.source_amplitude:
+        for channel_meta in run.available_channels.values():
+            channel_meta.source_amplitude = entry.source_amplitude
 
     return run
 
@@ -353,8 +357,8 @@ def resolve_trace(source_id: str, channel_name: str,
 
     from selection.channel_identity import resolve_stripped_override
 
-    # Older snapshots and base recipes used plain names. Resolve them only
-    # when unambiguous; duplicate names must keep their exact reader label.
+    # A channel may be named by its plain name or by its reader label. Resolve
+    # a plain name only when unambiguous; duplicates keep their exact label.
     channels = run_index.available_channels
     label = resolve_stripped_override(
         channel_name, ((key, meta.name) for key, meta in channels.items()),
@@ -466,7 +470,9 @@ class DataPool:
 
     def integrate_scanned_directory(self, directory_path: str, runs_list, schema_master: dict,
                                     only_files=None, admit_unknown: bool = False,
-                                    *, index: DirectoryIndex) -> IntegrateResult:
+                                    *, index: DirectoryIndex,
+                                    source_amplitudes: Optional[Mapping[str, str]] = None,
+                                    ) -> IntegrateResult:
         """
         Folds a scanned folder into the pool. Must run on the GUI thread.
 
@@ -488,6 +494,10 @@ class DataPool:
         same folder node rather than replacing it. None means the whole folder,
         which is what an explicit "Add folder" asks for and what therefore
         overrides an earlier removal.
+
+        `source_amplitudes` maps a file path to the Source amplitude the user
+        just answered for it; it is written onto the file's source entry, over
+        any earlier answer, before the project's answers are laid over the runs.
 
         `admit_unknown` is what makes a refresh useful: a measurement written
         into the folder since the last scan joins the pool, while one the user
@@ -522,6 +532,11 @@ class DataPool:
         # the user decided about them. Applying the corrections here, on every
         # load, is what lets the cache stay purely derived and deletable.
         by_path = session.sources_by_path(index.root_directories)
+        for path, source_amplitude in (source_amplitudes or {}).items():
+            entry = by_path.get(canonical_path(path))
+            if entry is not None:
+                session.set_source_amplitude(entry.id, source_amplitude)
+        session.apply_source_amplitudes(runs_list, by_path)
         corrected = session.apply_unit_overrides(runs_list, by_path)
 
         # The reverse direction: the scan just re-read each run's Level 1/2

@@ -9,7 +9,7 @@ Pure functions (no Qt, no AppContext) coordinating:
   (checks loaded runs, channel types, chosen channels), and if so, constructs the
   workflow, selection, and label; otherwise returns the refusal reason.
 - `plan_workflow_run`: whether a workflow can run (validates the graph, sole input
-  node, input selection resolution, save nodes), and if so, resolves the input
+  block, input selection resolution, save blocks), and if so, resolves the input
   selection; otherwise returns the refusal reason and error message.
 """
 from dataclasses import dataclass
@@ -23,11 +23,15 @@ from selection.measurement_selection import (
     whole_pool_selection,
 )
 from selection.source_facets import EMPTY_FACET_VALUE, channel_identity_sort_key, pool_source_entries
-from signal_processing.workflow import (
-    save_node_ids,
-    sole_input_node_id,
-    validate_graph,
-    workflow_from_configs,
+from signal_processing.workflow import workflow_from_configs
+from signal_processing.workflow_readiness import (
+    ISSUE_INPUT_NOT_CHOSEN,
+    ISSUE_INVALID_GRAPH,
+    ISSUE_MULTIPLE_INPUTS,
+    ISSUE_NO_SAVE_BLOCKS,
+    ISSUE_NO_SAVE_CHANNELS,
+    ISSUE_SELECTION_MISSING,
+    resolve_chain_readiness,
 )
 
 from orchestration.batch._label import default_result_set_label
@@ -39,9 +43,19 @@ REFUSAL_NO_CHANNELS_CHOSEN = "no_channels_chosen"
 
 # Refusal reasons for plan_workflow_run
 REFUSAL_INVALID_GRAPH = "invalid_graph"
-REFUSAL_NOT_SOLE_INPUT = "not_sole_input"
+REFUSAL_MULTIPLE_INPUTS = "multiple_inputs_not_supported"
 REFUSAL_MISSING_SELECTION = "missing_selection"
-REFUSAL_NO_SAVE_NODES = "no_save_nodes"
+REFUSAL_NO_SAVE_BLOCKS = "no_save_blocks"
+REFUSAL_NO_SAVE_CHANNELS = "no_save_channels"
+
+_REFUSAL_BY_ISSUE = {
+    ISSUE_MULTIPLE_INPUTS: REFUSAL_MULTIPLE_INPUTS,
+    ISSUE_INVALID_GRAPH: REFUSAL_INVALID_GRAPH,
+    ISSUE_INPUT_NOT_CHOSEN: REFUSAL_MISSING_SELECTION,
+    ISSUE_SELECTION_MISSING: REFUSAL_MISSING_SELECTION,
+    ISSUE_NO_SAVE_BLOCKS: REFUSAL_NO_SAVE_BLOCKS,
+    ISSUE_NO_SAVE_CHANNELS: REFUSAL_NO_SAVE_CHANNELS,
+}
 
 
 @dataclass(frozen=True)
@@ -104,7 +118,7 @@ def plan_calculate_and_save(
     Decides whether the run can proceed given the loaded files and channel scope.
     If valid, constructs:
     - SaveSpec with channel scope and custom label
-    - Workflow from config with the SaveSpec on the terminal node
+    - Workflow from config with the SaveSpec on the terminal block
     - MeasurementSelection in MODE_EXPLICIT over the pool sources
     - The label for the result set
 
@@ -198,56 +212,25 @@ def plan_workflow_run(
     """
     Plan a Workflow-tab Run as pure data.
 
-    Validates graph connectivity and ports, ensures exactly one input node,
-    resolves the input node's selection (Whole Data Pool or named selection),
-    and verifies at least one node has a SaveSpec.
+    The chain's readiness (`resolve_chain_readiness`) decides: its first issue
+    is the refusal. A ready chain gets its input selection resolved (Whole Data
+    Pool or a named selection).
 
     Returns a WorkflowRunPlan with runnable=True and resolved selection, or
-    runnable=False with refusal_reason ("invalid_graph", "not_sole_input",
-    "missing_selection", or "no_save_nodes") and message.
+    runnable=False with refusal_reason ("invalid_graph",
+    "multiple_inputs_not_supported", "missing_selection", "no_save_blocks" or
+    "no_save_channels") and message.
     """
-    try:
-        validate_graph(workflow)
-    except ValueError as exc:
+    issues = resolve_chain_readiness(workflow, find_selection)
+    if issues:
         return WorkflowRunPlan(
-            runnable=False,
-            refusal_reason=REFUSAL_INVALID_GRAPH,
-            message=str(exc),
+            runnable=False, refusal_reason=_REFUSAL_BY_ISSUE[issues[0].code],
+            message=issues[0].text,
         )
 
-    try:
-        input_id = sole_input_node_id(workflow)
-    except ValueError as exc:
-        return WorkflowRunPlan(
-            runnable=False,
-            refusal_reason=REFUSAL_NOT_SOLE_INPUT,
-            message=str(exc),
-        )
-
-    input_node = workflow.node(input_id)
-    input_spec = input_node.input
-    if input_spec is not None and input_spec.whole_pool:
-        selection = whole_pool_selection()
-    else:
-        selection_name = input_spec.selection_name if input_spec else ""
-        selection = find_selection(selection_name) if selection_name else None
-
-    if selection is None:
-        return WorkflowRunPlan(
-            runnable=False,
-            refusal_reason=REFUSAL_MISSING_SELECTION,
-            message=(
-                "Pick what the input node runs over first "
-                "('Whole Data Pool', or a saved selection)."
-            ),
-        )
-
-    if not save_node_ids(workflow):
-        return WorkflowRunPlan(
-            runnable=False,
-            refusal_reason=REFUSAL_NO_SAVE_NODES,
-            message="Tick 'Save this node's output' on at least one block first.",
-        )
+    input_spec = next(block for block in workflow.blocks if block.is_input).input
+    selection = (whole_pool_selection() if input_spec.whole_pool
+                 else find_selection(input_spec.selection_name))
 
     return WorkflowRunPlan(
         selection=selection,

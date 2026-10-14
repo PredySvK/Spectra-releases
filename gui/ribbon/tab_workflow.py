@@ -42,11 +42,19 @@ class TabWorkflow(QWidget):
 
         self.btn_run = make_ribbon_button(
             "Run", "play", kind="commit", big=True,
-            tooltip="Run the selected workflow over its input node's selection, "
-                    "writing one result set per block ticked to save",
+            tooltip="Run all chains sequentially, each over its Input selection; "
+                    "skip refused chains and save each marked block's result set",
         )
+        self.btn_run_chain = make_ribbon_button(
+            "Run\nChain", "play", kind="commit", big=True,
+            tooltip="Select a block, then run only its connected chain over its Input selection. "
+                    "Also available by right-clicking a block → Run Chain.",
+        )
+        self.btn_run.setObjectName("WorkflowRunButton")
+        self.btn_run_chain.setEnabled(False)
         run_group = RibbonGroup("Run")
         run_group.add(self.btn_run)
+        run_group.add(self.btn_run_chain)
         layout.addWidget(run_group)
         layout.addWidget(vertical_separator())
 

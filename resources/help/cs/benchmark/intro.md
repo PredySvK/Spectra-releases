@@ -4,7 +4,7 @@ Benchmark měří, jak dlouho Spectra čte měření, počítá analýzy a ve va
 
 ## Výběr varianty
 
-Otevřete záložku **Settings** a zvolte **Run Benchmark…**. Dialog má zpočátku vybranou variantu **Full**.
+Otevřete záložku **Project** a zvolte **Tools › Run Benchmark…**. Dialog má zpočátku vybranou variantu **Full**.
 
 | Varianta | Co měří |
 |---|---|

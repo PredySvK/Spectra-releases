@@ -22,13 +22,7 @@ from PySide6.QtGui import QIcon, QImage, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 
 from core.asset_paths import resource_path
-
-# Icon foreground per button background. "on_dark" is the ribbon's own grey;
-# "on_accent" is any coloured (primary/commit/danger) button, where the glyph
-# has to stay white to read.
-COLOR_ON_DARK = "#e6e6e6"
-COLOR_ON_ACCENT = "#ffffff"
-COLOR_DISABLED = "#6f6f6f"
+from gui.appearance import APP_TOKENS
 
 
 @lru_cache(maxsize=256)
@@ -58,8 +52,8 @@ def ribbon_icon(name: str, *, on_accent: bool = False, size: int = 20) -> QIcon:
     for the plain ribbon. `size` is the pixmap side in logical px -- the icon
     carries a normal and a dimmed (disabled) pixmap so Qt greys it correctly.
     """
-    color = COLOR_ON_ACCENT if on_accent else COLOR_ON_DARK
+    color = APP_TOKENS.icon_on_accent if on_accent else APP_TOKENS.icon_on_ribbon
     icon = QIcon()
     icon.addPixmap(_rendered(name, color, size), QIcon.Mode.Normal)
-    icon.addPixmap(_rendered(name, COLOR_DISABLED, size), QIcon.Mode.Disabled)
+    icon.addPixmap(_rendered(name, APP_TOKENS.icon_disabled, size), QIcon.Mode.Disabled)
     return icon

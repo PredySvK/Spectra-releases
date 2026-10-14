@@ -15,6 +15,8 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtWidgets import QApplication, QWidget, QHBoxLayout, QLabel, QTabBar, QToolButton
 
+from gui.appearance import APP_TOKENS
+
 
 # Segoe MDL2 Assets glyphs -- the same font the OS caption buttons use.
 _GLYPH_MIN = ""
@@ -30,9 +32,11 @@ QToolButton {
     font-size: 10px;
     color: palette(window-text);
 }
-QToolButton:hover { background: rgba(128, 128, 128, 60); }
-QToolButton#closeButton:hover { background: #c42b1c; color: white; }
-"""
+QToolButton:hover { background: palette(midlight); }
+""" + (
+    f"QToolButton#closeButton:hover {{ background: {APP_TOKENS.title_close_hover};"
+    f" color: {APP_TOKENS.icon_on_accent}; }}"
+)
 
 
 class DraggableTabBar(QTabBar):

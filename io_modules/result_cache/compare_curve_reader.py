@@ -114,13 +114,12 @@ def read_result_curves(
                         try:
                             blocks = reader.read_blocks(source_id, label)
                         except KeyError:
-                            # list_sources() found this name (possibly via its
-                            # backward-compat attribute fallback) but the group
-                            # it points to is gone -- a cache file written
-                            # before a layout change. Skip, do not crash Apply.
+                            # The manifest lists this channel but its shard or
+                            # group is gone (a deleted or damaged .h5 file).
+                            # Skip, do not crash Apply.
                             warnings.append(
                                 f"Apply skipped '{file_display_name}' · {label} -- "
-                                "unreadable in this result-cache file (old format)."
+                                "unreadable in this result-cache file."
                             )
                             continue
 

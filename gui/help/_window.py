@@ -34,6 +34,8 @@ from view_models.help import (
     resolve_help_link,
     resolve_help_topic,
 )
+from gui.appearance import APP_TOKENS, THEME
+
 
 _LANGUAGE_KEY = "help_language"
 _HIDE_AT_STARTUP_KEY = "help_hide_at_startup"
@@ -156,7 +158,7 @@ class HelpWindow(QWidget):
         self.btn_find_next.clicked.connect(lambda: self.find_next())
 
         self.find_label = QLabel("")
-        self.find_label.setStyleSheet("color: #888;")
+        self.find_label.setStyleSheet(f"color: {APP_TOKENS.text_subtle};")
 
         self.view = QWebEngineView()
         self.view.setPage(_HelpPage(self))
@@ -218,7 +220,7 @@ class HelpWindow(QWidget):
             self._update_nav_buttons()
         self._topic_id = topic_id
         self._select_in_tree(topic_id)
-        page = build_help_page(topic_id, self._language, fragment)
+        page = build_help_page(topic_id, self._language, fragment, theme=THEME)
         self._page_file.write_text(page.html, encoding="utf-8")
         self.view.load(QUrl.fromLocalFile(str(self._page_file)))
 
@@ -398,7 +400,7 @@ def show_help_at_startup(owner: QWidget) -> None:
     settings = QSettings(SETTINGS_ORGANIZATION, SETTINGS_SHARED)
     if settings.value(_HIDE_AT_STARTUP_KEY, False, type=bool):
         return
-    show_help("workflow", owner)
+    show_help("quick_start/overview", owner)
     _window.cb_dont_show_again.show()
 
 

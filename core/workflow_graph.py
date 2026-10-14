@@ -2,29 +2,29 @@
 # FILE: core/workflow_graph.py
 # =====================================================================
 """
-`Workflow` -- a block diagram (a DAG) of processing nodes, runnable over a whole
+`Workflow` -- a block diagram (a DAG) of processing blocks, runnable over a whole
 dataset (ARCHITECTURE_DECISIONS 1.6, Epic P).
 
 This replaces `core/recipe.py`. A recipe was an *ordered chain*: the wire between
 two steps was their adjacency in a list. The target picture the user described --
-Simulink / ANSYS Workbench: branching, per-node settings, per-node saving of
+Simulink / ANSYS Workbench: branching, per-block settings, per-block saving of
 intermediate results -- is a graph, and a linear chain is only its degenerate
 case. Keeping a chain type alongside a graph type would grow two code paths that
 drift apart in half a year, which is exactly what merging "Calculate & Save Data"
 in phase 7 removed. So there is one model, and the ribbon's quick "Compute Result
-Set..." path is built as a throwaway two-node graph (`input -> block`), not a
+Set..." path is built as a throwaway two-block graph (`input -> block`), not a
 second model.
 
 Pure data: no I/O, no Qt, no numpy, JSON round-trippable, so a project can store
 one (`.nvhproject`) and a workflow file can carry one later. Two halves live
 outside this file:
 
-- turning node types into DSP calls, plus the *type-checking of a wire* (does the
+- turning block types into DSP calls, plus the *type-checking of a wire* (does the
   source's kind fit the target port?) -- `signal_processing/workflow.py`, which
   needs `BLOCKS` and numpy but still no I/O. That is why `__post_init__` here only
-  checks graph *self-consistency* (unique node ids, edges whose endpoints exist):
+  checks graph *self-consistency* (unique block ids, wires whose endpoints exist):
   the wire compatibility check needs `BLOCKS` and cannot live in core/.
-- feeding the input nodes real measurements off disk -- the runner in `gui/`
+- feeding the input blocks real measurements off disk -- the runner in `gui/`
   (1.6: reading files is `io_modules/`, so the runner stands *above*
   `signal_processing/` and hands it already-loaded blocks; decision 2).
 
@@ -37,13 +37,14 @@ All internal documentation strings and variable labels are standardly written
 in English.
 """
 from dataclasses import dataclass, field, replace
+from math import isfinite
 from types import MappingProxyType
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 from core.frozen import freeze_identities, freeze_range_map, freeze_str_map
 from core.models import ChannelIdentity
 
-# The reserved `block_type` of an input node. An input node is a node -- it takes
+# The reserved `block_type` of an input block. An input block is a block -- it takes
 # part in topological order and carries a `SaveSpec` like any other -- but it has
 # no adapter in `BLOCKS`; the runner resolves it to loaded measurement blocks
 # (decision 2). Later (phase 7E) it will also stand for a finished `.h5` result
@@ -56,8 +57,8 @@ class PortBinding:
     """
     How a block's non-primary input port is fed.
 
-    A block's primary port is wired to an incoming edge. A second port -- order
-    tracking's tacho -- is not another node's output; it is a raw channel of the
+    A block's primary port is wired to an incoming wire. A second port -- order
+    tracking's tacho -- is not another block's output; it is a raw channel of the
     same measurement the graph is running over. The binding names which channel
     that is; the runner resolves it per file at run time (1.12).
 
@@ -76,7 +77,7 @@ class PortBinding:
 @dataclass(frozen=True)
 class InputSpec:
     """
-    What an input node reads. Either a named `MeasurementSelection` stored in the
+    What an input block reads. Either a named `MeasurementSelection` stored in the
     project (decision 2 -- the selection itself is not embedded, it is a
     project-owned decision in `ProjectSession` and the workflow references it by
     name), or `whole_pool=True`: every measurement currently in the Data Pool,
@@ -103,8 +104,8 @@ class InputSpec:
 @dataclass(frozen=True)
 class SaveSpec:
     """
-    Which channels and measurements of a marked node's output get written to its
-    result set (decision 4, 1.6). Saving is opt-in per node: a node with no
+    Which channels and measurements of a marked block's output get written to its
+    result set (decision 4, 1.6). Saving is opt-in per block: a block with no
     `SaveSpec` produces nothing on disk, only an in-memory block the graph feeds
     downstream.
 
@@ -119,10 +120,10 @@ class SaveSpec:
     same distinction `MeasurementSelection` and `ResultSetRef` make: an empty set
     means *no* channels.
 
-    `label` is what the result set written at this node is called on disk. Blank
+    `label` is what the result set written at this block is called on disk. Blank
     lets the runner derive one (the run's own name for a single-save graph, that
-    name plus the node id when several nodes save): a branching graph writes one
-    folder per marked node, so each needs its own name, and 7C's panel is where
+    name plus the block id when several blocks save): a branching graph writes one
+    folder per marked block, so each needs its own name, and 7C's panel is where
     the user types it.
     """
     label: str = ""
@@ -170,25 +171,25 @@ class SaveSpec:
 
 
 @dataclass(frozen=True)
-class WorkflowNode:
+class WorkflowBlock:
     """
-    One node of the graph.
+    One block of the graph.
 
-    A *block node* has `block_type` keying into `signal_processing.workflow.BLOCKS`,
+    A *workflow block* has `block_type` keying into `signal_processing.workflow.BLOCKS`,
     a flat JSON-safe `params` mirror of that block's `core/dsp_configs.py`
-    dataclass (the node carries its own copy so the engine never reads the ribbon
-    -- 1.12 pitfall 1, and decision 1: from the moment a node is saved the ribbon
+    dataclass (the block carries its own copy so the engine never reads the ribbon
+    -- 1.12 pitfall 1, and decision 1: from the moment a block is saved the ribbon
     is never consulted again), `bindings` for its non-primary ports, and an
     `algorithm_version` stamped at authoring time (a mismatch on a later run is a
     warning, not a silent recompute -- 1.12 pitfall 5).
 
-    An *input node* has `block_type == INPUT_BLOCK_TYPE` and an `input` spec; its
+    An *input block* has `block_type == INPUT_BLOCK_TYPE` and an `input` spec; its
     `params` / `bindings` are unused.
 
-    `save` is opt-in per node (decision 4). `None` means this node's output is
+    `save` is opt-in per block (decision 4). `None` means this block's output is
     only an intermediate the graph passes downstream.
     """
-    node_id: str
+    block_id: str
     block_type: str = ""
     params: Mapping[str, Any] = field(default_factory=dict)
     bindings: Mapping[str, PortBinding] = field(default_factory=dict)
@@ -197,8 +198,8 @@ class WorkflowNode:
     input: Optional[InputSpec] = None
 
     def __post_init__(self):
-        if not self.node_id:
-            raise ValueError("A workflow node needs a non-empty id.")
+        if not self.block_id:
+            raise ValueError("A workflow block needs a non-empty id.")
         object.__setattr__(self, "params", MappingProxyType(dict(self.params)))
         object.__setattr__(self, "bindings", MappingProxyType({
             str(name): binding for name, binding in dict(self.bindings).items()
@@ -210,7 +211,7 @@ class WorkflowNode:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "node_id": self.node_id,
+            "node_id": self.block_id,
             "block_type": self.block_type,
             "params": dict(self.params),
             "bindings": {name: binding.to_dict() for name, binding in self.bindings.items()},
@@ -220,13 +221,13 @@ class WorkflowNode:
         }
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "WorkflowNode":
+    def from_dict(cls, data: Mapping[str, Any]) -> "WorkflowBlock":
         data = data or {}
         version = data.get("algorithm_version")
         save = data.get("save")
         source = data.get("input")
         return cls(
-            node_id=str(data.get("node_id") or ""),
+            block_id=str(data.get("node_id") or ""),
             block_type=str(data.get("block_type") or ""),
             params=dict(data.get("params") or {}),
             bindings={
@@ -240,28 +241,28 @@ class WorkflowNode:
 
 
 @dataclass(frozen=True)
-class WorkflowEdge:
+class WorkflowWire:
     """
-    A wire from `from_node`'s output into `to_node`'s port `to_port` (empty means
+    A wire from `from_block`'s output into `to_block`'s port `to_port` (empty means
     the primary port).
 
-    There is no `from_port`: a `multi_output` node (order tracking emits one block
-    per order) is not allowed an outgoing edge -- nothing can consume a list --
-    so an edge always starts at a single-output node.
+    There is no `from_port`: a `multi_output` block (order tracking emits one block
+    per order) is not allowed an outgoing wire -- nothing can consume a list --
+    so a wire always starts at a single-output block.
     """
-    from_node: str
-    to_node: str
+    from_block: str
+    to_block: str
     to_port: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"from_node": self.from_node, "to_node": self.to_node, "to_port": self.to_port}
+        return {"from_node": self.from_block, "to_node": self.to_block, "to_port": self.to_port}
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "WorkflowEdge":
+    def from_dict(cls, data: Mapping[str, Any]) -> "WorkflowWire":
         data = data or {}
         return cls(
-            from_node=str(data.get("from_node") or ""),
-            to_node=str(data.get("to_node") or ""),
+            from_block=str(data.get("from_node") or ""),
+            to_block=str(data.get("to_node") or ""),
             to_port=str(data.get("to_port") or ""),
         )
 
@@ -269,59 +270,76 @@ class WorkflowEdge:
 @dataclass(frozen=True)
 class Workflow:
     """
-    A named block diagram. `nodes` order is authoring order only (for display) --
-    the data flow is `edges`, never adjacency.
+    A named block diagram. `blocks` order is authoring order only (for display) --
+    the data flow is `wires`, never adjacency.
 
-    `__post_init__` checks only what can be checked without `BLOCKS`: node ids are
-    unique, and every edge endpoint names a node that exists. Cycle detection,
+    `layout` stores optional canvas positions separately from processing blocks
+    and result identity. Missing positions use the view-model's automatic placement.
+
+    `__post_init__` checks only what can be checked without `BLOCKS`: block ids are
+    unique, and every wire endpoint names a block that exists. Cycle detection,
     port type-checking and "every mandatory port is fed" are `validate_graph` in
     `signal_processing/workflow.py`.
     """
     name: str = ""
-    nodes: Tuple[WorkflowNode, ...] = ()
-    edges: Tuple[WorkflowEdge, ...] = ()
+    blocks: Tuple[WorkflowBlock, ...] = ()
+    wires: Tuple[WorkflowWire, ...] = ()
+    layout: Mapping[str, Tuple[float, float]] = field(default_factory=dict)
 
     def __post_init__(self):
-        object.__setattr__(self, "nodes", tuple(self.nodes))
-        object.__setattr__(self, "edges", tuple(self.edges))
+        object.__setattr__(self, "blocks", tuple(self.blocks))
+        object.__setattr__(self, "wires", tuple(self.wires))
 
         seen: set = set()
-        for node in self.nodes:
-            if node.node_id in seen:
-                raise ValueError(f"Duplicate workflow node id '{node.node_id}'.")
-            seen.add(node.node_id)
+        for workflow_block in self.blocks:
+            if workflow_block.block_id in seen:
+                raise ValueError(f"Duplicate workflow block id '{workflow_block.block_id}'.")
+            seen.add(workflow_block.block_id)
 
-        for edge in self.edges:
-            for endpoint, side in ((edge.from_node, "from"), (edge.to_node, "to")):
+        positions = {}
+        for block_id, position in self.layout.items():
+            if block_id not in seen:
+                raise ValueError(f"Layout references unknown block '{block_id}'.")
+            x, y = position
+            x, y = float(x), float(y)
+            if not isfinite(x) or not isfinite(y):
+                raise ValueError("Layout positions must be finite.")
+            positions[block_id] = (x, y)
+        object.__setattr__(self, "layout", MappingProxyType(positions))
+
+        for wire in self.wires:
+            for endpoint, side in ((wire.from_block, "from"), (wire.to_block, "to")):
                 if endpoint not in seen:
                     raise ValueError(
-                        f"Edge {side} unknown node '{endpoint}'. "
-                        f"Known nodes: {', '.join(sorted(seen)) or '(none)'}."
+                        f"Wire {side} unknown block '{endpoint}'. "
+                        f"Known blocks: {', '.join(sorted(seen)) or '(none)'}."
                     )
 
     @property
-    def node_ids(self) -> Tuple[str, ...]:
-        return tuple(node.node_id for node in self.nodes)
+    def block_ids(self) -> Tuple[str, ...]:
+        return tuple(workflow_block.block_id for workflow_block in self.blocks)
 
-    def node(self, node_id: str) -> WorkflowNode:
-        for node in self.nodes:
-            if node.node_id == node_id:
-                return node
-        raise KeyError(node_id)
+    def block(self, block_id: str) -> WorkflowBlock:
+        for workflow_block in self.blocks:
+            if workflow_block.block_id == block_id:
+                return workflow_block
+        raise KeyError(block_id)
 
-    def incoming(self, node_id: str) -> Tuple[WorkflowEdge, ...]:
-        """Edges feeding `node_id`, in authoring order."""
-        return tuple(edge for edge in self.edges if edge.to_node == node_id)
+    def incoming(self, block_id: str) -> Tuple[WorkflowWire, ...]:
+        """Wires feeding `block_id`, in authoring order."""
+        return tuple(wire for wire in self.wires if wire.to_block == block_id)
 
-    def outgoing(self, node_id: str) -> Tuple[WorkflowEdge, ...]:
-        """Edges leaving `node_id`, in authoring order."""
-        return tuple(edge for edge in self.edges if edge.from_node == node_id)
+    def outgoing(self, block_id: str) -> Tuple[WorkflowWire, ...]:
+        """Wires leaving `block_id`, in authoring order."""
+        return tuple(wire for wire in self.wires if wire.from_block == block_id)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "name": self.name,
-            "nodes": [node.to_dict() for node in self.nodes],
-            "edges": [edge.to_dict() for edge in self.edges],
+            "nodes": [workflow_block.to_dict() for workflow_block in self.blocks],
+            "edges": [wire.to_dict() for wire in self.wires],
+            **({"layout": {key: list(position) for key, position in self.layout.items()}}
+               if self.layout else {}),
         }
 
     @classmethod
@@ -329,53 +347,95 @@ class Workflow:
         data = data or {}
         return cls(
             name=str(data.get("name") or ""),
-            nodes=tuple(WorkflowNode.from_dict(raw) for raw in (data.get("nodes") or ())),
-            edges=tuple(WorkflowEdge.from_dict(raw) for raw in (data.get("edges") or ())),
+            blocks=tuple(WorkflowBlock.from_dict(raw) for raw in (data.get("nodes") or ())),
+            wires=tuple(WorkflowWire.from_dict(raw) for raw in (data.get("edges") or ())),
+            layout=data.get("layout") or {},
         )
 
 
 # -- immutable edit helpers ------------------------------------------------------
+def resolve_workflow_chains(workflow: Workflow) -> Tuple[Workflow, ...]:
+    """Derive connected parts, preserving authoring order and stored positions.
+
+    Direction does not affect chain membership. A wire joining two Inputs makes
+    one chain; whether it can run is the orchestration layer's decision.
+    """
+    neighbours = {block_id: set() for block_id in workflow.block_ids}
+    for wire in workflow.wires:
+        neighbours[wire.from_block].add(wire.to_block)
+        neighbours[wire.to_block].add(wire.from_block)
+    remaining = set(workflow.block_ids)
+    groups = []
+    for block_id in workflow.block_ids:
+        if block_id not in remaining:
+            continue
+        members = set()
+        pending = [block_id]
+        while pending:
+            current = pending.pop()
+            if current in members:
+                continue
+            members.add(current)
+            pending.extend(neighbours[current] - members)
+        remaining.difference_update(members)
+        groups.append(members)
+    if len(groups) == 1:
+        return (workflow,)
+    chains = []
+    for index, members in enumerate(groups, 1):
+        blocks = tuple(block for block in workflow.blocks if block.block_id in members)
+        inputs = ", ".join(block.block_id for block in blocks if block.is_input) or blocks[0].block_id
+        chains.append(Workflow(
+            name=f"{workflow.name} - Chain {index} ({inputs})",
+            blocks=blocks,
+            wires=tuple(wire for wire in workflow.wires if wire.from_block in members),
+            layout={key: position for key, position in workflow.layout.items() if key in members},
+        ))
+    return tuple(chains)
+
+
 # A Workflow is frozen the whole way down, so a graph editor (phase 7C tree,
 # phase 8 canvas) makes changes by rebuilding: each helper returns a new Workflow.
 # They stay here, on the pure-data model, because none needs `BLOCKS` -- adding a
-# *block* node with its default bindings and version stamp does, and that one
-# lives in `signal_processing/workflow.py` (`new_block_node`).
+# workflow block with its default bindings and version stamp does, and that one
+# lives in `signal_processing/workflow.py` (`new_workflow_block`).
 
 
-def new_workflow(name: str, *, input_node_id: str = "input") -> "Workflow":
-    """A fresh graph: one input node defaulting to the whole Data Pool, no blocks
+def new_workflow(name: str, *, input_block_id: str = "input") -> "Workflow":
+    """A fresh graph: one input block defaulting to the whole Data Pool, no blocks
     yet. The user adds blocks afterwards and can narrow the input to a saved
     selection -- but a fresh workflow is runnable without authoring one first."""
     return Workflow(
         name=name,
-        nodes=(WorkflowNode(input_node_id, INPUT_BLOCK_TYPE, input=InputSpec(whole_pool=True)),),
-        edges=(),
+        blocks=(WorkflowBlock(input_block_id, INPUT_BLOCK_TYPE, input=InputSpec(whole_pool=True)),),
+        wires=(),
     )
 
 
-def with_node(workflow: "Workflow", node: "WorkflowNode") -> "Workflow":
-    return Workflow(name=workflow.name, nodes=workflow.nodes + (node,), edges=workflow.edges)
+def with_block(workflow: "Workflow", workflow_block: "WorkflowBlock") -> "Workflow":
+    return replace(workflow, blocks=workflow.blocks + (workflow_block,))
 
 
-def with_edge(workflow: "Workflow", edge: "WorkflowEdge") -> "Workflow":
-    return Workflow(name=workflow.name, nodes=workflow.nodes, edges=workflow.edges + (edge,))
+def with_wire(workflow: "Workflow", wire: "WorkflowWire") -> "Workflow":
+    return replace(workflow, wires=workflow.wires + (wire,))
 
 
-def with_node_replaced(workflow: "Workflow", node_id: str, **changes: Any) -> "Workflow":
-    """Return a copy of `workflow` with `dataclasses.replace(node, **changes)`
-    applied to the node of that id (e.g. `params=...` or `input=...`)."""
-    nodes = tuple(
-        replace(node, **changes) if node.node_id == node_id else node
-        for node in workflow.nodes
+def with_block_replaced(workflow: "Workflow", block_id: str, **changes: Any) -> "Workflow":
+    """Return a copy of `workflow` with `dataclasses.replace(block, **changes)`
+    applied to the block of that id (e.g. `params=...` or `input=...`)."""
+    blocks = tuple(
+        replace(workflow_block, **changes) if workflow_block.block_id == block_id else workflow_block
+        for workflow_block in workflow.blocks
     )
-    return Workflow(name=workflow.name, nodes=nodes, edges=workflow.edges)
+    return replace(workflow, blocks=blocks)
 
 
-def without_node(workflow: "Workflow", node_id: str) -> "Workflow":
-    """Drop a node and every edge touching it."""
-    return Workflow(
-        name=workflow.name,
-        nodes=tuple(n for n in workflow.nodes if n.node_id != node_id),
-        edges=tuple(e for e in workflow.edges
-                    if e.from_node != node_id and e.to_node != node_id),
+def without_block(workflow: "Workflow", block_id: str) -> "Workflow":
+    """Drop a block and every wire touching it."""
+    return replace(
+        workflow,
+        blocks=tuple(n for n in workflow.blocks if n.block_id != block_id),
+        wires=tuple(e for e in workflow.wires
+                    if e.from_block != block_id and e.to_block != block_id),
+        layout={key: position for key, position in workflow.layout.items() if key != block_id},
     )

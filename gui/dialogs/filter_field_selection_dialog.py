@@ -81,8 +81,10 @@ from gui.dialogs.priority_grid import PriorityGrid
 from selection.trace_filter import (
     build_column_for_key, builtin_column_cardinalities, schema_field_group,
 )
+from gui.appearance import APP_TOKENS
 
-_GREYED_STYLE = "color: #808080;"
+
+_GREYED_STYLE = f"color: {APP_TOKENS.text_muted};"
 
 # Display label per widget id -- the ids and their picker order are
 # core.filter_card_config.WIDGETS' to own, this only names them for the combo.

@@ -12,8 +12,9 @@ from ._plan import (
     REFUSAL_NO_CHANNELS_CHOSEN,
     REFUSAL_NO_LOADED_FOLDER,
     REFUSAL_NO_MATCHING_CHANNELS,
-    REFUSAL_NO_SAVE_NODES,
-    REFUSAL_NOT_SOLE_INPUT,
+    REFUSAL_NO_SAVE_BLOCKS,
+    REFUSAL_NO_SAVE_CHANNELS,
+    REFUSAL_MULTIPLE_INPUTS,
     CalculateAndSavePlan,
     WorkflowRunPlan,
     plan_calculate_and_save,
@@ -23,9 +24,18 @@ from ._plan import (
 from ._result_set_sink import ResultSetSink
 from ._batch_plan import BatchPlan, plan_batch
 from ._workflow_run import BatchOutcome, run_batch, supersede_running_batch
+from ._chains import (
+    WorkflowChainPlan, WorkflowChainBatch, plan_workflow_chains,
+    plan_chain_batches, run_chain_batches,
+)
 
 __all__ = [
     "BatchOutcome",
+    "WorkflowChainPlan",
+    "WorkflowChainBatch",
+    "plan_workflow_chains",
+    "plan_chain_batches",
+    "run_chain_batches",
     "BatchPlan",
     "CalculateAndSavePlan",
     "REFUSAL_INVALID_GRAPH",
@@ -33,8 +43,9 @@ __all__ = [
     "REFUSAL_NO_CHANNELS_CHOSEN",
     "REFUSAL_NO_LOADED_FOLDER",
     "REFUSAL_NO_MATCHING_CHANNELS",
-    "REFUSAL_NO_SAVE_NODES",
-    "REFUSAL_NOT_SOLE_INPUT",
+    "REFUSAL_NO_SAVE_BLOCKS",
+    "REFUSAL_NO_SAVE_CHANNELS",
+    "REFUSAL_MULTIPLE_INPUTS",
     "ResultSetSink",
     "WorkflowRunPlan",
     "default_result_set_label",

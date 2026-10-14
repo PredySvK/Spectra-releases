@@ -8,8 +8,7 @@ the Project ribbon and on the Welcome screen; all three go through this model so
 a bare list of path strings never creeps back in.
 
 `last_opened` is a UTC ISO-8601 string supplied by the caller (see ADR: clocks
-live in the shell, not the data). It may be empty -- entries migrated from the
-old format, which was just a JSON array of paths, have no timestamp.
+live in the shell, not the data).
 """
 from __future__ import annotations
 
@@ -39,9 +38,6 @@ class RecentProject:
 
     @classmethod
     def from_entry(cls, entry) -> Optional["RecentProject"]:
-        """Tolerates both the current dict form and the old bare-path-string form."""
-        if isinstance(entry, str):
-            return cls(path=entry) if entry else None
         if isinstance(entry, dict) and entry.get("path"):
             return cls(path=str(entry["path"]), last_opened=str(entry.get("last_opened", "")))
         return None

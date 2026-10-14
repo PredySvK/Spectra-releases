@@ -272,6 +272,7 @@ class Workspace(AnalysisTabsMixin):
             if dialog.exec():
                 ctx.set_cursor_config(dialog.result_config())
                 ctx.set_highlight_other_opacity(dialog.result_other_opacity())
+                self.apply_highlight_opacity()
         finally:
             dialog.deleteLater()
 
@@ -314,6 +315,13 @@ class Workspace(AnalysisTabsMixin):
                 dock = self.tabs.widget(idx)
                 if hasattr(dock, "clear_highlight"):
                     dock.clear_highlight()
+
+    def apply_highlight_opacity(self) -> None:
+        """Update already highlighted curves in every open graph."""
+        for idx in range(self.tabs.count()):
+            dock = self.tabs.widget(idx)
+            if hasattr(dock, "refresh_highlight"):
+                dock.refresh_highlight()
 
     def toggle_highlight(self) -> None:
         """The `H` shortcut: flips the ribbon button, which carries the state."""
@@ -989,7 +997,7 @@ class Workspace(AnalysisTabsMixin):
         time-record replacement would relabel a spectrum / order-cut dock
         as a time record while the curve stays put, audit 02/9.1).
 
-        Lives here so UnitSettingsDialog no longer walks
+        Lives here so the Settings window no longer walks
         main_window.workspace_tabs and replaces time records itself.
         """
         for idx in range(self.tabs.count()):
@@ -1038,14 +1046,17 @@ class Workspace(AnalysisTabsMixin):
         plots otherwise stay on screen against a project that has no channel
         for any of them -- the same trap as a standing pool, one level up.
         See ProjectDocumentHandler.new_project / open_project.
+
+        Never marks the project dirty: Open runs this after the new project is
+        loaded, and the tabs closed here belong to the outgoing one (#640).
         """
         placeholder = self.placeholder_graph
         for index in range(self.tabs.count() - 1, -1, -1):
             if self.tabs.widget(index) is placeholder:
                 continue
-            self.close_specific_tab(index)
+            self.close_specific_tab(index, mark_dirty=False)
 
-    def close_specific_tab(self, index: int):
+    def close_specific_tab(self, index: int, *, mark_dirty: bool = True):
         if index < 0 or index >= self.tabs.count():
             return
         target_widget = self.tabs.widget(index)
@@ -1059,7 +1070,7 @@ class Workspace(AnalysisTabsMixin):
 
         self.tabs.removeTab(index)
 
-        if isinstance(target_widget, (GraphDock, SpectrogramDock)):
+        if mark_dirty and isinstance(target_widget, (GraphDock, SpectrogramDock)):
             # Closing a tab changes what capture_open_tabs_spec would write on
             # the next Save just as much as opening one does -- see
             # AnalysisTabsMixin.open_acc_spectrum_tab.

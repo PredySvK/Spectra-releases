@@ -27,14 +27,20 @@ in English.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from core.jobs import JobState, job_step
 from io_modules.pool_ingest_plan import (
     build_ingest_folder_map, derive_auto_tags, find_parent_metadata_files,
 )
-from io_modules.measurement_files import canonical_path, is_measurement_file
+from io_modules.measurement_files import (
+    canonical_path, discover_measurement_files, resolve_imported_result_reader, is_measurement_file,
+)
+from io_modules.project_store import build_sources_by_path, read_root_directories
+from orchestration.data_pool._source_amplitude import (
+    SourceAmplitudeAsker, plan_source_amplitude_questions, resolve_file_amplitudes,
+)
 from orchestration.jobs import JobRunner
 from session.data_pool import IntegrateResult
 from session.project import apply_setup_label
@@ -50,6 +56,10 @@ class IngestPlan:
     `skipped_files` are files the user picked that no reader recognises -- a
     README or the metadata Excel offered by the browser on suffix alone; the
     run only says so in the log.
+
+    `imported_files` is what the Source amplitude question is asked about: the
+    Imported-result files the run reads, by the reader that opens them. A
+    folder re-scan lists only the files the project does not know yet.
     """
 
     directories: Tuple[str, ...] = ()
@@ -57,6 +67,7 @@ class IngestPlan:
     auto_tag: Dict[str, str] = field(default_factory=dict)
     parent_excel: Dict[str, str] = field(default_factory=dict)
     skipped_files: Tuple[str, ...] = ()
+    imported_files: Dict[str, Tuple[str, ...]] = field(default_factory=dict)
 
     def __bool__(self) -> bool:
         return bool(self.directories)
@@ -74,6 +85,13 @@ def plan_pool_ingest(paths, folder_files: Optional[dict] = None) -> IngestPlan:
     path selection it runs on a worker (`PoolIngestUseCase.start_selection`).
     """
     folder_files = folder_files if folder_files is not None else build_ingest_folder_map(paths)
+    imported: Dict[str, list] = {}
+    for directory, files in folder_files.items():
+        # A whole folder (None) is every file in it; a picked set is just those.
+        for path in sorted(discover_measurement_files(directory) if files is None else files):
+            reader = resolve_imported_result_reader(path)
+            if reader is not None:
+                imported.setdefault(reader, []).append(path)
     return IngestPlan(
         directories=tuple(folder_files.keys()),
         only_files=dict(folder_files),
@@ -81,6 +99,31 @@ def plan_pool_ingest(paths, folder_files: Optional[dict] = None) -> IngestPlan:
         parent_excel=find_parent_metadata_files(paths),
         skipped_files=tuple(path for path in paths
                             if os.path.isfile(path) and not is_measurement_file(path)),
+        imported_files={reader: tuple(files) for reader, files in imported.items()},
+    )
+
+
+def plan_pool_refresh(directories, project_path, roots, sources) -> IngestPlan:
+    """
+    The plan of a folder re-scan that may ask the Source amplitude question.
+
+    A re-scan only asks about Imported-result files the project does not know
+    yet; a file it knows -- in the pool or taken out of it -- keeps its answer
+    and is never asked again. `roots` and `sources` are copies taken on the
+    calling thread; listing the folders and resolving the roots is disk work,
+    so this runs on a worker (`PoolIngestUseCase.start_refresh`).
+    """
+    known = build_sources_by_path(roots, sources, read_root_directories(project_path, roots))
+    imported: Dict[str, list] = {}
+    for directory in directories:
+        for path in discover_measurement_files(directory):
+            reader = resolve_imported_result_reader(path)
+            if reader is not None and canonical_path(path) not in known:
+                imported.setdefault(reader, []).append(path)
+    return IngestPlan(
+        directories=tuple(directories),
+        only_files={directory: set() for directory in directories},
+        imported_files={reader: tuple(files) for reader, files in imported.items()},
     )
 
 
@@ -120,6 +163,9 @@ class IngestOutcome:
     report_failures: bool = False
     ask_for_setup: bool = False
     added_paths: Tuple[str, ...] = ()
+    # The user cancelled the Source amplitude question: nothing was added, and
+    # the run is a decision, not a failure to retry.
+    declined: bool = False
 
 
 class PoolIngestUseCase:
@@ -157,6 +203,7 @@ class PoolIngestUseCase:
 
     def start_selection(self, paths, *, quiet: bool = False,
                         admit_unknown: bool = False, ask_for_setup: bool = False,
+                        ask_source_amplitude: Optional[SourceAmplitudeAsker] = None,
                         on_folder: Optional[Callable[[FolderReport], None]] = None,
                         on_finished: Optional[Callable[[IngestOutcome], None]] = None) -> int:
         """
@@ -166,7 +213,45 @@ class PoolIngestUseCase:
         `.txt` files, which is disk work the calling (GUI) thread must not do
         (#507). It is a job of its own under the same `slot_key`, so a second
         Add supersedes a run still planning exactly as one already reading.
+
+        `ask_source_amplitude`, when given, is called once the plan is known and
+        before anything is read, with one question per Imported-result reader
+        that has files in it; returning None cancels the whole Add.
         """
+        return self._start_planned(
+            "Add to Data Pool - finding measurements", "the selection",
+            plan_pool_ingest, [list(paths)],
+            quiet=quiet, admit_unknown=admit_unknown, ask_for_setup=ask_for_setup,
+            ask_source_amplitude=ask_source_amplitude,
+            on_folder=on_folder, on_finished=on_finished)
+
+    def start_refresh(self, directories, *, quiet: bool = False,
+                      ask_source_amplitude: Optional[SourceAmplitudeAsker] = None,
+                      on_folder: Optional[Callable[[FolderReport], None]] = None,
+                      on_finished: Optional[Callable[[IngestOutcome], None]] = None) -> int:
+        """
+        Re-reads folders already in the pool, asking about files the project
+        does not know yet before they join it.
+
+        Like `start_selection` it plans on a worker first: telling a new
+        Imported-result file from a known one means listing the folder and
+        reading generic-suffix headers. A refresh that must not ask goes
+        straight to `start`.
+        """
+        session = self._session
+        return self._start_planned(
+            "Re-reading Data Pool folders - finding new measurements", "the folders",
+            plan_pool_refresh,
+            [tuple(directories), session.path, tuple(replace(root) for root in session.project.data_roots),
+             tuple(session.project.sources)],
+            quiet=quiet, admit_unknown=True, ask_for_setup=False,
+            ask_source_amplitude=ask_source_amplitude,
+            on_folder=on_folder, on_finished=on_finished)
+
+    def _start_planned(self, label: str, step_label: str, plan_fn, args, *, quiet: bool,
+                       admit_unknown: bool, ask_for_setup: bool,
+                       ask_source_amplitude: Optional[SourceAmplitudeAsker],
+                       on_folder, on_finished) -> int:
         self._runs += 1
         run = self._runs
         planned: Dict[str, Any] = {"plan": None, "failures": []}
@@ -176,9 +261,16 @@ class PoolIngestUseCase:
                 return
             plan = planned["plan"]
             if record.state is JobState.DONE and plan is not None:
-                self.start(plan, quiet=quiet, admit_unknown=admit_unknown,
-                           ask_for_setup=ask_for_setup, on_folder=on_folder,
-                           on_finished=on_finished)
+                amplitudes = self._ask_source_amplitudes(plan, ask_source_amplitude)
+                if amplitudes is None:
+                    self._active_run = None
+                    self._job_id = None
+                    self._finish({"on_finished": on_finished},
+                                 IngestOutcome(state=JobState.CANCELLED, declined=True))
+                    return
+                self._begin(plan, quiet=quiet, admit_unknown=admit_unknown,
+                            ask_for_setup=ask_for_setup, source_amplitudes=amplitudes,
+                            on_folder=on_folder, on_finished=on_finished)
                 return
             self._active_run = None
             self._job_id = None
@@ -195,22 +287,38 @@ class PoolIngestUseCase:
         # the whole run -- planning and folders -- before it returns.
         self._active_run = run
         job_id = self._runner.submit(
-            "Add to Data Pool - finding measurements",
-            [job_step("the selection", plan_pool_ingest, list(paths))],
+            label,
+            [job_step(step_label, plan_fn, *args)],
             lane="batch", slot_key=INGEST_SLOT_KEY, max_parallel=1, quiet=quiet,
             on_step=lambda plan, _index: planned.update(plan=plan),
             on_error=lambda message, _index: planned["failures"].append(
-                ("the selection", message.splitlines()[0])),
+                (step_label, message.splitlines()[0])),
             on_done=_on_planned,
         )
         if self._active_run == run:
             self._job_id = job_id
         return job_id
 
+    @staticmethod
+    def _ask_source_amplitudes(plan: IngestPlan,
+                               ask: Optional[SourceAmplitudeAsker]) -> Optional[Dict[str, str]]:
+        """
+        File path -> Source amplitude the user answered for it; {} when nothing
+        had to be asked, None when the user cancelled the question.
+        """
+        questions = plan_source_amplitude_questions(plan.imported_files) if ask is not None else ()
+        if not questions:
+            return {}
+        answers = ask(questions)
+        if answers is None:
+            return None
+        return resolve_file_amplitudes(plan.imported_files, answers)
+
     def start(self, plan: IngestPlan, *, quiet: bool = False,
               admit_unknown: bool = False, ask_for_setup: bool = False,
+              ask_source_amplitude: Optional[SourceAmplitudeAsker] = None,
               on_folder: Optional[Callable[[FolderReport], None]] = None,
-              on_finished: Optional[Callable[[IngestOutcome], None]] = None) -> int:
+              on_finished: Optional[Callable[[IngestOutcome], None]] = None) -> Optional[int]:
         """
         Reads `plan`'s folders one at a time, folding each into the pool as it
         lands, and reports the run through `on_folder` / `on_finished`.
@@ -221,7 +329,23 @@ class PoolIngestUseCase:
         would then be a single jump from 0 to 100 percent, so the step is given
         a `progress_fn` (`progress_keyword`) it calls as it re-parses each
         stale file.
+
+        With `ask_source_amplitude` the question is asked first; a cancelled
+        question reports a declined outcome and returns None, with the run that
+        was going on (if any) left alone.
         """
+        amplitudes = self._ask_source_amplitudes(plan, ask_source_amplitude)
+        if amplitudes is None:
+            self._finish({"on_finished": on_finished},
+                         IngestOutcome(state=JobState.CANCELLED, declined=True))
+            return None
+        return self._begin(plan, quiet=quiet, admit_unknown=admit_unknown,
+                           ask_for_setup=ask_for_setup, source_amplitudes=amplitudes,
+                           on_folder=on_folder, on_finished=on_finished)
+
+    def _begin(self, plan: IngestPlan, *, quiet: bool, admit_unknown: bool,
+               ask_for_setup: bool, source_amplitudes: Dict[str, str],
+               on_folder, on_finished) -> int:
         self._runs += 1
         state = {
             "run": self._runs,
@@ -229,6 +353,7 @@ class PoolIngestUseCase:
             "quiet": quiet,
             "admit_unknown": admit_unknown,
             "ask_for_setup": ask_for_setup,
+            "source_amplitudes": source_amplitudes,
             "directories": list(plan.directories),
             "added_paths": [],
             "failures": [],
@@ -269,9 +394,15 @@ class PoolIngestUseCase:
         plan: IngestPlan = state["plan"]
 
         only_files = plan.only_files.get(directory)
+        extra = {}
+        here = canonical_path(directory)
+        answered = {path: amplitude for path, amplitude in state["source_amplitudes"].items()
+                    if canonical_path(os.path.dirname(path)) == here}
+        if answered:
+            extra["source_amplitudes"] = answered
         result = self._pool.integrate_scanned_directory(
             directory, runs, schema, only_files, admit_unknown=state["admit_unknown"],
-            index=directory_index
+            index=directory_index, **extra
         )
 
         wanted = (only_files if only_files is not None

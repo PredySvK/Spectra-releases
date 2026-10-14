@@ -40,7 +40,6 @@ def run_channel_drop(target: DropTarget, descriptors: Iterable[dict], *,
     plan = plan_channel_drop(
         descriptors, facts, facts.plotted_keys,
         pending_drops.keys() | facts.live_pending_keys,
-        target.resolve_metadata,
         lambda: target.order_inputs().config.orders_to_extract,
     )
     if plan.is_empty:

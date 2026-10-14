@@ -37,6 +37,9 @@ from core.block_kinds import (
     RMS_PEAK_CURVE_KINDS, STEP_READ,
     validate,
 )
+from core.models import (
+    FUNC_TYPE_TIME_RESPONSE, ChannelMetadata, MeasurementRunIndex, resolve_channel_block_kind,
+)
 from core.dsp_configs import (
     VALID_AMPLITUDE_MODES,
     VALID_SPECTRUM_FORMATS,
@@ -89,9 +92,28 @@ class SourceRef:
     file_name: str = ""
     channel_index: int = -1
     channel_name: str = ""
+    # The source channel's own facts, so a curve can be dropped again with
+    # its file gone from the Data Pool (#627).
+    channel_block_kind: Optional[str] = None
+    channel_func_type: int = FUNC_TYPE_TIME_RESPONSE
+    source_amplitude: str = ""
     # Level 2 Excel facts. Stays a loose mapping until §1.1 gives it a typed
     # schema -- that change then touches the value type here and nothing else.
     excel_metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+def build_source_ref(run: MeasurementRunIndex, channel: ChannelMetadata) -> SourceRef:
+    """The SourceRef of one channel of `run`, as a read stamps it."""
+    return SourceRef(
+        file_path=run.file_path,
+        file_name=run.file_name,
+        channel_index=channel.index,
+        channel_name=channel.name,
+        channel_block_kind=resolve_channel_block_kind(channel),
+        channel_func_type=channel.func_type,
+        source_amplitude=channel.source_amplitude,
+        excel_metadata=run.metadata or {},
+    )
 
 
 @dataclass(frozen=True)
@@ -157,12 +179,35 @@ def display_meta_from(source: SourceRef, channel_type: str,
         "file_name": source.file_name,
         "channel_index": source.channel_index,
         "channel_type": channel_type,
+        "channel_block_kind": source.channel_block_kind,
+        "channel_func_type": source.channel_func_type,
     }
+    if source.source_amplitude:
+        meta["source_amplitude"] = source.source_amplitude
     if source.excel_metadata:
         meta["excel_metadata"] = dict(source.excel_metadata)
     if metadata:
         meta.update(metadata)
     return meta
+
+
+def read_display_meta(meta: Mapping[str, Any], channel_name: str,
+                      unit: str) -> Tuple[MeasurementRunIndex, ChannelMetadata]:
+    """
+    The run and channel a curve's display meta names -- the inverse of
+    display_meta_from, so its keys are written and read in this one file.
+
+    Name and unit come from the caller: the meta holds the curve's display
+    ones, and a re-drop needs the channel's own (#377).
+    """
+    run = MeasurementRunIndex(str(meta.get("file_name", "")), str(meta.get("file_path", "")))
+    channel = ChannelMetadata(int(meta.get("channel_index", 0)), str(channel_name),
+                              str(meta.get("channel_type", "general_dynamic")), str(unit))
+    channel.block_kind = meta.get("channel_block_kind")
+    channel.func_type = meta.get("channel_func_type", FUNC_TYPE_TIME_RESPONSE)
+    if meta.get("source_amplitude"):
+        channel.source_amplitude = meta["source_amplitude"]
+    return run, channel
 
 
 @dataclass(frozen=True)

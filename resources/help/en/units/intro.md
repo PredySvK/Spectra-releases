@@ -4,13 +4,13 @@ Spectra keeps every number in the unit the measurement was recorded in and conve
 
 | What | Where | Stored | Affects |
 |---|---|---|---|
-| **Display units** (Y axis) | *Settings* tab, **Unit Settings** | the application (all projects) | the value axis of graphs and the [Evaluation table](topic:evaluation/intro) |
-| **X axis unit** | *Settings* tab, **View** | the open project | every frequency and speed axis |
+| **Display units** (Y axis) | Settings window (gear), *Units* › *Application* | the application (all projects) | the value axis of graphs and the [Evaluation table](topic:evaluation/intro) |
+| **X axis unit** | Settings window (gear), *Units* › *This project* | the open project | every frequency and speed axis |
 | **Channel unit** (a correction) | [Data Pool](topic:data_management/intro), **Fix Unit** | the project | one channel, and what is computed from it |
 
 ## Display units
 
-**Unit Settings** offers one unit per physical domain:
+The *Units* page of the Settings window offers one unit per physical domain:
 
 | Domain | Choices | Default |
 |---|---|---|
@@ -35,7 +35,7 @@ A conversion that is not possible (an unknown unit string) leaves the values as 
 
 ### What is redrawn
 
-**Apply &amp; Save Units** re-scales, from the untouched data of each graph:
+**Apply** re-scales, from the untouched data of each graph:
 
 - open **[Time](topic:raw_data/intro)** graphs and **[Spectrum](topic:spectrum/intro)** graphs;
 - the **Evaluation** table, which follows the display units ([Evaluation](topic:evaluation/intro));

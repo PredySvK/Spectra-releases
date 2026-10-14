@@ -132,22 +132,40 @@ class WorkspaceLayout:
 
     # ---- toggling ---------------------------------------------------------
 
-    def toggle_dock(self, target_dock) -> None:
-        target_dock.setVisible(not target_dock.isVisible())
-        self.save_state()
+    def panel_visibility(self) -> dict[str, bool]:
+        """Which panels are on, by name ("explorer", "filters", "log", "jobs",
+        "evaluation"), independent of whether the main window is on screen."""
+        bottom_on = not self.bottom_dock.isHidden()
+        return {
+            "explorer": not self.explorer_dock.isHidden(),
+            "filters": not self.filter_dock.isHidden(),
+            **{key: bottom_on and self.bottom_panel.is_tab_visible(getattr(self, attr))
+               for key, attr in self._BOTTOM_TAB_KEYS},
+        }
 
-    def toggle_bottom_tab(self, widget) -> None:
-        """Settings-tab "System Log" / "Jobs" / "Evaluation" buttons. Each one
-        adds or removes its own tab in the bottom panel (the Explorer's Block
-        Pool does the same); the dock as a whole disappears once its last tab
-        is gone and comes back when a tab is turned on."""
-        self.bottom_panel.set_tab_visible(widget, not self.bottom_panel.is_tab_visible(widget))
-        self.bottom_dock.setVisible(self.bottom_panel.visible_tab_count() > 0)
+    def apply_panel_visibility(self, visible: dict[str, bool]) -> None:
+        """Settings window Layout panel toggles: show/hide the named panels, the
+        others keep their state. A bottom tab is added or removed on its own (the
+        Explorer's Block Pool does the same); the bottom dock as a whole
+        disappears once its last tab is gone and comes back when a tab is on."""
+        for key, dock in (("explorer", self.explorer_dock), ("filters", self.filter_dock)):
+            if key in visible:
+                dock.setVisible(visible[key])
+        bottom_keys = [(key, getattr(self, attr)) for key, attr in self._BOTTOM_TAB_KEYS]
+        if self.bottom_dock.isHidden() and any(visible.get(key) for key, _tab in bottom_keys):
+            # A closed dock retains tabs; showing one panel must not reveal the others.
+            for _key, tab in bottom_keys:
+                self.bottom_panel.set_tab_visible(tab, False)
+        if any(key in visible for key, _tab in bottom_keys):
+            for key, tab in bottom_keys:
+                if key in visible:
+                    self.bottom_panel.set_tab_visible(tab, visible[key])
+            self.bottom_dock.setVisible(self.bottom_panel.visible_tab_count() > 0)
         self.save_state()
 
     def show_bottom_tab(self, widget) -> None:
         """Bring a bottom tab on and to the front -- never off, unlike
-        toggle_bottom_tab. The job status strip's double-click uses it."""
+        apply_panel_visibility. The job status strip's double-click uses it."""
         self.bottom_panel.show_tab(widget)
         self.bottom_dock.setVisible(True)
         self.save_state()

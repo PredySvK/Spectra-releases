@@ -17,8 +17,10 @@ from PySide6.QtWidgets import (
     QAbstractSpinBox, QCheckBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
     QSpinBox, QToolButton, QVBoxLayout, QWidget,
 )
+from gui.appearance import APP_TOKENS
 
-_GREYED_STYLE = "color: #808080;"
+
+_GREYED_STYLE = f"color: {APP_TOKENS.text_muted};"
 
 # One row: key, checkbox text, and why the row is greyed (None = not greyed).
 PriorityGridEntry = Tuple[str, str, Optional[str]]

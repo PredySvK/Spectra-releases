@@ -20,6 +20,6 @@ Aktivním grafem je vybraná karta pracovního prostoru. Akce pásu karet, kter�
 
 Frekvenci lze na ose zobrazit v Hz nebo RPM a lze to přepnout ([jednotka osy X](topic:units/intro)).
 
-Nastavení vykreslování křivek popisuje [Graph Defaults](topic:settings/graph_defaults). Načítání uložených křivek do aktivního grafu najdete v [Result Poolu](topic:results/intro).
+Nastavení vykreslování křivek popisuje [Graph Rendering](topic:settings/graph_defaults). Načítání uložených křivek do aktivního grafu najdete v [Result Poolu](topic:results/intro).
 
 Informace při najetí myší a zvýraznění vybrané křivky popisuje [Kurzor a zvýraznění](topic:tools/cursor).

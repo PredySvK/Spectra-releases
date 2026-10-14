@@ -2,7 +2,14 @@
 MASTA result (.xlsx) reader: order amplitude against speed per housing
 location and axis, read as an Imported result (§1.134).
 
-Layout of the first sheet -- every channel is a pair of columns, each with its
+A workbook with sheets named "H<order>" (H1, H4.79, H22, ...) holds one result
+per sheet; every such sheet is read and any other sheet (ERP) is ignored. A
+workbook without them is read from its first sheet. Each channel remembers its
+sheet, and its index is the sheet's place among the read sheets times
+_SHEET_STRIDE plus its column pair, so the first sheet keeps the indices it had
+when only that sheet was read (§1.159).
+
+Layout of each read sheet -- every channel is a pair of columns, each with its
 own speed column, because MASTA's speed steps are not shared between pairs:
 
     row 1  "<axis>, At housing: <design>\\<location>"     -> name "<location>:<axis>"
@@ -16,6 +23,7 @@ damping and description_1..N (row 2's comma segments left once the Order and
 Damping keywords are taken out). The order goes to the block, not a facet.
 """
 
+import functools
 import os
 import re
 from typing import List, Optional, Tuple
@@ -26,6 +34,7 @@ from core.block_kinds import KIND_ORDER_CUT, STEP_READ
 from core.data_block import Acquisition, NVHDataBlock, Provenance
 from core.models import FUNC_TYPE_ORDER_FUNCTION, ChannelMetadata, MeasurementRunIndex
 from core.units import determine_channel_type
+from io_modules.measurement_files import canonical_path, file_stamp
 
 _HEADER_ROWS = 4
 _LOCATION_RE = re.compile(r"^\s*([XYZ])\s*,.*\\([^\\]+?)\s*$")
@@ -35,6 +44,9 @@ _UNIT_RE = re.compile(r"\(([^)]*)\)\s*$")
 _ORDER_RE = re.compile(r"\bOrder\s+(\d+(?:\.\d+)?)")
 _DAMPING_RE = re.compile(r"\bDamping\s*=\s*([^\s,]+)")
 _SEGMENT_EDGES = " \t-–:;"
+_ORDER_SHEET_RE = re.compile(r"^H\d+(?:\.\d+)?$", re.IGNORECASE)
+# ponytail: assumes fewer than 1000 column pairs per sheet; widen if MASTA ever exports more.
+_SHEET_STRIDE = 1000
 
 
 def _parse_result_type(text: str) -> Tuple[Optional[float], str, List[str]]:
@@ -51,19 +63,49 @@ def _parse_result_type(text: str) -> Tuple[Optional[float], str, List[str]]:
             descriptions)
 
 
-def _read_rows(file_path: str, max_row: Optional[int] = None) -> List[tuple]:
+def _read_sheets(file_path: str, max_row: Optional[int] = None,
+                 only: Optional[int] = None) -> List[Tuple[Optional[str], List[tuple]]]:
+    """(sheet name, rows) of every read sheet, or of the `only`-th; name None for a first-sheet workbook."""
     import openpyxl
     workbook = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
     try:
-        return list(workbook.worksheets[0].iter_rows(max_row=max_row, values_only=True))
+        named = [(sheet.title.strip(), sheet) for sheet in workbook.worksheets
+                 if _ORDER_SHEET_RE.match(sheet.title.strip())]
+        sheets = named or [(None, workbook.worksheets[0])]
+        if only is not None:
+            sheets = sheets[only:only + 1]
+        return [(name, list(sheet.iter_rows(max_row=max_row, values_only=True)))
+                for name, sheet in sheets]
     finally:
         workbook.close()
+
+
+@functools.lru_cache(maxsize=2)
+def _read_all_sheets(path: str, _mtime_ns: int, _size: int) -> List[Tuple[Optional[str], List[tuple]]]:
+    """
+    Every read sheet, parsed once per file stamp: DataAccessor opens a fresh
+    reader per channel, and openpyxl's load_workbook walks every sheet each time,
+    so a 22-channel plot paid for 22 full loads.
+    """
+    return _read_sheets(path)
+
+
+def _read_sheets_cached(file_path: str) -> List[Tuple[Optional[str], List[tuple]]]:
+    stamp = file_stamp(file_path)
+    if stamp is None:
+        return _read_sheets(file_path)
+    return _read_all_sheets(canonical_path(file_path), stamp["mtime_ns"], stamp["size"])
+
+
+def discard_masta_caches() -> None:
+    """Forget the parsed workbook, so the next read parses it again (a Benchmark case starts cold)."""
+    _read_all_sheets.cache_clear()
 
 
 def is_masta_file(file_path: str) -> bool:
     """Whether the workbook's header is a MASTA result's. Any failure to read it is a no."""
     try:
-        rows = _read_rows(file_path, max_row=_HEADER_ROWS)
+        rows = _read_sheets(file_path, max_row=_HEADER_ROWS, only=0)[0][1]
     except Exception:
         return False
     return (len(rows) == _HEADER_ROWS and bool(rows[0]) and bool(rows[3])
@@ -101,21 +143,26 @@ class AccReaderMasta:
     def load_channels_on_demand(self, run_index: MeasurementRunIndex):
         if run_index.available_channels:
             return
-        rows = _read_rows(self.file_path)
-        for index in _resolve_channel_indices(rows):
-            name, unit = self._resolve_name_and_unit(rows, index)
-            meta = ChannelMetadata(index=index, name=name,
-                                   channel_type=determine_channel_type(unit, name), unit=unit)
-            meta.func_type = FUNC_TYPE_ORDER_FUNCTION
-            meta.block_kind = KIND_ORDER_CUT
-            meta.num_pts = len(self._read_pairs(rows, index))
-            design_match = _DESIGN_RE.search(str(rows[0][2 * index]))
-            meta.design = design_match.group(1).strip() if design_match else ""
-            meta.scenario = str(rows[2][2 * index] or "").strip()
-            _, meta.damping, descriptions = _parse_result_type(str(rows[1][2 * index] or ""))
-            for number, description in enumerate(descriptions, start=1):
-                setattr(meta, f"description_{number}", description)
-            run_index.add_channel_metadata(f"Col #{index}: {name}", meta)
+        for position, (sheet, rows) in enumerate(_read_sheets_cached(self.file_path)):
+            for pair in _resolve_channel_indices(rows):
+                index = position * _SHEET_STRIDE + pair
+                name, unit = self._resolve_name_and_unit(rows, pair)
+                meta = ChannelMetadata(index=index, name=name,
+                                       channel_type=determine_channel_type(unit, name), unit=unit)
+                meta.func_type = FUNC_TYPE_ORDER_FUNCTION
+                meta.block_kind = KIND_ORDER_CUT
+                meta.num_pts = len(self._read_pairs(rows, pair))
+                design_match = _DESIGN_RE.search(str(rows[0][2 * pair]))
+                meta.design = design_match.group(1).strip() if design_match else ""
+                meta.scenario = str(rows[2][2 * pair] or "").strip()
+                _, meta.damping, descriptions = _parse_result_type(str(rows[1][2 * pair] or ""))
+                for number, description in enumerate(descriptions, start=1):
+                    setattr(meta, f"description_{number}", description)
+                if sheet is None:
+                    run_index.add_channel_metadata(f"Col #{index}: {name}", meta)
+                else:
+                    meta.sheet = sheet
+                    run_index.add_channel_metadata(f"Col #{index} [{sheet}]: {name}", meta)
 
     @staticmethod
     def _resolve_name_and_unit(rows, index: int):
@@ -141,13 +188,15 @@ class AccReaderMasta:
         A finished order_cut block, not a RawChannel: a RawChannel is a
         waveform. DataAccessor still adds where it came from and its channel type.
         """
-        rows = _read_rows(self.file_path)
-        if dataset_index not in _resolve_channel_indices(rows):
+        position, pair = divmod(dataset_index, _SHEET_STRIDE)
+        sheets = _read_sheets_cached(self.file_path)[position:position + 1]
+        rows = sheets[0][1] if sheets else []
+        if not rows or pair not in _resolve_channel_indices(rows):
             raise IndexError(
                 f"Channel index {dataset_index} is not a channel of {os.path.basename(self.file_path)}.")
-        name, unit = self._resolve_name_and_unit(rows, dataset_index)
-        pairs = np.asarray(self._read_pairs(rows, dataset_index), dtype=np.float64).reshape(-1, 2)
-        order, _, _ = _parse_result_type(str(rows[1][2 * dataset_index] or ""))
+        name, unit = self._resolve_name_and_unit(rows, pair)
+        pairs = np.asarray(self._read_pairs(rows, pair), dtype=np.float64).reshape(-1, 2)
+        order, _, _ = _parse_result_type(str(rows[1][2 * pair] or ""))
         return NVHDataBlock.order_cut(
             name=name, values=pairs[:, 1], rpm=pairs[:, 0], order=order,
             value_unit=unit, processing=None,

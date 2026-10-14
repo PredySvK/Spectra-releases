@@ -24,7 +24,10 @@ Architecture:
   (claimed, pending) beside its curves.
 - Questions the GUI asks about curves it holds: amplitude_mode_for_kind,
   overall_level_band_differs_from_dock, traces_kept_after_unload, build_trace_descriptor.
-- Presentation styling & legend text: base_display_unit, format_display_unit, carousel_pen_spec.
+- Presentation styling & legend text: base_display_unit, format_display_unit, resolve_carousel_colour.
+- Rendering mode & curve look (ADR §1.163): resolve_rendering_mode picks OpenGL or raster
+  from the drawn curves (LARGE_CURVE_POINTS); resolve_curve_look turns a Pen's carousel
+  slot into a CurveLook (colour + one of LINE_STYLES) for that mode.
 
 The builders behind GraphCurves and GraphSpectrogram are private: which one a
 block gets is their decision, not the caller's (#297, #301).
@@ -38,7 +41,14 @@ from ._display_settings import (
     DisplaySettings,
 )
 from ._graph_colours import (
-    carousel_pen_spec,
+    LARGE_CURVE_POINTS,
+    LINE_STYLES,
+    resolve_carousel_colour,
+    CurveLook,
+    HeldPens,
+    RenderingMode,
+    resolve_curve_look,
+    resolve_rendering_mode,
 )
 from ._graph_curves import (
     CurveAppended,
@@ -114,6 +124,14 @@ __all__ = [
     "traces_kept_after_unload",
     # Legend & palette
     "base_display_unit",
-    "carousel_pen_spec",
+    "resolve_carousel_colour",
+    "HeldPens",
     "format_display_unit",
+    # Rendering mode & curve look (ADR §1.163)
+    "CurveLook",
+    "LARGE_CURVE_POINTS",
+    "LINE_STYLES",
+    "RenderingMode",
+    "resolve_curve_look",
+    "resolve_rendering_mode",
 ]

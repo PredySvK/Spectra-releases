@@ -159,8 +159,8 @@ class ProjectDocumentHandler:
         self.show_welcome = show_welcome
         self.show_workspace = show_workspace
         self.set_titlebar_text = set_titlebar_text
-        # The Settings tab's View/X axis unit combo, re-synced to whichever
-        # project is open (issue #459); None for a caller with no ribbon.
+        # The Settings window's Units/X axis unit choice, re-synced to whichever
+        # project is open (issue #459); None for a caller with no Settings window.
         self.show_x_axis_unit = show_x_axis_unit
         # Reads channel_pairing.xlsx off the GUI thread; a caller without a
         # queue (a test frame) gets the inline runner.
@@ -309,7 +309,7 @@ class ProjectDocumentHandler:
 
         directories = context.project_session.resolved_directories()
         if directories:
-            self.data_pool.refresh_directories(directories)
+            self.data_pool.refresh_directories(directories, ask_source_amplitude=False)
 
     def try_open_dropped_path(self, path: str) -> None:
         """Open a dropped project file or start a project from a dropped folder."""
@@ -414,7 +414,7 @@ class ProjectDocumentHandler:
 
             # A restored dock takes back its saved id (§1.94), so a custom Local
             # filter card whose owner did not come back -- its recipe was
-            # skipped, or the project predates saved dock ids -- is orphaned;
+            # skipped -- is orphaned;
             # discard it now that every restored shell is up (§1.37).
             if self.filter_panel is not None:
                 self.filter_panel.prune_orphan_dock_cards(self.workspace.open_dock_ids())
@@ -500,7 +500,7 @@ class ProjectDocumentHandler:
         from core.app_metadata import APP_NAME
         self.log_panel.log_message(f"SYSTEM: {APP_NAME} startup sequence complete.")
 
-        # "Open last project on startup" (Settings tab checkbox). Opt-in. When it
+        # "Open last project on startup" (Settings window Layout page, Startup group). Opt-in. When it
         # succeeds open_project has already switched to the workspace and
         # restored the project's own pool.
         if project_path is not None:

@@ -18,6 +18,7 @@ from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication
 
 from gui.workspace.cursor import CURSOR_MOUSE_RATE_HZ, CURSOR_RADIUS_PX
+from gui.workspace.plot_area import GRAPH_TOKENS
 from view_models.cursor import HIGHLIGHT_DIM_ALPHA, resolve_highlighted_trace
 from view_models.plot import Trace
 
@@ -65,6 +66,11 @@ class HighlightMixin:
     def highlighted_trace(self) -> Optional[Trace]:
         return self._highlighted
 
+    def refresh_highlight(self) -> None:
+        """Repaint the current highlight after the other curves' opacity changes."""
+        if self._highlighted is not None:
+            self._apply_highlight(self._highlighted)
+
     def clear_highlight(self) -> None:
         """Every curve back to its own pen."""
         if self._highlighted is None:
@@ -77,7 +83,8 @@ class HighlightMixin:
         """(pen, visible, on top) for a curve while ``target`` is highlighted.
 
         Other curves fade by mixing their colour toward the plot background, not by pen alpha:
-        the OpenGL viewport (main.py) ignores pen alpha. At 0 % they are hidden outright.
+        an OpenGL viewport (ADR §1.163) ignores pen alpha. At 0 % they are hidden outright.
+        The copied pen keeps the curve's line style.
         """
         changed = pg.mkPen(pen)
         if trace is target:
@@ -85,7 +92,7 @@ class HighlightMixin:
             return changed, True, True
         percent = getattr(self.app_context, "highlight_other_opacity", None)
         keep = HIGHLIGHT_DIM_ALPHA if percent is None else percent / 100
-        color, bg = changed.color(), self.plot_widget.backgroundBrush().color()
+        color, bg = changed.color(), QColor(GRAPH_TOKENS.background)
         changed.setColor(QColor(*(round(b + (c - b) * keep) for c, b in (
             (color.red(), bg.red()), (color.green(), bg.green()), (color.blue(), bg.blue())))))
         return changed, keep > 0, False

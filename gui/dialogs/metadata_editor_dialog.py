@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTableWidget,
                                QTableWidgetItem, QPushButton, QLabel, QComboBox,
                                QHeaderView, QTabWidget, QWidget)
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPalette
+from PySide6.QtGui import QColor, QPalette
 
 from gui.dialogs.dialog_state import remember_dialog_geometry
 from gui.dialogs.channel_pairing_tab import ChannelPairingTab
@@ -18,6 +18,7 @@ from io_modules.channel_pairing import PAIRING_FILE_NAME
 from io_modules.measurement_files import is_simulated_result_file
 from orchestration.channel_pairing import resolve_channel_pairing_path, write_project_channel_pairing
 from selection.channel_identity import split_channel_base_and_direction
+from gui.appearance import APP_TOKENS
 
 
 # Metadata Editor "Type" column -> schema kind. "Auto" leaves the kind to the
@@ -201,7 +202,7 @@ class MetadataEditorDialog(QDialog):
         """Helper inserting structural category boundary splits spans."""
         divider_item = QTableWidgetItem(section_title)
         divider_item.setFlags(Qt.ItemFlag.NoItemFlags)
-        divider_item.setForeground(Qt.GlobalColor.black)
+        divider_item.setForeground(QColor(APP_TOKENS.text_divider))
         divider_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.table.setItem(row_idx, 0, divider_item)
@@ -210,7 +211,7 @@ class MetadataEditorDialog(QDialog):
         for c in range(5):
             cell = self.table.item(row_idx, c)
             if cell:
-                cell.setBackground(Qt.GlobalColor.darkGray)
+                cell.setBackground(QColor(APP_TOKENS.text_muted))
 
     def _insert_data_row(self, row_idx: int, original_key: str, config: dict, layer_type: str):
         """Injects a standardized interactive row entry line matching state markers."""
