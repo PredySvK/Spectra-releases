@@ -674,7 +674,7 @@ def run_graph(workflow: Workflow, inputs: Mapping[str, NVHDataBlock],
     75 s run-up. Both blocks key their plan by tracking mode as well as sweep
     settings, so an order cut and an rpm-tracked spectrogram at the same step
     share one plan while a time-tracked one at the same step keeps its own
-    (ADR §1.58 point 6). The caller owns the bag, so this stays deterministic
+   . The caller owns the bag, so this stays deterministic
     and thread-safe: no module-level cache, and each worker's measurement gets
     its own. Omitted (tests, a headless entry point) it degrades to a
     fresh empty bag per call, i.e. no reuse.

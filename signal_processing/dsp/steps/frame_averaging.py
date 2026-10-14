@@ -54,7 +54,7 @@ def _exponential(power_batches: Iterator[np.ndarray], exponential_alpha: float) 
     # A recurrence over individual frames, in frame order, regardless of how
     # they were grouped into batches -- exactly the loop this replaced, just
     # fed from a batch iterator instead of a fully-materialised array, so the
-    # result stays bit-identical (ADR §1.58 point 10).
+    # result stays bit-identical.
     alpha = max(0.0, min(1.0, float(exponential_alpha)))
     result = None
     for batch in power_batches:

@@ -2,7 +2,7 @@
 The application Theme and Graph theme chosen in Settings, read once when the GUI loads.
 
 The one place the GUI reads them: `THEME`, `APP_TOKENS` and `GRAPH_TOKENS` are
-fixed for the process, and a changed choice applies after restart (ADR §1.158).
+fixed for the process, and a changed choice applies after restart.
 `AppContext` keeps the saved choice the Settings window edits.
 """
 

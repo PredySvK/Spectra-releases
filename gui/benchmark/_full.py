@@ -57,7 +57,7 @@ def run_full_benchmark(app, build_window, plan_path, out_dir, *, quick=False, ba
         traceback.print_exc()
         code = 1
     # Qt teardown of a window that never closed is not worth waiting on;
-    # without the flush the paths above would be lost (ADR §1.132).
+    # without the flush the paths above would be lost.
     sys.stdout.flush()
     sys.stderr.flush()
     os._exit(code)

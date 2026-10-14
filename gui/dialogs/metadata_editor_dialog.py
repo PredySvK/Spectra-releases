@@ -22,7 +22,7 @@ from gui.appearance import APP_TOKENS
 
 
 # Metadata Editor "Type" column -> schema kind. "Auto" leaves the kind to the
-# inference over the actual values (ADR §1.1); any other choice pins it and
+# inference over the actual values; any other choice pins it and
 # sets kind_is_manual so a rescan will not override the user.
 _KIND_CHOICES = (("Auto", None), ("Text", "str"), ("Integer", "int"),
                  ("Decimal", "float"), ("Date", "date"))

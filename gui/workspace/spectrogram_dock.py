@@ -36,13 +36,13 @@ class SpectrogramDock(ChannelDropTargetMixin, SpectrogramCursorMixin, QWidget):
         self.run_index: Optional[MeasurementRunIndex] = None
         self.channel_meta: Optional[ChannelMetadata] = None
         self.vib_block: Optional[NVHDataBlock] = None
-        # The spectrogram this dock holds (ADR §1.7, #301). Every change ends
+        # The spectrogram this dock holds. Every change ends
         # in _on_spectrogram_changed, the one place it reaches the screen.
         self.spectrogram = GraphSpectrogram(on_change=self._on_spectrogram_changed)
         self.tacho_block: Optional[NVHDataBlock] = None
         self.pending_drops = PendingDrops()
 
-        # Evaluation configuration (ADR §1.64 point 1, issue #138).
+        # Evaluation configuration.
         self.evaluation_config: EvaluationConfig = EvaluationConfig()
 
         self.setAcceptDrops(True)
@@ -94,7 +94,7 @@ class SpectrogramDock(ChannelDropTargetMixin, SpectrogramCursorMixin, QWidget):
         """
         Deliberate empty list: a spectrogram has no ``traces`` to mask (ADR
         §1.7, it is one ``ImageItem``, not a curve list). The Evaluation card's
-        dock adapter (ADR §1.64 point 3) reads `canonical_block()` instead for
+        dock adapter reads `canonical_block()` instead for
         this dock -- Typed orders (#141) and Dominant orders (#142) are the
         Evaluations meant to read a spectrogram, and neither goes through a
         curve list.
@@ -110,8 +110,8 @@ class SpectrogramDock(ChannelDropTargetMixin, SpectrogramCursorMixin, QWidget):
 
     def canonical_block(self) -> Optional[NVHDataBlock]:
         """
-        The current waterfall's canonical block (ADR §1.60), publicly -- the
-        Evaluation card's dock adapter (ADR §1.64 point 3, issue #141) reads
+        The current waterfall's canonical block, publicly -- the
+        Evaluation card's dock adapter reads
         this instead of `visible_traces()` for a dock whose content is one
         block rather than a curve list. None before the first waterfall lands.
         """
@@ -154,7 +154,7 @@ class SpectrogramDock(ChannelDropTargetMixin, SpectrogramCursorMixin, QWidget):
         decibel_scale: Optional[bool] = None,
     ) -> None:
         """
-        Re-scales the SpectrogramModel on the fly from its canonical block (ADR §1.60).
+        Re-scales the SpectrogramModel on the fly from its canonical block.
         Runs synchronously in < 1 ms without re-running STFT or background jobs.
         """
         cfg = getattr(self.app_context, "spectrogram_settings", None) if self.app_context else None

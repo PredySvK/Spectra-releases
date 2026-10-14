@@ -15,7 +15,7 @@ class FileTracking:
     build one TrackingPlan between them (#99), and another file builds its own.
 
     Lives for one worker call only, so it keeps every file it met -- unlike
-    LiveOrderMemo's cross-job bag, which keeps only the latest (ADR §1.117).
+    LiveOrderMemo's cross-job bag, which keeps only the latest.
     """
 
     def __init__(self):

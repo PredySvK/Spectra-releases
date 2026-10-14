@@ -134,7 +134,7 @@ class ProjectDocumentHandler:
     """
     The one owner of "which project is open": the Project ribbon tab's document
     commands, the startup view, the metadata schema editor and the data-folder
-    browser (ADR §1.78, ticket #236). See the module docstring for why they are
+    browser. See the module docstring for why they are
     one class.
     """
 
@@ -252,7 +252,7 @@ class ProjectDocumentHandler:
             result_pool.rebuild()
 
         # The Workflow panel lists the project's stored workflows; a new/opened
-        # project has a different set (ADR §1.6 phase 7C).
+        # project has a different set.
         if self.workflow_view is not None:
             self.workflow_view.refresh()
 

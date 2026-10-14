@@ -85,7 +85,7 @@ def shape_matches(kind: str, cached_params: Dict, live_params: Dict) -> bool:
 def _version_matches(kind: str, cached_params: Dict) -> bool:
     # Each kind is checked against its own algorithm version: a bump to order
     # tracking's math must not invalidate every saved spectrum set, and vice
-    # versa (audit 02 / 1.7). A set without the key is a miss (ADR §1.161).
+    # versa (audit 02 / 1.7). A set without the key is a miss.
     # Subscript, not .get: an unregistered kind is a programming error, not a
     # data one -- fail loudly rather than turn every set of that kind into a
     # silent permanent miss.
@@ -284,7 +284,7 @@ def find_cached_result_background(
     channel_index: Optional[int] = None,
 ) -> Optional[CachedResult]:
     """
-    The worker-thread entry point to the cache (ADR §1.54).
+    The worker-thread entry point to the cache.
 
     Same lookup as `find_cached_result`, but there is deliberately no
     `write_index` parameter: a background thread may read the `NVHProject` as a
@@ -309,7 +309,7 @@ def find_cached_block_background(
     Returns the freshest matching result set's block reconstructed as a ready,
     plottable NVHDataBlock on a hit, or None on a miss.
 
-    Worker-thread entry point (ADR §1.54): composes `find_cached_result_background`
+    Worker-thread entry point: composes `find_cached_result_background`
     with `block_io.block_from_stored` so callers that need a single plottable
     block (such as 1D spectrum docks) do not have to stitch the lookup and
     reconstruction together or read the raw channel from disk.

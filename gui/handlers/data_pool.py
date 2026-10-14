@@ -13,9 +13,9 @@ user is most likely to think the application has died.
 The run itself -- which folders are read, in what order, what each one does to
 the pool, and what the whole thing adds up to -- is
 `orchestration.data_pool.PoolIngestUseCase`, submitted through the QtJobRunner
-as a `JobRunner` (ADR 1.13, 1.70). What is left here is everything the use
+as a `JobRunner`. What is left here is everything the use
 case deliberately cannot do: the modal progress dialog, the Cancel button, the
-application-shell effects of each folder (ADR 1.69), the explorer refresh, the
+application-shell effects of each folder, the explorer refresh, the
 conflict dialog and the failure popup.
 
 One folder is one step, so a folder of large files would otherwise be a
@@ -193,7 +193,7 @@ class DataPoolHandler(QObject):
     @property
     def _job_id(self):
         # The use case's, not a copy: a planned run changes jobs midway, and a
-        # run over before submit returns (ADR 1.70) already reports None.
+        # run over before submit returns already reports None.
         return self._use_case.job_id
 
     # ---- job callbacks (GUI thread) -----------------------------------

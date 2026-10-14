@@ -45,7 +45,7 @@ def default_card_for_schema(card_id: str, schema: Dict[str, Dict[str, Any]],
                             project: Optional[NVHProject] = None) -> FilterCardConfig:
     """
     The card an unedited profile resolves to -- Local and Global alike, no
-    longer derived from any dock's block kinds (ADR §1.56): just `Channel`,
+    longer derived from any dock's block kinds: just `Channel`,
     plus every column the user pinned with the "Default" checkbox on any stored
     card, in pin order.
 
@@ -88,7 +88,7 @@ def user_default_column_keys(project: NVHProject) -> Tuple[str, ...]:
 
     Built-in Identity/Calculated keys count too (ticket #92): pinning Order or
     Direction has to reach every graph the same way a schema field does, so
-    "predefined card = only Channel" (ADR §1.56) stays usable.
+    "predefined card = only Channel" stays usable.
     """
     keys: List[str] = []
     for card in project.filter_cards:
@@ -105,7 +105,7 @@ def resolve_card(session, profile_id: str, schema: Dict[str, Dict[str, Any]]) ->
     recompute and an untouched project stays clean until the user actually
     edits a card through Configure Filters.
 
-    One path for Local and Global (ADR §1.56): a never-configured profile of
+    One path for Local and Global: a never-configured profile of
     either scope resolves to `default_card_for_schema` -- `Channel` plus the
     user's Default pins. Local is no longer derived from the focused dock's
     block kinds.
@@ -200,7 +200,7 @@ def builtin_column_cardinalities_for_global(project: NVHProject,
                                             open_dock_identities: List[TraceIdentity]
                                             ) -> Dict[str, FieldCardinality]:
     """
-    `builtin_column_cardinalities` for a Global card (ADR §1.36). Identity
+    `builtin_column_cardinalities` for a Global card. Identity
     columns stay pool-wide; the three Calculated columns are counted straight
     off `global_calculated_facets`' output, the single path that decides that
     universe, so the "(N)" cannot drift from the facet it gates.
@@ -224,7 +224,7 @@ def builtin_column_cardinalities_from_traces(identities: List[TraceIdentity],
                                              *, pool_label: str = "this graph"
                                              ) -> Dict[str, FieldCardinality]:
     """
-    `builtin_column_cardinalities`' Local-card counterpart (ADR §1.33): the same
+    `builtin_column_cardinalities`' Local-card counterpart: the same
     "(N)" counts and "cannot narrow" verdicts, but read off the focused dock's
     own traces instead of the whole Data Pool -- a Local card offers only what
     is on that graph, so counting the pool overstated every column.
@@ -265,7 +265,7 @@ def local_card_cardinalities(identities: Iterable[TraceIdentity],
     """
     The schema-field and built-in column cardinalities Configure Filters shows
     for a Local card -- read off the focused dock's own traces and their
-    resolved sources, not the pool (ADR §1.33). Returns (schema_cardinalities,
+    resolved sources, not the pool. Returns (schema_cardinalities,
     builtin_cardinalities), both keyed the same way the pool-wide versions are.
     """
     identities_list = list(identities)

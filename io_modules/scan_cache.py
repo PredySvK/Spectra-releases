@@ -1,6 +1,6 @@
 """
 The per-folder scan cache: the directory scan that fills it, and the reading
-and writing of the JSON file that survives between sessions (ADR §1.22).
+and writing of the JSON file that survives between sessions.
 
 `measurement_files.py` holds the file-level facts this builds on -- which
 extensions count, how a path is keyed, what a file's cheap identity is.
@@ -40,7 +40,7 @@ _SCAN_PARSE_MAX_WORKERS = 4
 # this, a cache written by an older version would be loaded as if still valid
 # and fed to from_dict() as-is -- the same class of problem the order-cut cache
 # already guards against with DSP_ALGORITHM_VERSIONS.
-# 2: metadata schema fields carry a typed `kind` (ADR §1.1)
+# 2: metadata schema fields carry a typed `kind`
 # 3: UNV 58b channel units read by column, not by whitespace split (issue #323)
 # 4: Imported channels carry their readable block kind for navigation (#496).
 # 5: MASTA channels carry their header as Raw metadata (#520).
@@ -52,7 +52,7 @@ def scan_cache_basename(directory_path: str) -> str:
     """
     File name for a folder's scan cache when it lives in a shared cache folder
     (a project's cache/scan/, or the Untitled temp area) rather than beside the
-    data (ADR §1.22).
+    data.
 
     The folder's own basename is kept for readability ("setup1-a1b2c3d4.json");
     the short canonical-path hash keeps two roots with the same basename from
@@ -144,7 +144,7 @@ class MeasurementScanner:
 
         `cache_dir` is where the scan cache lives -- a project's cache/scan/ or
         the Untitled temp area, chosen by the caller who knows the project state
-        (ADR §1.22). None keeps the legacy behaviour of writing beside the data;
+       . None keeps the legacy behaviour of writing beside the data;
         production always passes a directory, the None branch only carries the
         invalidation tests.
         """

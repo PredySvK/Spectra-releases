@@ -51,7 +51,7 @@ def lookup_or_compute_order_drops(
     """Load cached order cuts or read and compute them for one dropped batch.
 
     `with_overall_level` computes every channel with its Overall Level and
-    Residual curves, never from the cache (ADR §1.141 point 10); each block
+    Residual curves, never from the cache; each block
     rides as one more row."""
     rendered, log_lines = [], []
     tracking = FileTracking()

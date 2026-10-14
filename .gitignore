@@ -33,7 +33,6 @@ resources/icons/original/
 # These are dumps of the very code this repository already versions.
 # They stay on disk for the manual transfer workflow, but committing them
 # would add a few hundred KB of duplicated source to the history every time.
-NVH_Tool_v01_*.txt
 config_*.txt
 recept_bryndzove_halusky.txt
 api_key.env

@@ -2,7 +2,7 @@
 # FILE: signal_processing/evaluation/registry.py
 # =====================================================================
 """
-The register of Evaluations (ADR §1.64 point 3): which block kinds each one
+The register of Evaluations: which block kinds each one
 accepts, so the GUI's evaluation picker and runner.evaluate both branch on
 data instead of an `if/elif` on analysis kind -- the same shape as
 core/block_kinds.py's register of block kinds.

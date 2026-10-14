@@ -83,7 +83,7 @@ class HighlightMixin:
         """(pen, visible, on top) for a curve while ``target`` is highlighted.
 
         Other curves fade by mixing their colour toward the plot background, not by pen alpha:
-        an OpenGL viewport (ADR §1.163) ignores pen alpha. At 0 % they are hidden outright.
+        an OpenGL viewport ignores pen alpha. At 0 % they are hidden outright.
         The copied pen keeps the curve's line style.
         """
         changed = pg.mkPen(pen)

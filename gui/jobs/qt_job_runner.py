@@ -2,7 +2,7 @@
 # FILE: gui/jobs/qt_job_runner.py
 # =====================================================================
 """
-One visible queue for everything that runs in the background (ADR 1.13).
+One visible queue for everything that runs in the background.
 
 Before this, six controllers each hand-rolled the same four things around
 AsynchronousComputeWorker: a thread pool reference, a dict holding workers
@@ -26,7 +26,7 @@ Three ideas do the work here:
 * slot_key replaces the generation counters. Submitting a job with a slot_key
   cancels the live job holding that slot, so the "am I still current?"
   arithmetic happens once, here, instead of in every caller -- per-dock reads
-  included, whose slot is the dock and the task's purpose (ADR §1.84).
+  included, whose slot is the dock and the task's purpose.
 
 Ownership: one QtJobRunner per MainWindowFrame, passed to controllers by
 constructor. Not on AppContext, which the view-only second window shares --

@@ -1,4 +1,4 @@
-"""Download and launch the per-user Update installer (ADR §1.140)."""
+"""Download and launch the per-user Update installer."""
 
 import os
 from pathlib import Path

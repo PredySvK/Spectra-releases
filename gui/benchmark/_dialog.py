@@ -1,4 +1,4 @@
-"""The Run Benchmark dialog behind the Project › Tools button (ADR §1.132, #485)."""
+"""The Run Benchmark dialog behind the Project › Tools button."""
 
 import dataclasses
 import os

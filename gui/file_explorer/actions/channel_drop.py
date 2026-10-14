@@ -275,7 +275,7 @@ def _render_overall_level_overlay(dock_instance, result_block, app_context) -> N
     """
     Adds one Overall Level curve to the dock (issue #125).
 
-    The "different Nyquist" decision (ADR §1.62 point 14) is a pure function
+    The "different Nyquist" decision is a pure function
     over the Qt-free model (``overall_level_band_differs_from_dock``); this is
     the drop renderer that decides to log it, exactly once per curve added.
     """

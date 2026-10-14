@@ -5,7 +5,7 @@
 Profile/tab lifecycle for FilterPanel: the tab bar above the facets, which
 profile is active app-wide, which dock has focus, and the panel-wide "Show
 all" / "Filter Data Pool" switches. See filter_panel.py's module docstring
-for the full picture (ADR §1.28/§1.37/§1.68, ticket #66/#177) -- this mixin
+for the full picture -- this mixin
 is the Qt-reacting half of session.trace_filter.FilterProfileRegistry, kept
 out of filter_panel.py itself only because it is a large, mostly
 self-contained slice of that class's behaviour (ticket #148 layering pass).
@@ -58,7 +58,7 @@ class ProfileTabsMixin:
 
     def active_profile_scope(self) -> str:
         """"global" or "local" -- which universe refresh_filter_panel builds the
-        facets from (ARCHITECTURE_DECISIONS §1.30 for Local, §1.36 for Global)."""
+        facets from."""
         return self._active_profile().scope
 
     def current_dock_id(self) -> Optional[str]:
@@ -71,8 +71,8 @@ class ProfileTabsMixin:
 
     @property
     def selection_store(self):
-        """The Qt-free checked-state half (ADR §1.39), read-only for outside
-        callers (ADR §1.51): gui.handlers.filter_routing and
+        """The Qt-free checked-state half, read-only for outside
+        callers: gui.handlers.filter_routing and
         gui.workspace.workspace go straight to it -- paired with
         active_profile_id() -- to resolve, export and import a dock's selection,
         rather than through a forwarding method per call. Mutation still happens
@@ -86,7 +86,7 @@ class ProfileTabsMixin:
         or a restore (`emit=False`: the project is still being opened,
         nothing downstream should react yet, matching restore_selection()).
         `replay=False` suppresses replaying the last facets during a dock-focus
-        change (ADR §1.92, #401), where the newly focused dock will be
+        change, where the newly focused dock will be
         populated with its own actual facets immediately afterwards.
         App-wide: unlike the S1-S4 design this replaces, there is no per-dock
         pointer to update. A dock-focus change calls this only to apply the
@@ -152,7 +152,7 @@ class ProfileTabsMixin:
         (workspace_tabs.currentChanged).
 
         Changes self._active_profile_id only via the fallback / restore rules
-        in the module docstring (ADR §1.37): the app-wide invariant (§1.28)
+        in the module docstring: the app-wide invariant (§1.28)
         still holds, the per-dock dict is only a memory for restoring a dock's
         own custom Local card on return.
 
@@ -325,7 +325,7 @@ class ProfileTabsMixin:
         # Clone the source's FilterSelections, offerings and seen marks under
         # the same dock keys before the copy is activated, so the redraw the
         # activation triggers reads a whole profile rather than half of one
-        # (ADR §1.39, §1.44).
+        #.
         self._selection_store.copy_selections(source_profile_id, copy.id)
         self.profile_duplicated.emit(source_profile_id, copy.id)
 

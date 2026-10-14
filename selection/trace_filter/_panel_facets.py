@@ -3,7 +3,7 @@
 # =====================================================================
 """
 One resolver, one flat result: what the Filter panel should draw for the
-active profile (ARCHITECTURE_DECISIONS §1.38, §1.48, ticket #168).
+active profile.
 
 Resolves workspace state (pool sources, open dock identities, focused dock identities,
 card, schema) to a flat ResolvedFacets, and resolves that against the active
@@ -55,7 +55,7 @@ class ResolvedFacets:
     schema: Dict[str, dict]
     card: Optional[FilterCardConfig]
     # Whether an open trace has a parameter signature that resolves to none of
-    # `parameter_sets` (ADR §1.56): the Parameter Set family's "(Empty)" bucket
+    # `parameter_sets`: the Parameter Set family's "(Empty)" bucket
     # flag. The object list cannot carry the sentinel row in band the way
     # `orders` / `result_kinds` can, so it rides here.
     parameter_set_has_empty: bool = False
@@ -71,7 +71,7 @@ class ResolvedFacets:
         """
         The card's column keys that have at least one value to offer this round.
 
-        One test for every facet family (ADR §1.56): the card carries the key
+        One test for every facet family: the card carries the key
         and the facet has >= 1 value. The old per-family thresholds (Parameter
         Set at 2, Order at 1) are gone. `card is None` (tests only) -> {}.
         """
@@ -186,7 +186,7 @@ def resolve_panel_facets(scope: str, card: FilterCardConfig, schema: Dict[str, d
 class PanelRender:
     """
     Everything `FilterPanel.populate_facets` needs to draw one round, decided --
-    the widget computes nothing from it (ADR §1.48). `facets` is carried through
+    the widget computes nothing from it. `facets` is carried through
     for the per-box widget builders; `ordered_columns` is already filtered to the
     facets that have something to offer this round (the presence test lives once,
     in `ResolvedFacets.ordered_columns`, not also in `_facet_builders`).
@@ -225,7 +225,7 @@ def resolve_panel_render(facets: ResolvedFacets, selection: FilterSelection,
                          previously_offered: Optional[OfferedFacets], already_seen: bool,
                          is_replay: bool) -> PanelRender:
     """
-    One full round of the Filter panel's own decisions (ADR §1.48), pure: the
+    One full round of the Filter panel's own decisions, pure: the
     §1.29 default-check heuristic (was `populate_plan.plan_populate`, §1.42) plus
     the ordered list of boxes to draw.
 

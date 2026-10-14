@@ -204,7 +204,7 @@ class AppContext(QObject):
         self.settings_changed.emit({"highlight_other_opacity": self.highlight_other_opacity})
 
     def _load_cursor_config(self) -> CursorConfig:
-        """Cursor Box fields from shared settings (ADR §1.149); defaults if absent or unreadable."""
+        """Cursor Box fields from shared settings; defaults if absent or unreadable."""
         try:
             return CursorConfig.from_dict(json.loads(str(self.shared_settings.value("cursor_config", ""))))
         except (ValueError, AttributeError):
@@ -230,7 +230,7 @@ class AppContext(QObject):
         startup action, which loads the folder anyway.
         """
         # Untitled scan caches accumulate in a shared temp area; clear the old
-        # ones once per primary-window start (ADR §1.22).
+        # ones once per primary-window start.
         prune_untitled_scan_cache()
 
         saved_dir = self.settings.value("primary_startup_data_directory", None)
@@ -242,7 +242,7 @@ class AppContext(QObject):
     # Data Pool state and rules live in session/data_pool.py; callers reach
     # it as app_context.pool. The three methods below stay on the shell because
     # each does work the pool deliberately does not -- the active_directory
-    # move, the startup pointer, the log lines (ADR §1.52).
+    # move, the startup pointer, the log lines.
 
     def apply_integrate_effects(self, result: IntegrateResult) -> None:
         """Apply shell effects reported by a Data Pool integration."""
@@ -264,7 +264,7 @@ class AppContext(QObject):
         shell turns that into the log lines, and -- only for a folder new to the
         pool -- the last-viewed-folder move and the startup pointer. A
         background re-scan of folders already pooled (project open, folder
-        watcher) must not move either (ADR §1.24). Returns the runs gained.
+        watcher) must not move either. Returns the runs gained.
 
         Not how a folder gets into the pool from the window any more: the
         ingest is orchestration.data_pool.PoolIngestUseCase (#208), which calls

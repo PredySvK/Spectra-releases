@@ -12,7 +12,7 @@ both presentation-layer concerns. signal_processing/ stays free of Qt and of
 AppContext; it holds dsp/ (pure numpy/scipy) and result_blocks.py (the
 synchronous path this controller's jobs ultimately call into).
 
-Dispatch goes through QtJobRunner's "interactive" lane (ADR 1.13), not
+Dispatch goes through QtJobRunner's "interactive" lane, not
 QThreadPool.globalInstance(): the global pool has no size cap of its own, so
 running heavy numpy work on it alongside a QtJobRunner batch (e.g. Calculate &
 Save Data) meant up to 2x CPU oversubscription -- exactly what the two lanes
@@ -21,7 +21,7 @@ slot_key=f"spectral:{widget_tag}", so a second Refresh (or a channel switch)
 on the same dock supersedes the first in the queue and shows a Cancel button
 in the status bar; QtJobRunner drops a superseded step's result itself
 (job.cancel_token.is_cancelled guards on_step), so the slot is the whole of
-this class's answer to "is this result still current?" (ADR §1.84).
+this class's answer to "is this result still current?".
 """
 
 from functools import partial
@@ -127,7 +127,7 @@ class SpectralRequests(QObject):
                                  widget_tag: str = "graph_dock",
                                  with_overall_level: bool = False):
         """Submits result_blocks.compute_order_cuts -- see request_1d_spectrum.
-        `with_overall_level` adds the Overall Level and Residual curves to the same computation (ADR §1.141)."""
+        `with_overall_level` adds the Overall Level and Residual curves to the same computation."""
         try:
             if tacho_block is None:
                 raise ValueError("Tacho channel is strictly required for Order Tracking.")

@@ -1,5 +1,5 @@
 """
-Benchmark files, reference signal, and machine facts (ADR §1.132).
+Benchmark files, reference signal, and machine facts.
 
 `read_benchmark_plan` loads a TOML plan, `read_machine_info` collects the
 `machine` section of the Benchmark report from the stdlib only (and

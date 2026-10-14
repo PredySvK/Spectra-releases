@@ -2,7 +2,7 @@
 # FILE: gui/dialogs/cursor_settings_dialog.py
 # =====================================================================
 """
-Cursor Settings: which fields the Cursor Box shows and in what order (ADR §1.149).
+Cursor Settings: which fields the Cursor Box shows and in what order.
 
 A trimmed Configure Filters: the same shared `PriorityGrid`, one row = a checkbox
 and a Priority. A Values section (X, Y, Z, Curve name, RMS/Peak) and the metadata

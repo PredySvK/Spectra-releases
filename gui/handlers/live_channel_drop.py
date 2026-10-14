@@ -13,7 +13,7 @@ result-content dock's Parameter Set may already fix which FFT/tracking settings
 a newly-dropped channel should be computed with.
 
 The whole read/lookup/compute runs through LiveOrderResults on a
-background thread (ADR §1.54): its worker asks the result-set cache first and
+background thread: its worker asks the result-set cache first and
 rebuilds a hit from the stored amplitudes, or computes a miss -- no dialog, and
 no HDF5 read on the GUI thread. A result already memoised from an earlier drop
 is still added synchronously here, via the same
@@ -43,7 +43,7 @@ def _order_tracking_config_from_params(params: dict) -> OrderTrackingConfig:
 
 def _append_live_curves(dock, blocks, *, file_path, file_name, channel_index, channel_name, channel_type) -> None:
     """One live order cut per block onto `dock`. The meta carries the file and
-    channel index so the curve is adopted/saved like any other (ADR §1.98, §1.102)."""
+    channel index so the curve is adopted/saved like any other."""
     from gui.handlers.result_content import _append_curve_to_dock
 
     meta = {"file_path": file_path, "file_name": file_name,
@@ -62,7 +62,7 @@ def _append_live_curves(dock, blocks, *, file_path, file_name, channel_index, ch
 class LiveChannelDropHandler:
     """
     Handles live channel drops onto result-content docks and syncs completed
-    background computations into open docks (ARCHITECTURE_DECISIONS §1.30, §1.54).
+    background computations into open docks.
 
     Dependencies:
         app_context: Application context (pool, settings, project_session, log).
@@ -124,7 +124,7 @@ class LiveChannelDropHandler:
         The cache is checked on the worker (matching the FFT settings this dock's
         Parameter Set is currently using, see _resolve_drop_config); a miss is
         computed there silently -- like an order drop onto an ordinary graph, no
-        dialog (ADR §1.54). A live result already memoised from an earlier drop is
+        dialog. A live result already memoised from an earlier drop is
         added to `dock` immediately; everything else is dispatched to
         LiveOrderResults and folded in later by _sync_manual_live_channels,
         once a live-compute burst settles (main_window.py). Returns whether the drop

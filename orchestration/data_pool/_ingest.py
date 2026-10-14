@@ -5,13 +5,13 @@ What this module owns is the *sequence*: which folders are read, in what
 order, what happens to each one when it lands, and what the run adds up to at
 the end. It never draws anything. The progress dialog, the Cancel button, the
 explorer refresh, the conflict dialog and the failure popup are consequences
-the shell applies to the reports this module hands it (ADR 1.13, 1.69, 1.70).
+the shell applies to the reports this module hands it.
 
 Two properties of the run are the reason it is written the way it is:
 
 * **The identity of a run exists before `submit`.** `on_done` may arrive
   before `submit` returns -- always for `SynchronousJobRunner`, and for
-  QtJobRunner whenever there are no steps (ADR 1.70). So the run's state dict,
+  QtJobRunner whenever there are no steps. So the run's state dict,
   including the token that says which run it is, is complete before `submit`,
   and `submit` is the last statement that touches it.
 * **Per-run state lives in the state dict captured by the callbacks, not on
@@ -133,7 +133,7 @@ class FolderReport:
     What one folder of a running ingest did, for the shell to act on.
 
     Exactly one of `integrated` / `failure` is set. `integrated` carries the
-    pool's own report so the shell can apply its effects (ADR 1.69);
+    pool's own report so the shell can apply its effects;
     `log_messages` is what the run decided is worth saying about the folder,
     in the order it should be said.
     """
@@ -176,7 +176,7 @@ class PoolIngestUseCase:
     no `app_context`, no window, no Qt. `start()` returns the job id the shell
     needs in order to follow the run's progress and to cancel it; cancelling is
     not this object's business, because the only cancel it would ever decide on
-    its own is the supersede that `slot_key` already performs (ADR 1.70).
+    its own is the supersede that `slot_key` already performs.
     """
 
     def __init__(self, pool, session, runner: JobRunner):
@@ -361,7 +361,7 @@ class PoolIngestUseCase:
             "on_finished": on_finished,
         }
         # Session-derived values are read here, on the calling thread; the
-        # worker steps receive them as plain data (ADR 1.54).
+        # worker steps receive them as plain data.
         scan_inputs = self._pool.prepare_scan_inputs()
         steps = [
             job_step(os.path.basename(directory) or directory,
@@ -372,7 +372,7 @@ class PoolIngestUseCase:
         ]
 
         # Last statement that touches the run: submit() may report the whole
-        # job finished before it returns (ADR 1.70).
+        # job finished before it returns.
         self._active_run = state["run"]
         job_id = self._runner.submit(
             f"Add to Data Pool - {len(steps)} folder(s)", steps,

@@ -12,7 +12,7 @@ from selection.source_facets import EMPTY_FACET_VALUE, POOL_IDENTITY_COLUMNS
 from selection.trace_filter import ResolvedFacets
 
 # Result columns say nothing about which measurement a channel came from, so
-# the Selection editor neither draws nor offers them (ADR §1.131).
+# the Selection editor neither draws nor offers them.
 SELECTION_EXCLUDED_COLUMNS = frozenset({
     COLUMN_RESULT_SET, COLUMN_ORDER, COLUMN_ANALYSIS_TYPE, COLUMN_PARAMETER_SET,
 })
@@ -84,7 +84,7 @@ def resolve_selection_facets(facets: ResolvedFacets) -> ResolvedFacets:
     """Narrow a Global card's facets to what a Measurement selection constrains.
 
     Channel is offered by base name, as the rule stores it; Direction is its
-    own column (ADR §1.131). Result columns and ranges are dropped, and no
+    own column. Result columns and ranges are dropped, and no
     value is greyed: the editor masks no graph.
     """
     bases = sorted({base for base, _direction in facets.channel})

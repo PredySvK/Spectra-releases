@@ -13,7 +13,7 @@ off the measurement file), Excel metadata (the metadata spreadsheet) and
 Calculated metadata (Analysis type, Order, Parameter set). The Identity and
 Calculated built-ins have no schema row, so they are always offered, in the
 fixed order core.filter_card_config.IDENTITY_BUILTIN_ORDER /
-CALCULATED_BUILTIN_ORDER lists them (ADR §1.32's own wording).
+CALCULATED_BUILTIN_ORDER lists them.
 
 Two gates, not one. Opting an Excel/Raw metadata field into "usable_as_filter"
 is Metadata and Filter Settings' job alone (its "Use as Filter" column) --
@@ -27,7 +27,7 @@ Every checkbox's label carries "(N)" -- how many distinct values that column
 has right now (selection.source_facets.FieldCardinality / selection.trace_filter.
 builtin_column_cardinalities), not only the greyed ones. For a
 Global card that count is pool-wide; for a Local one it is read off the focused
-dock's own traces, since that is all a Local card can filter (ADR §1.33) -- the
+dock's own traces, since that is all a Local card can filter -- the
 caller passes those dock-scoped cardinalities in. A column whose cardinality
 means it cannot narrow anything down -- one value, or a value unique to every
 measurement -- is greyed out on top of that, but stays checkable: the app never
@@ -168,7 +168,7 @@ class FilterFieldSelectionDialog(QDialog):
         self._on_card_keys = {column.key for column in self._card.columns}
 
         # For a Local card the counts and "cannot narrow" verdicts come from the
-        # focused dock's own traces, not the pool (ADR §1.33) -- the caller
+        # focused dock's own traces, not the pool -- the caller
         # computes them and hands them in; None means fall back to the pool.
         self._schema_cardinalities_override = schema_cardinalities
         self._builtin_cardinalities_override = builtin_cardinalities

@@ -1,5 +1,5 @@
 """
-Benchmark (ADR §1.132): time every Benchmark case of a plan.
+Benchmark: time every Benchmark case of a plan.
 
 Qt-free -- `benchmark.py` drives it headless; `gui.benchmark` (Full variant) reuses
 the case plan and the report builders. `run_benchmark` times each case

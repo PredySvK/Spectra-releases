@@ -61,19 +61,19 @@ tab is not a per-dock choice. A dock-focus change leaves it alone *unless*
 the active card is not visible for the new dock (a custom Local card owned
 by the dock just left): then it falls back to the "Local" builtin, and a
 per-dock memory remembers the card so returning focus to its owner dock
-restores it without a manual click (ADR §1.37, ticket #66). That memory is a
+restores it without a manual click. That memory is a
 restore memory, not a second active pointer -- §1.28's "exactly one active
 card app-wide" still holds.
 
 The profile list, the active pointer, the focused-dock id and that per-dock
 restore memory are all Qt-free, so they live in
-session.trace_filter.FilterProfileRegistry (ADR §1.68 / #177), held here as
+session.trace_filter.FilterProfileRegistry, held here as
 self._profile_registry. This panel calls it and reacts on the Qt side (tab
 bar, checkboxes, signals) -- `self._profiles` / `self._active_profile_id` /
 `self._current_dock_id` below are read-only properties onto it, kept so the
 bulk of this file did not need rewriting call site by call site.
 
-Which tabs are *shown*, though, is per dock (ADR §1.37): a custom "local"
+Which tabs are *shown*, though, is per dock: a custom "local"
 card carries owner_dock_id and its tab appears only while that dock has focus
 (_visible_profiles / _rebuild_tab_bar, re-run from set_current_dock_id). The
 two builtins and every custom "global" card stay app-wide. The "+" button is
@@ -94,7 +94,7 @@ stateless about which card is active. `_offered_*` stays panel-level -- only one
 selection is ever on screen at once. Which sources a profile's facets are
 built from -- all_pool_sources() for a Global card's measurement facets (its
 Calculated columns come from the open docks plus the Result Pool, ADR §1.36),
-the focused dock's own traces for Local (ARCHITECTURE_DECISIONS §1.30) -- is
+the focused dock's own traces for Local -- is
 decided by gui.handlers.filter_routing.refresh_filter_panel, via
 active_profile_scope() below.
 
@@ -102,7 +102,7 @@ set_current_dock_id() re-renders the on-screen facets whenever the focused
 dock changes (a "local" tab's content may differ for the new dock). It changes
 self._active_profile_id only through _activate_profile(), and only when the
 active card is not visible for the new dock (fall back to "Local") or the new
-dock has a remembered custom Local card to restore (ADR §1.37). A tab click, a
+dock has a remembered custom Local card to restore. A tab click, a
 freshly added/removed profile, or restoring a saved list also go through
 _activate_profile(). gui.handlers.filter_routing.apply_active_filter_to_dock is what
 actually turns the active profile into a redraw on a given dock -- the same
@@ -113,7 +113,7 @@ _last_applied_snapshot now lives on the dock's curves (dock.curves.applied_mask_
 state bound to a dock's own lifetime, not the panel's.
 
 The store itself is reached from outside through the read-only `selection_store`
-property (ADR §1.51): gui.handlers.filter_routing and
+property: gui.handlers.filter_routing and
 gui.workspace.workspace resolve the active profile's selection for an
 arbitrary dock id -- store.active_selection(panel.active_profile_id(), dock_id),
 unlike `self._sel` below which always resolves against self._current_dock_id --
@@ -205,7 +205,7 @@ class FilterPanel(ProfileTabsMixin, QWidget):
         super().__init__(parent)
         self._init_profile_state()
 
-        # The Qt-free checked-state half (ADR §1.39): one shared FilterSelection
+        # The Qt-free checked-state half: one shared FilterSelection
         # per profile for "global", one per (profile, dock) for "local" --
         # lazily created on first access (store.active_selection).
         self._selection_store = FilterSelectionStore()
@@ -214,9 +214,9 @@ class FilterPanel(ProfileTabsMixin, QWidget):
         # ones), which one is active app-wide -- one pointer, not a per-dock
         # choice, see the module docstring for why T1 replaced the S1-S4
         # two-pointer resolution with this -- which dock has focus, and the
-        # per-dock active-card restore memory (ADR §1.37, ticket #66). All
+        # per-dock active-card restore memory. All
         # Qt-free, so it lives in session.trace_filter.FilterProfileRegistry
-        # (ADR §1.68 / #177); this panel calls it and reacts on the Qt side
+        #; this panel calls it and reacts on the Qt side
         # (tab bar, checkboxes, signals).
         self._profile_registry = FilterProfileRegistry(self._selection_store)
 
@@ -245,7 +245,7 @@ class FilterPanel(ProfileTabsMixin, QWidget):
         self._btn_add_profile.clicked.connect(self._on_add_profile_clicked)
 
         # One panel-wide switch, not per card: the active card is always a
-        # single one (ADR §1.32), so a per-card on/off would visibly do nothing
+        # single one, so a per-card on/off would visibly do nothing
         # on the other N-1 cards. Ticked, it blanks the mask on every open
         # graph and the Data Pool narrowing at once, while every checkbox keeps
         # its state so one click brings the filtering back. It rides the tab row

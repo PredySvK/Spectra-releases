@@ -26,7 +26,7 @@ FUNC_TYPE_ORDER_FUNCTION = 28
 
 
 def is_time_response(func_type: int) -> bool:
-    """Only UFF time responses are readable waveforms (ADR §1.24).
+    """Only UFF time responses are readable waveforms.
 
     A channel without a function code is a time response: ChannelMetadata
     defaults func_type to FUNC_TYPE_TIME_RESPONSE, and so must a reader of a

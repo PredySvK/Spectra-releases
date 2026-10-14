@@ -29,7 +29,7 @@ class AnalysisKind:
     limit) -- a property of the dock, not of the Analysis mode that opens it.
 
     `rebuilds_on_unit_change` marks a kind whose curves a global unit change
-    re-scales through GraphCurves.rebuild_units (ADR §1.89). False for a kind
+    re-scales through GraphCurves.rebuild_units. False for a kind
     with nothing here to rebuild through yet.
     """
     name: str
@@ -41,7 +41,7 @@ class AnalysisKind:
 
     @property
     def display_only_params(self) -> Tuple[str, ...]:
-        """The Block kind's display-only parameters (ADR §1.60), never a copy."""
+        """The Block kind's display-only parameters, never a copy."""
         return spec_for(self.block_kind).display_only_params
 
 

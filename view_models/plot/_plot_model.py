@@ -3,7 +3,7 @@ The graph as data: what a dock is showing, with no drawing in it.
 
 Presentation state on the view-models floor: data shaped for drawing,
 without importing Qt or gui/. Can be built and asserted on in plain unit tests,
-and later serialised to a figure spec for offline rendering (ARCHITECTURE_DECISIONS §1.7).
+and later serialised to a figure spec for offline rendering.
 
 Unit conversion does not happen here. ``_plot_model_builder`` takes the raw
 arrays plus a ``UnitPreferences`` and returns a model whose ``Trace.y`` is
@@ -55,7 +55,7 @@ class Trace:
     # "time"|"frequency"|"rpm"|... (core.data_block.Axis.quantity) or "" for
     # "undeclared" -- a curve built before axis_projections existed, or one no
     # builder has been taught to stamp yet. Undeclared draws unconditionally
-    # regardless of the dock's x_domain (ARCHITECTURE_DECISIONS §1.30): the
+    # regardless of the dock's x_domain: the
     # alternative default -- hide unless it matches -- would blank out every
     # existing dock that doesn't set it, the same class of mistake as §1.29's
     # "Global branch offered an empty Channel facet".
@@ -92,7 +92,7 @@ class Trace:
     compute_spec: Optional[Dict[str, Any]] = None
     # Underlying NVHDataBlock (canonical FFT or order cut) if available.
     # Enables instant on-the-fly re-scaling (Linear/Power/PSD, RMS/Peak, dB)
-    # without re-running FFT or background jobs (ADR §1.60).
+    # without re-running FFT or background jobs.
     block: Optional[Any] = None
     data_block: Optional[Any] = None
 
@@ -132,7 +132,7 @@ class Annotation:
     """User-authored mark on the graph.
 
     Real type, empty slot: nothing writes annotations from the UI yet
-    (ARCHITECTURE_DECISIONS §1.8), but the model carries the list so the
+   , but the model carries the list so the
     renderer and a future editor have one shape to target.
     """
 
@@ -162,7 +162,7 @@ class SpectrogramModel:
 
     A spectrogram is one ``ImageItem`` plus a LUT -- no curves, no overlays, no
     legend -- so it gets its own model rather than being forced into
-    ``PlotModel.traces`` (ARCHITECTURE_DECISIONS §1.7, rejected alternative).
+    ``PlotModel.traces``.
     ``image`` is the magnitude matrix as the renderer needs it; ``color_scale``
     is a display-only parameter (§1.21) read from ``app_context`` at build time.
     """

@@ -2,7 +2,7 @@
 # FILE: orchestration/batch/_overwrite.py
 # =====================================================================
 """
-Finding overwrite candidates for save blocks in a workflow (ADR §1.6, §1.21).
+Finding overwrite candidates for save blocks in a workflow.
 
 Pure lookup over the session: for every save block in a workflow graph, checks
 whether a result set with identical parameters already exists in the project.

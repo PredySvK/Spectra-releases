@@ -337,7 +337,7 @@ class ProjectSession(ResultSetsMixin):
         """
         Moves scan caches built while the project was Untitled into its own
         cache/scan/ folder, so the first rescan after a save is a cache hit
-        rather than a full re-parse (ADR §1.22).
+        rather than a full re-parse.
 
         Only the caches for this project's data roots are taken: the temp area
         is shared and may hold caches for folders that belong to a different
@@ -615,7 +615,7 @@ class ProjectSession(ResultSetsMixin):
 
         return changed
 
-    # ---- measurement selections (ADR §1.12) -----------------------------
+    # ---- measurement selections -----------------------------
 
     def selections(self) -> List[MeasurementSelection]:
         """Every named selection stored in this project, in stored order."""
@@ -687,7 +687,7 @@ class ProjectSession(ResultSetsMixin):
             history.snapshots = [rename_input(snapshot) for snapshot in history.snapshots]
         self.mark_dirty()
 
-    # ---- block-diagram workflows (ADR §1.6) ----------------------------
+    # ---- block-diagram workflows ----------------------------
 
     def workflows(self) -> List[Workflow]:
         """Every workflow stored in this project, in stored order."""
@@ -933,7 +933,7 @@ class ProjectSession(ResultSetsMixin):
                                      wanted_block_params: Optional[List[Dict]] = None,
                                      channel_index: Optional[int] = None):
         """
-        `find_cached_result` for a worker thread (ADR §1.54): the lookup -- which
+        `find_cached_result` for a worker thread: the lookup -- which
         opens HDF5 shards and reads arrays out of them -- runs on the background
         thread rather than the GUI thread. Unlike `find_cached_result` there is
         no `write_index` knob: a worker never persists `cache/index.json`.

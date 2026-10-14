@@ -3,7 +3,7 @@ The Filter panel's selection read as a Data Pool query -- what
 selection.source_facets.visible_pool_channels is asked to narrow by.
 
 The pool and the dock mask read the same FilterSelection and OfferedFacets but
-answer different questions (ADR §1.96): the mask hides what the card offered and
+answer different questions: the mask hides what the card offered and
 the user unchecked, the pool keeps a positive list. So the pool may only be told
 about a column that is a *real narrowing* -- a column with every offered value
 checked, or with nothing checked, says nothing. Without that a Local card,

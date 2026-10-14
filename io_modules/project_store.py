@@ -43,7 +43,7 @@ CACHE_DIR_NAME = "cache"
 
 # Folder-scan caches (parsed channel inventory per data folder) live under the
 # project's cache folder too, in their own subfolder so the HDF5 result sets
-# stay easy to browse (ADR §1.22).
+# stay easy to browse.
 SCAN_CACHE_DIR_NAME = "scan"
 
 # How long an Untitled scan cache file may sit in the shared temp area before a
@@ -94,7 +94,7 @@ def load_project(project_path: str) -> NVHProject:
     Reads a project file.
 
     Refuses project format versions outside the readable range before building
-    the model. Reading never writes or migrates the file (ADR §1.140).
+    the model. Reading never writes or migrates the file.
     """
     with open(project_path, "r", encoding="utf-8") as handle:
         data = json.load(handle)
@@ -128,7 +128,7 @@ def cache_folder(project_path: str) -> str:
 
 
 def scan_cache_folder(project_path: str) -> str:
-    """Folder holding this project's per-folder scan caches (ADR §1.22)."""
+    """Folder holding this project's per-folder scan caches."""
     return os.path.join(cache_folder(project_path), SCAN_CACHE_DIR_NAME)
 
 
@@ -140,7 +140,7 @@ def untitled_scan_cache_folder() -> str:
     not be re-parsed on every rescan while the user is still deciding whether
     to save. The caches go to a shared temp area keyed by data-folder identity;
     ProjectSession.save_as copies the relevant ones into the project's own
-    cache/scan/ on the first save (ADR §1.22).
+    cache/scan/ on the first save.
     """
     base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
     return os.path.join(base, "NVH_Tool", "untitled_scan")
@@ -196,7 +196,7 @@ def adopt_untitled_scan_caches(project_path: str, data_roots: Sequence[Union[Dat
     """
     Moves scan caches built while the project was Untitled into its own
     cache/scan/ folder, so the first rescan after a save is a cache hit
-    rather than a full re-parse (ADR §1.22).
+    rather than a full re-parse.
 
     Only the caches for this project's data roots are taken: the temp area
     is shared and may hold caches for folders that belong to a different

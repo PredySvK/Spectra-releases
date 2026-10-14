@@ -30,7 +30,7 @@ from selection.trace_filter import Signature, TraceIdentity, identities_match
 # overall_level's "rpm|time") cannot be uniquely reverse-mapped from
 # x_quantity alone, so they are excluded here and resolve their kind from
 # trace.block / data_block. A Residual shares rpm with order_cut and always
-# carries its block (ADR §1.141), so it is excluded too and rpm stays
+# carries its block, so it is excluded too and rpm stays
 # order_cut. Built once at import time rather than listed by hand, so a new
 # curve-shaped kind in core.block_kinds needs no second edit here.
 KIND_BY_X_QUANTITY: Dict[str, str] = {

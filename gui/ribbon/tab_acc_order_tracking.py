@@ -135,7 +135,7 @@ class TabAccOrderTracking(RibbonDspTab):
         # -- Options --
         # Built before cb_remove_dc (the ready widget), so _after_push finds it.
         # Not an OrderTrackingConfig field: that would change every stored order
-        # cut's cache identity (ADR §1.141 point 9).
+        # cut's cache identity.
         self.cb_overall_level = QCheckBox("Overall Level + Residual")
         self.cb_overall_level.setToolTip(
             "Also draw the Overall Level (F min 10 Hz, Full Bandwidth) from the same computation")

@@ -2,7 +2,7 @@
 # FILE: signal_processing/evaluation/typed_orders_eval.py
 # =====================================================================
 """
-Typed orders (ADR §1.64 point 8, issue #141): the value of each user-typed
+Typed orders: the value of each user-typed
 order on an rpm-tracked spectrogram, read straight off the spectrogram's own
 canonical matrix through `order_cut.order_cut_from_spectrogram` rather than a
 fresh cut from raw samples (§1.64 point 8's "why no raw data is needed") --
@@ -56,7 +56,7 @@ def extract_typed_orders(
     orders: Sequence[float] = (),
     order_width: float = DEFAULT_ORDER_WIDTH,
 ) -> Tuple[SingleValue, ...]:
-    """Extraction on one curve (ADR §1.64 point 2). `block` must be a
+    """Extraction on one curve. `block` must be a
     KIND_SPECTROGRAM tracked against rpm -- a time-tracked spectrogram (or
     any other block kind a dock might also be showing, point 3) gives no
     rows here, not an error; the panel shows its usual "no curves supported"

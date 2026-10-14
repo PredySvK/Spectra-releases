@@ -2,7 +2,7 @@
 # FILE: core/cursor_config.py
 # =====================================================================
 """
-`CursorConfig` -- which lines the Cursor Box shows and in what order (ADR §1.149).
+`CursorConfig` -- which lines the Cursor Box shows and in what order.
 
 Shape only: frozen data that round-trips through JSON so the GUI can keep it in
 `shared_settings`. A key is either a fixed value key below or (later) a metadata

@@ -50,7 +50,7 @@ class ResultSetsMixin:
 
         Three calls rather than one (begin / write shards / commit) because a
         result set is written by many background steps, one measurement each
-        (ADR §1.21): a spectrogram batch is gigabytes, so nothing may be held
+       : a spectrogram batch is gigabytes, so nothing may be held
         until the end. The draft is plain frozen data with no open handles, so
         it is safe to hand to workers; each of them calls
         cache_writer.write_result_shard with it.

@@ -43,7 +43,7 @@ def synthetic_trace_for_block(block: NVHDataBlock) -> Trace:
 
     No Parameter Set: `compute_spec` stays None, so `identity_for_trace`
     leaves `parameter_signature` unset -- a spectrogram dock shows exactly one
-    spectrogram (ADR §1.64 "Vedome nedorobené"), so there is never a second
+    spectrogram, so there is never a second
     curve to group it with.
     """
     empty = np.zeros(0)

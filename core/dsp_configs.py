@@ -108,7 +108,7 @@ class OrderTrackingConfig:
 @dataclass
 class OverallLevelConfig:
     # No spectrum_format: by Parseval the band RMS is the same for Linear, Power
-    # and PSD, so the field would only split result-set identity (ADR §1.62 point 4).
+    # and PSD, so the field would only split result-set identity.
     f_start: float = 10.0
     # None is Full Bandwidth -- up to each file's own Nyquist. An intent, not a
     # number, so files at different sampling rates share one identity (§1.62 point 11).

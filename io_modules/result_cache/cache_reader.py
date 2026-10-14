@@ -2,7 +2,7 @@
 # FILE: io_modules/result_cache/cache_reader.py
 # =====================================================================
 """
-Lazy reader for a result set folder (ADR §1.21).
+Lazy reader for a result set folder.
 
 Read-only, and deliberately split into a cheap browse step (which sources,
 which channels are in this result set) and a per-channel fetch that actually

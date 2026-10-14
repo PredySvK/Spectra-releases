@@ -54,7 +54,7 @@ class MainWindowFrame(QWidget):
 
         # Created before init_ui and before any controller: the status strip and
         # the Jobs dock render from it, and every controller that runs work in
-        # the background receives it by constructor (ADR 1.13).
+        # the background receives it by constructor.
         from gui.jobs.qt_job_runner import QtJobRunner
         self.job_manager = QtJobRunner(self.app_context, parent=self)
 
@@ -182,7 +182,7 @@ class MainWindowFrame(QWidget):
         # Built here, ahead of explorer_panel/workspace, so ResultPoolPanel
         # (nested in explorer_panel) and Workspace can both receive it
         # by constructor instead of reaching into main_window later
-        # (ARCHITECTURE_DECISIONS §1.75, #233). find_dock_by_id is bound to
+        #. find_dock_by_id is bound to
         # workspace_tabs directly -- the tab widget already exists and is
         # never replaced, unlike Workspace, which is built after this.
         self.result_content_handler = ResultContentHandler(
@@ -256,7 +256,7 @@ class MainWindowFrame(QWidget):
         sub_area.resizeDocks([explorer_dock], [DEFAULT_EXPLORER_WIDTH], Qt.Horizontal)
 
         # The one owner of the Filter panel's facets and of the mask they put on
-        # every open dock (ARCHITECTURE_DECISIONS §1.76, #234). Built here, after
+        # every open dock. Built here, after
         # the panel it drives and the two widgets it reads, and before
         # Workspace below, which takes it by constructor.
         self.filter_routing = FilterRoutingHandler(
@@ -339,7 +339,7 @@ class MainWindowFrame(QWidget):
 
         # The Block Pool: a palette of processing blocks, a sub-tab of the
         # Explorer dock and only shown while the ribbon's Workflow tab is active
-        # (ADR §1.6 phase 7C). Double-click or drag adds a block to the open
+        #. Double-click or drag adds a block to the open
         # workflow. The panel is built by UnvChannelExplorer; the window only
         # wires its activation signal and toggles the tab.
         self.block_pool_panel = self.explorer_panel.block_pool_panel
@@ -369,7 +369,7 @@ class MainWindowFrame(QWidget):
         self.ribbon.tab_project.btn_realize_dataset.clicked.connect(self.dataset_authoring.realize_dataset)
 
         # --- PROJECT DOCUMENT COMMANDS ---
-        # The one owner of "which project is open" (ADR §1.78, #236). Built
+        # The one owner of "which project is open". Built
         # here, after every panel it refreshes; the four things whose owners are
         # only built at the end of init_ui() go in as callables (see the module
         # docstring).
@@ -395,7 +395,7 @@ class MainWindowFrame(QWidget):
         project_tab.combo_recent.activated.connect(
             lambda _: self.project_document.open_recent_project())
 
-        # --- WORKFLOW TAB (ADR §1.6 phase 7C) ---
+        # --- WORKFLOW TAB ---
         from gui.handlers.workflow_authoring import WorkflowAuthoringHandler
         from gui.handlers.batch_run import BatchRunHandler
 
@@ -404,7 +404,7 @@ class MainWindowFrame(QWidget):
         )
         # The one owner of "start a batch run", whether it came from the
         # Workflow tab's Run button or from one of the four ribbon fast paths
-        # below (ARCHITECTURE_DECISIONS §1.77, #235). Built here, after the
+        # below. Built here, after the
         # ribbon and the workflow view it reads; the runner it hands work to is
         # built before init_ui() for exactly this.
         self.batch_run = BatchRunHandler(
@@ -491,7 +491,7 @@ class MainWindowFrame(QWidget):
         # to a filter edit made while it did not have focus (S3, R2'/R6').
         self.workspace_tabs.currentChanged.connect(
             lambda idx: filter_routing.dock_focus_changed(self.workspace_tabs.widget(idx)))
-        # The Evaluation card (ADR §1.64 point 5) recomputes on the same
+        # The Evaluation card recomputes on the same
         # dock-focus event the Filter panel routes on.
         self.workspace_tabs.currentChanged.connect(
             lambda idx: self.evaluation_panel.on_dock_focus_changed(self.workspace_tabs.widget(idx)))
@@ -503,7 +503,7 @@ class MainWindowFrame(QWidget):
         self.filter_panel.selection_changed.connect(filter_routing.refresh_data_pool_filter)
         self.filter_panel.data_pool_filter_toggled.connect(filter_routing.toggle_data_pool_filter)
         # The panel-wide "Show all" switch: blanks every mask and the pool
-        # narrowing at once, checked values kept (ADR §1.32).
+        # narrowing at once, checked values kept.
         self.filter_panel.show_all_toggled.connect(filter_routing.toggle_show_all)
 
         layout = self.workspace_layout
@@ -730,7 +730,7 @@ class MainWindowFrame(QWidget):
 
     def show_workflow_view(self, on: bool) -> None:
         """Swap sub_area's centre between the analysis docks and the Workflow
-        panel, driven by the ribbon's Workflow tab (ADR §1.6 phase 7C). The
+        panel, driven by the ribbon's Workflow tab. The
         Explorer's Block Pool tab rides along -- it only makes sense next to
         the workflow."""
         self.center_stack.setCurrentWidget(

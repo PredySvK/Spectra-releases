@@ -4,7 +4,7 @@ Owns the docks around the workspace -- Explorer, Filters, the job status
 strip at the foot of their column, and the bottom
 Output panel (System Log / Jobs / Evaluation tabs) -- plus their QSettings-
 backed geometry. Split out of MainWindowFrame so the docks stop being loose
-window attributes shared with gui/handlers/ (ADR §1.74).
+window attributes shared with gui/handlers/.
 """
 from PySide6.QtCore import Qt, QTimer
 

@@ -2,7 +2,7 @@
 Benchmark stopwatches: named steps that are timed only while a Benchmark records.
 
 `benchmark_step(name)` wraps a piece of reading or computing. Outside a
-Benchmark it is one global read and nothing is recorded (ADR §1.132), so the
+Benchmark it is one global read and nothing is recorded, so the
 stopwatches can stay in io_modules and signal_processing for good. Inside
 `record_benchmark_steps(read_rss_mb)` every finished step is appended as a
 `StepTiming`. Reading the process memory is the OS's business, so the caller

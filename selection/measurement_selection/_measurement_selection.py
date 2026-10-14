@@ -3,7 +3,7 @@
 # =====================================================================
 """
 Internal implementation of measurement selection, channel selection for runs,
-and save-spec filtering (ARCHITECTURE_DECISIONS §1.6, §1.12).
+and save-spec filtering.
 """
 import os
 from dataclasses import dataclass
@@ -49,7 +49,7 @@ def _saved_facet_plan(metadata_values: Mapping[str, Any],
                       ) -> Tuple[Dict[str, List[str]], Dict[str, Tuple[Any, Any]], Tuple[str, ...]]:
     """
     Split a saved query into constraints that can still be evaluated and ones
-    that cannot (ADR §1.116).
+    that cannot.
 
     `usable_as_filter` is not consulted: it decides what the Filter panel offers,
     not whether a query written earlier still names a real column. A missing
@@ -140,7 +140,7 @@ class SelectionResolution:
     \"Run on selection\" dialog, because \"40 measurements, 0 runs\" otherwise looks
     like a bug rather than like a channel filter that matches nothing.
     `unevaluable_constraints` names saved metadata or range constraints the
-    schema can no longer judge (ADR §1.116); the runner logs each as a WARNING.
+    schema can no longer judge; the runner logs each as a WARNING.
     """
     sources: List[SourceEntry]
     channels_by_source: Dict[str, List[str]]
@@ -248,7 +248,7 @@ def resolve(selection: MeasurementSelection,
 class SaveSourceResolution:
     """
     Which measurements a `SaveSpec` keeps, and which of its saved constraints
-    the schema can no longer evaluate (ADR §1.116).
+    the schema can no longer evaluate.
     """
     sources: List[SourceEntry]
     unevaluable_constraints: Tuple[str, ...] = ()
@@ -258,7 +258,7 @@ def resolve_save_sources(save: SaveSpec, sources: Iterable[SourceEntry],
                          schema: Optional[Dict[str, Dict[str, Any]]] = None) -> SaveSourceResolution:
     """
     The measurements a `SaveSpec` keeps: `sources` narrowed by its metadata and
-    range facets (ADR §1.6 phase 7B, ADR §1.116).
+    range facets.
 
     Same functions as `resolve()`'s query branch and the same reason -- the batch
     and the Compare tab must agree on what \"these measurements\" means. An empty
@@ -324,7 +324,7 @@ def resolve_run_channel_type(source: Optional[SourceEntry],
     """
     The type a batch judges one of a run's channels by -- offering it, planning
     it and deciding whether a SaveSpec keeps it all ask this, so the three can
-    no longer disagree. It is the Filter panel's rule (ADR §1.97): the type the
+    no longer disagree. It is the Filter panel's rule: the type the
     project stores for that channel, the reader's only where the project is
     silent. None is a channel stored with no type, which no type constraint keeps.
     """

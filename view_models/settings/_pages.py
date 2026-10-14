@@ -116,7 +116,7 @@ SETTINGS_PAGES: tuple[SettingsPage, ...] = (
         ("Computation", "Result Cache"),
         (
             # Only ever affects what is written next: h5py decompresses
-            # transparently, so result sets already on disk stay readable (ADR §1.21).
+            # transparently, so result sets already on disk stay readable.
             SettingsField(
                 "result_cache_compression",
                 "Result cache compression",

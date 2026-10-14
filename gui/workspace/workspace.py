@@ -50,7 +50,7 @@ def find_dock_by_id(tab_widget, dock_id: str):
     A module-level function (rather than only a Workspace method) so
     gui.handlers.result_content.ResultContentHandler can be handed a
     dock-lookup callable bound to `main_window.workspace_tabs` before
-    Workspace itself exists (ARCHITECTURE_DECISIONS §1.75) -- the tab
+    Workspace itself exists -- the tab
     widget is created and never replaced well before Workspace is.
     """
     if not dock_id:
@@ -178,7 +178,7 @@ class Workspace(AnalysisTabsMixin):
         # private queue rather than None, so its reads still leave the GUI
         # thread the way the application's do.
         self.job_manager = job_manager if job_manager is not None else QtJobRunner(app_context)
-        # Every dock's background read goes through here (ADR §1.84): one
+        # Every dock's background read goes through here: one
         # answer to "is this result still wanted?" for the whole workspace.
         self.dock_tasks = DockTasks(
             self.job_manager, is_open=lambda dock_id: self.find_dock_by_id(dock_id) is not None)
@@ -190,7 +190,7 @@ class Workspace(AnalysisTabsMixin):
         self.spectral_requests = spectral_requests
         # gui.handlers.live_channel_drop.LiveChannelDropHandler, handed
         # straight on to `execute_channel_drop_processing` for result-content
-        # docks (ARCHITECTURE_DECISIONS §1.30).
+        # docks.
         # Same name as the window's own attribute -- one thing, one name.
         self.live_drop_handler = live_drop_handler
         self.result_content_handler = result_content_handler
@@ -637,7 +637,7 @@ class Workspace(AnalysisTabsMixin):
         dispatch_compute on the result in that case; there is nothing to
         compute it from.
 
-        `dock_id` is the id a restored dock was saved with (ADR §1.94): the
+        `dock_id` is the id a restored dock was saved with: the
         dock takes it back, so a custom Local filter card owned by it still
         finds it. An id some open dock already holds is ignored and the dock
         keeps its fresh one -- two docks never share an id.
@@ -886,7 +886,7 @@ class Workspace(AnalysisTabsMixin):
     def _log_overall_level_band_clamp(self, block) -> None:
         """
         One log line when the requested F max was clipped to the file's
-        Nyquist (ADR §1.62 point 9) -- called once per compute, from the one
+        Nyquist -- called once per compute, from the one
         place a freshly computed Overall Level block lands.
         """
         clipped = resolve_clipped_f_stop(block)
@@ -900,10 +900,10 @@ class Workspace(AnalysisTabsMixin):
     def rebuild_active_dock_display_settings(self, expected_kind: Optional[str] = None) -> None:
         """
         Instantly re-scales the active dock's display format / amplitude / scale (< 1 ms),
-        without background worker jobs or DSP recomputation (ADR §1.60).
+        without background worker jobs or DSP recomputation.
 
         Which settings are passed is the dock's Block kind's
-        `display_only_params`, read through its Analysis kind (ADR §1.87);
+        `display_only_params`, read through its Analysis kind;
         a setting the ribbon's config does not carry is left to the dock's
         own fallback.
         """
@@ -990,7 +990,7 @@ class Workspace(AnalysisTabsMixin):
     def replot_time_docks_for_unit_change(self) -> None:
         """
         Re-scales every open dock whose Analysis kind is registered as
-        ``rebuilds_on_unit_change`` (ADR §1.89) from its untouched ``y_raw``
+        ``rebuilds_on_unit_change`` from its untouched ``y_raw``
         for the new global units (``dock.curves.rebuild_units``, GraphCurves'
         own operation over plot_model_builder.rebuild_with_units) -- no disk,
         no DSP, and the frame (title, axes) is preserved rather than reset (a
@@ -1078,7 +1078,7 @@ class Workspace(AnalysisTabsMixin):
 
         if isinstance(target_widget, GraphDock):
             # A custom Local filter card is owned by the dock it was made on
-            # (ADR §1.37); with the dock gone, drop the card and its
+            #; with the dock gone, drop the card and its
             # selections now rather than leave them invisible forever.
             panel = self.filter_panel
             dock_id = getattr(target_widget, "dock_id", None)

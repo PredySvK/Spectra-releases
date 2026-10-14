@@ -13,7 +13,7 @@ from core.models import MeasurementRunIndex
 from io_modules.metadata_parser import find_matching_row, normalize_file_key
 
 
-# --- Typed metadata schema (ADR §1.1) --------------------------------------
+# --- Typed metadata schema --------------------------------------
 #
 # Every schema field carries a `kind`: one of these. The kind is inferred once
 # from the values a column actually holds (generate_baseline_schema_master) and

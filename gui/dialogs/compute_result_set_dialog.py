@@ -3,7 +3,7 @@
 # =====================================================================
 """
 "Compute Result Set" -- the dialog behind the button every analysis ribbon tab
-ends with (ARCHITECTURE_DECISIONS §1.6).
+ends with.
 
 It answers one question in two parts before a batch runs:
 

@@ -436,7 +436,7 @@ class AnalysisTabsMixin:
     # =========================================================================
     def open_acc_overall_level_tab(self, run_index, channel_meta):
         # Only rpm tracking requires a tacho channel; in time mode, tacho is not
-        # used (ADR §1.62 point 7 and 19, issue #124).
+        # used.
         config = self.app_context.overall_level_settings
         if tacho_missing(run_index, tracking_mode=config.tracking_mode):
             self.app_context.log(
@@ -511,7 +511,7 @@ class AnalysisTabsMixin:
         channel_meta = getattr(dock, "channel_meta", None)
 
         # The Overall Level curve comes from the same computation as the orders, never
-        # beside cached ones (ADR §1.141 point 10).
+        # beside cached ones.
         with_overall_level = (analysis_kind.block_kind == KIND_ORDER_CUT
                               and self.app_context.order_tracking_overall_level)
         if (not use_cache or with_overall_level or finder is None or not file_path

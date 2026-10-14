@@ -2,7 +2,7 @@
 # FILE: signal_processing/dsp/order_cut.py
 # =====================================================================
 """
-Recipe: tracked order cuts (ADR §1.58, §1.60), built from the steps in
+Recipe: tracked order cuts, built from the steps in
 signal_processing/dsp/steps/:
 
     cut_trigger_blocks    -> Windowed analysis blocks, one per tracking trigger
@@ -10,19 +10,19 @@ signal_processing/dsp/steps/:
                               (P_canon) in squared units, batch by batch, as a 2D matrix
     integrate_moving_band -> Order * rpm/60 moving band per trigger, with
                              measure_main_lobe_width_bins widening
-    sqrt                  -> Linear RMS amplitude per order (ADR §1.60)
+    sqrt                  -> Linear RMS amplitude per order
 
 Returns (rpm_axis, {order: ndarray}) where each array holds native Linear RMS
 amplitudes with NaNs where the order fell below the FFT resolution df or above
 the Nyquist frequency. `compute_tracked_order_cuts_with_overall_level` also
 returns the Overall Level of one fixed band and its Residual -- the part outside
-every order's band -- from the same P_canon (ADR §1.141).
+every order's band -- from the same P_canon.
 
-`order_cut_from_spectrogram` (ADR §1.64 point 8) is the same tail --
+`order_cut_from_spectrogram` is the same tail --
 `_order_cut_amplitude_from_canonical` -- reused directly on an already-computed
 rpm-tracked spectrogram's own canonical matrix instead of a fresh cut from raw
 samples: a spectrogram and an order cut with the same FFT, window, step and
-order width already agree on p_canon by construction (ADR §1.58 point 6), so
+order width already agree on p_canon by construction, so
 this needs no raw measurement to read.
 """
 
@@ -52,7 +52,7 @@ def _order_cut_amplitude_from_canonical(
     """One order's Linear RMS amplitude per row of an already-built canonical
     energy matrix -- the shared tail of `compute_tracked_order_cuts` and
     `order_cut_from_spectrogram`, so the two cannot drift apart on the moving
-    band or the sqrt (ADR §1.60)."""
+    band or the sqrt."""
     center_freq = (order * rpm_axis) / 60.0
     band_width = order_width * (rpm_axis / 60.0)
     power_integral = integrate_moving_band(
@@ -103,7 +103,7 @@ def compute_tracked_order_cuts(
         order_width: float, fft_size: int, window_type: str,
         amplitude_mode: str = "rms", plan: TrackingPlan = None,
 ) -> Tuple[np.ndarray, Dict[float, np.ndarray]]:
-    """Rpm axis (from `plan`) and one Linear RMS amplitude array per requested order (ADR §1.60)."""
+    """Rpm axis (from `plan`) and one Linear RMS amplitude array per requested order."""
     rpm_axis, order_cuts, _, _ = _tracked_order_cuts(
         vib_data, fs, orders_to_extract, order_width, fft_size, window_type,
         amplitude_mode, plan, overall_band=None,
@@ -185,7 +185,7 @@ def _tracked_order_cuts(
 
     # Every requested order came back entirely NaN: each one sits below the FFT
     # bin width for the whole RPM span, or above Nyquist, so there is nothing to
-    # plot (ADR §1.23). An error here lets the caller surface a clear reason.
+    # plot. An error here lets the caller surface a clear reason.
     with benchmark_step("coverage_main_lobe_nan_check"):
         nothing_measurable = orders_to_extract and not any(
             np.any(np.isfinite(vals)) for vals in order_cuts.values())

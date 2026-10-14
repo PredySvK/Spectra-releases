@@ -134,7 +134,7 @@ def read_result_curves(
                             # A stored spectrum block holds canonical bin energy
                             # (g^2), never the Format the "Compute Result Set"
                             # dialog showed at creation time -- spectrum_format /
-                            # amplitude_mode are display_only_params (ADR §1.60),
+                            # amplitude_mode are display_only_params,
                             # applied when a block is rendered, not when it is
                             # cached. build_spectrum_model applies the same
                             # linear/rms default to a live curve; skipping it

@@ -3,7 +3,7 @@
 # =====================================================================
 """
 Writes a result set: a folder of HDF5 shards, one per measurement, plus a
-JSON manifest (ADR §1.21).
+JSON manifest.
 
 The unit written whole is **one measurement**, not one result set, and that is
 the whole point of the format. A spectrogram batch over forty files is

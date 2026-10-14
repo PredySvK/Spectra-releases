@@ -3,7 +3,7 @@
 # =====================================================================
 """
 Single synchronous path for turning a loaded time-domain block into a spectrum,
-spectrogram, order cut, or Overall Level (ADR §1.12, §1.58, §1.60, §1.62).
+spectrogram, order cut, or Overall Level.
 
 The asynchronous equivalents (SpectralRequests, FileProcessingWorker) wrap
 these functions in QRunnable tasks so the UI does not block; neither they nor
@@ -241,7 +241,7 @@ def build_spectrum_block(source_block: NVHDataBlock, frequencies, amplitudes, *,
                          averaging_type: Optional[str] = None,
                          exponential_alpha: Optional[float] = None,
                          computation: Optional[Mapping[str, Any]] = None) -> NVHDataBlock:
-    """A computed single-sided canonical spectrum plus the settings it was computed with (ADR §1.60)."""
+    """A computed single-sided canonical spectrum plus the settings it was computed with."""
     return NVHDataBlock.spectrum(
         name=f"1D Spectrum({source_block.name})",
         values=amplitudes, frequencies=frequencies,
@@ -266,7 +266,7 @@ def build_spectrogram_block(source_block: NVHDataBlock, frequencies, z_values, m
     """
     A tracked waterfall in canonical bin energy: one spectrum column per rpm step or time slice, so
     `magnitude_matrix` is (frequency, z) and the two axes describe it in that
-    order (ADR §1.60).
+    order.
     """
     return NVHDataBlock.spectrogram(
         name=f"Waterfall({source_block.name})",
@@ -323,7 +323,7 @@ def build_order_cut_blocks(source_block: NVHDataBlock, rpm_axis,
                            computation: Optional[Mapping[str, Any]] = None) -> List[NVHDataBlock]:
     """
     One block per extracted order. The rpm axis is shared between them; blocks
-    are read-only, so that costs nothing and copies nothing. Always in Linear RMS (ADR §1.60).
+    are read-only, so that costs nothing and copies nothing. Always in Linear RMS.
     """
     if value_unit is None:
         value_unit = format_order_unit(source_block.value_unit, "linear", "rms")
@@ -350,7 +350,7 @@ def build_overall_level_block(source_block: NVHDataBlock, axis_values, levels, *
                               effective_band: Tuple[float, float],
                               computation: Optional[Mapping[str, Any]] = None) -> NVHDataBlock:
     """
-    An Overall Level curve in Linear RMS, the unit an order cut has (ADR §1.62).
+    An Overall Level curve in Linear RMS, the unit an order cut has.
     `f_start`/`f_stop` are the band as requested; `effective_band` is what was
     integrated over this file after clipping to its Nyquist.
     """
@@ -376,7 +376,7 @@ def build_order_residual_block(source_block: NVHDataBlock, rpm_axis, residual, *
     """
     A Residual curve in Linear RMS, the unit its order cuts and Overall Level have. The
     order list goes into provenance.params -- the Residual is a function of all
-    of them (ADR §1.141 point 6).
+    of them.
     """
     provenance = _provenance("compute_order_residual", source_block, computation)
     return NVHDataBlock.order_residual(
@@ -440,7 +440,7 @@ def _tracking_plan_for(scratch: Optional[MutableMapping[str, Any]],
     Keyed by tracking mode as well as the sweep settings the plan is built
     from: order cuts are always rpm-tracked, but a spectrogram can be rpm- or
     time-tracked, and a graph running both at the same step number must not
-    have one overwrite the other's plan in scratch (ADR §1.58 point 6).
+    have one overwrite the other's plan in scratch.
     `matches` guards the rest of it: a channel recorded at another rate or
     length gets its own plan instead of being cut at the wrong instants.
     """
@@ -584,7 +584,7 @@ def compute_order_cuts(vib_block: NVHDataBlock, tacho_block: NVHDataBlock,
 
 def _order_tracking_overall_level_config(config: OrderTrackingConfig) -> OverallLevelConfig:
     """The Overall Level tab settings the order tracking Overall Level curve equals:
-    the default band, this config's FFT, window, sweep and Remove DC (ADR §1.141 point 5)."""
+    the default band, this config's FFT, window, sweep and Remove DC."""
     return OverallLevelConfig(
         fft_size=config.fft_size, window_type=config.window_type, tracking_mode="rpm",
         step=config.step, direction=config.direction, hysteresis=config.hysteresis,
@@ -595,7 +595,7 @@ def _order_tracking_overall_level_config(config: OrderTrackingConfig) -> Overall
 def build_overall_level_missing_line(blocks: List[NVHDataBlock]) -> Optional[str]:
     """
     The one log line for an order tracking run asked for its Overall Level curve that
-    came back without one (ADR §1.141 point 12), or None when it is there.
+    came back without one, or None when it is there.
     """
     if not blocks or any(b.kind == KIND_OVERALL_LEVEL for b in blocks):
         return None
@@ -627,7 +627,7 @@ def compute_spectrogram(vib_block: NVHDataBlock, tacho_block: Optional[NVHDataBl
     `scratch` is the same per-measurement bag `compute_order_cuts` takes. A
     spectrogram and an order cut with the same tracking mode, step, direction
     and hysteresis over one measurement share the same `TrackingPlan` from it
-    (ADR §1.58 point 6), and a multi-channel spectrogram batch builds its plan
+   , and a multi-channel spectrogram batch builds its plan
     once per file instead of once per channel.
     """
     tracking_mode = normalize_dsp_choice(
@@ -684,7 +684,7 @@ def _effective_overall_level_band(config: OverallLevelConfig, fs: float) -> Tupl
     The band integrated over this file: F max clipped to its Nyquist, and Full
     Bandwidth (`f_stop=None`) being exactly that Nyquist. Clipped rather than
     refused so a batch over files at mixed rates does not fail for no reason
-    (ADR §1.62 point 9); an F min at or past Nyquist leaves nothing to clip to
+   ; an F min at or past Nyquist leaves nothing to clip to
     and is an error for this file, not an empty curve (point 10).
     """
     nyquist = fs / 2.0
@@ -708,7 +708,7 @@ def compute_overall_level(vib_block: NVHDataBlock, tacho_block: Optional[NVHData
                           scratch: Optional[MutableMapping[str, Any]] = None) -> NVHDataBlock:
     """
     Vibration block (and tacho, unless tracking against time) in, one Overall
-    Level curve out: the energy of one fixed band per tracking step (ADR §1.62).
+    Level curve out: the energy of one fixed band per tracking step.
 
     Refuses rpm tracking without a tacho for the reason compute_spectrogram
     does. Unlike the spectrogram it allows Any direction in both modes: the

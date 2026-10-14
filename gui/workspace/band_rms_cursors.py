@@ -17,7 +17,7 @@ collaborator interface would cost more than it buys.
 
 The feature's state -- whether the band is on, the (lo, hi) span the user
 dragged, and the window corrections the calculation needs -- lives on
-model.band_rms_cursors[0] (ARCHITECTURE_DECISIONS §1.7, R2, §1.62). This mixin reads and
+model.band_rms_cursors[0]. This mixin reads and
 writes that BandRmsCursor; set_band_rms_cursors flips its enabled flag, a drag
 writes band back. The pyqtgraph widgets it builds from that state
 (_band_rms_region, _band_rms_label) are renderer-side and owned here, declared
@@ -75,7 +75,7 @@ class BandRmsCursorsMixin:
         The plain physical unit behind a spectral label -- resolves a 'dB'
         axis unit back to a source unit this dock actually has, then defers
         the RMS/PEAK/() stripping rule to view_models.plot.base_display_unit
-        (ADR §1.7).
+       .
         """
         base = self.curves.base_trace
         unit = (base.unit if base is not None else "").strip()

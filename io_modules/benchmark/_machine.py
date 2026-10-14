@@ -1,4 +1,4 @@
-"""The `machine` section of the Benchmark report, from the stdlib only (ADR §1.132)."""
+"""The `machine` section of the Benchmark report, from the stdlib only."""
 
 import functools
 import os

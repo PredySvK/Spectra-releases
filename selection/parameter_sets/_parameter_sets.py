@@ -70,7 +70,7 @@ def parameter_signature(kind: str, params: Mapping[str, Any]) -> Signature:
     element has the same `(key, value)` shape -- callers that compare element by
     element (selection.trace_filter) can zip without special-casing the
     head. The one signature shape both a project result set and a bare dock
-    trace emit, so a Global card compares them directly (ADR §1.36, §1.41).
+    trace emit, so a Global card compares them directly.
     """
     return (("__kind__", kind),) + shape_signature(kind, params)
 
@@ -194,7 +194,7 @@ def parameter_sets_from_traces(identities: List[TraceIdentity]) -> List[Paramete
     """
     One ParameterSet per distinct (kind, settings) combination actually drawn
     on this dock, numbered by first appearance among `identities` -- a
-    dock-local numbering (ARCHITECTURE_DECISIONS §1.30 F4), not
+    dock-local numbering, not
     `build_parameter_sets`'s project-wide one, since these curves need not
     even trace back to a ResultSetRef the project still knows about.
 

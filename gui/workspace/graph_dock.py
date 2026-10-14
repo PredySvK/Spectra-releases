@@ -98,7 +98,7 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
     # Fired every time this dock's drawn content or its Trace-filter mask
     # could have changed: after every drawn change (a mask change via
     # set_trace_filter, a full model rebuild, a curve removed, a curve appended).
-    # The Evaluation card (ADR §1.64 point 5, issue #136) is the one
+    # The Evaluation card is the one
     # listener -- one signal at this chokepoint instead of a recompute call
     # threaded through every action that can add/remove/hide a curve
     # (channel drop, overlay, live compute, Result Pool load/unload).
@@ -124,7 +124,7 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
         self.dock_id: str = f"graph-{uuid.uuid4().hex}"
 
         # What this dock is showing -- one of view_models.analysis_kinds'
-        # ANALYSIS_* names (ADR §1.87). Ribbon
+        # ANALYSIS_* names. Ribbon
         # actions and the drop router both branch on it. Before it existed they
         # guessed -- from isinstance plus the presence of a run_index, which a
         # spectrum tab and an order tab both satisfy, and from the text of the
@@ -141,7 +141,7 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
         self.tacho_block: Optional[NVHDataBlock] = None
 
         # Which curves this dock holds (CONTEXT.md "Graph curves", #272): the
-        # PlotModel (ADR §1.7), the Trace filter mask and the visibility
+        # PlotModel, the Trace filter mask and the visibility
         # decision through it, the overlay count, the loaded result sets and
         # the applied mask key. Every change ends in _on_curves_changed, the
         # only thing here that draws. Band RMS cursor state (enabled / band /
@@ -150,7 +150,7 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
                                   base_curve_color=GRAPH_TOKENS.base_curve)
         self.live_drops = LiveChannelDrops()
         self.pending_drops = PendingDrops()
-        # The dock's Evaluation configuration (ADR §1.64 point 1, issue #138):
+        # The dock's Evaluation configuration:
         # evaluation algorithm name, parameters, and whether to respect the trace filter.
         # Persisted into TabSpec. Single values are recomputed on demand, not stored.
         self.evaluation_config: EvaluationConfig = EvaluationConfig()
@@ -218,7 +218,7 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
         Same visibility decision as `visible_traces()` (X-domain fit,
         third-axis drop) but with the Trace filter mask always passing --
         the dock adapter's input when Evaluation's "Respect Trace filter"
-        toggle (ADR §1.64 point 1, issue #136) is off. The mask is the only
+        toggle is off. The mask is the only
         thing skipped: it is the one CONTEXT.md calls the Trace filter, not
         the other two structural reasons a curve can't be drawn.
         """
@@ -279,7 +279,7 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
         # is checked against this same result rather than re-deriving a subset.
         visible_traces = visible.draw
 
-        # Never silently show nothing (ADR §1.25) -- the title is the cheapest
+        # Never silently show nothing -- the title is the cheapest
         # spot to say why. resolve_visible_traces decided *which* reason; the
         # wording stays here because it needs view.title and the domain name.
         title = view.title
@@ -361,7 +361,7 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
         return pen
 
     def _apply_rendering_mode(self, mode: RenderingMode) -> None:
-        """Switch the viewport to ``mode`` (ADR §1.163). Rebuilds the viewport
+        """Switch the viewport to ``mode``. Rebuilds the viewport
         widget, so only on a change; the Cursor and Highlight watch the
         viewport for the mouse leaving and are put on the new one."""
         if mode is self._rendering_mode:
@@ -502,7 +502,7 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
         """The one place a dock reads app_context for how its curves are shown.
 
         The order cut / Overall Level amplitude is this dock's own View/Amplitude
-        (ADR §1.62 point 22): keyed on the dock's own kind (or ``kind``), not on
+       : keyed on the dock's own kind (or ``kind``), not on
         the kind of a curve being dropped or loaded onto it -- so an order cut
         dropped onto an Overall Level dock (or the reverse, issue #128) picks up
         whatever RMS/Peak this dock is already showing.
@@ -533,7 +533,7 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
         decibel_scale: Optional[bool] = None,
     ) -> None:
         """
-        Re-scales the current PlotModel on the fly from canonical data (ADR §1.60).
+        Re-scales the current PlotModel on the fly from canonical data.
         Runs synchronously in < 1 ms without re-running FFT or background jobs.
         """
         if self.curves.model is None:
@@ -569,7 +569,7 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
     # 700-point order cut, 100 curves: 19ms/move with clipping vs 12ms
     # without, against a 16ms frame budget at 60fps (BUGS.md K2-redraw).
     # Above it (a multi-million-sample time signal) the same slicing is what
-    # keeps panning smooth. The same value puts a graph on OpenGL (ADR §1.163).
+    # keeps panning smooth. The same value puts a graph on OpenGL.
     _CLIP_POINT_THRESHOLD = LARGE_CURVE_POINTS
 
     def apply_viewport_clipping(self) -> None:

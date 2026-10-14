@@ -1,4 +1,4 @@
-"""The curve's own metadata for the Cursor Box (ADR §1.149)."""
+"""The curve's own metadata for the Cursor Box."""
 
 from __future__ import annotations
 

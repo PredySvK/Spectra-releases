@@ -280,7 +280,7 @@ class NVHDataBlock:
         amplitude_mode: str = "rms",
     ) -> Tuple[np.ndarray, str]:
         """
-        Safe programmatic access to linear/scaled values and display unit (ADR §1.60, §1.61).
+        Safe programmatic access to linear/scaled values and display unit.
 
         For spectral blocks (carrying canonical bin energy P_canon in g^2 -- an invariant of
         KIND_SPECTRUM/KIND_SPECTROGRAM, not a branch), computes the requested Format x
@@ -522,7 +522,7 @@ class NVHDataBlock:
                        source: Optional[SourceRef] = None,
                        provenance: Optional[Provenance] = None,
                        metadata: Optional[Mapping[str, Any]] = None) -> "NVHDataBlock":
-        """A Residual curve against speed (ADR §1.141); its orders ride in `provenance.params`."""
+        """A Residual curve against speed; its orders ride in `provenance.params`."""
         return cls(
             name=name, kind=KIND_ORDER_RESIDUAL,
             axes=(Axis(values=rpm, unit="RPM", quantity="rpm", label="Speed"),),

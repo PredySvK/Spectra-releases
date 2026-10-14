@@ -25,7 +25,7 @@ Architecture:
 - Questions the GUI asks about curves it holds: amplitude_mode_for_kind,
   overall_level_band_differs_from_dock, traces_kept_after_unload, build_trace_descriptor.
 - Presentation styling & legend text: base_display_unit, format_display_unit, resolve_carousel_colour.
-- Rendering mode & curve look (ADR §1.163): resolve_rendering_mode picks OpenGL or raster
+- Rendering mode & curve look: resolve_rendering_mode picks OpenGL or raster
   from the drawn curves (LARGE_CURVE_POINTS); resolve_curve_look turns a Pen's carousel
   slot into a CurveLook (colour + one of LINE_STYLES) for that mode.
 
@@ -127,7 +127,7 @@ __all__ = [
     "resolve_carousel_colour",
     "HeldPens",
     "format_display_unit",
-    # Rendering mode & curve look (ADR §1.163)
+    # Rendering mode & curve look
     "CurveLook",
     "LARGE_CURVE_POINTS",
     "LINE_STYLES",

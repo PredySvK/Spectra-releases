@@ -2,7 +2,7 @@
 # FILE: io_modules/result_cache/block_io.py
 # =====================================================================
 """
-The one mapping between an NVHDataBlock and its HDF5 form (ADR §1.21).
+The one mapping between an NVHDataBlock and its HDF5 form.
 
 Two levels, on purpose:
 

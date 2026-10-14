@@ -2,7 +2,7 @@
 # FILE: gui/workspace/workflow_run_bridge.py
 # =====================================================================
 """
-The window's handle on a batch run (ARCHITECTURE_DECISIONS §1.6, §1.21).
+The window's handle on a batch run.
 
 The run itself -- validation, resolving the selection, the drafts, the job and
 everything it has to say -- is `orchestration/batch` and needs no window. What
@@ -13,7 +13,7 @@ already connected to (`gui/main_window.py`, `gui/handlers/batch_run.py`).
 
 `run_finished` used to be a Qt signal; both of its consumers
 (`gui/main_window.py`, `gui/handlers/batch_run.py`) are covered by tests now,
-so it is a plain callback list instead (ADR §1.73).
+so it is a plain callback list instead.
 
 All internal documentation strings and variable labels are standardly written
 in English.
@@ -30,7 +30,7 @@ from orchestration.batch import (
 
 
 class _FinishedCallback:
-    """Stands in for the removed `run_finished` Qt signal (ADR §1.73).
+    """Stands in for the removed `run_finished` Qt signal.
 
     Plain callback list rather than a single slot: `gui/main_window.py` keeps
     a permanent listener for the whole app's lifetime while
@@ -54,7 +54,7 @@ class _FinishedCallback:
 
 
 class WorkflowRunBridge:
-    """One job with one step per source file (ADR §1.13, §1.6 phases 5 / 7B)."""
+    """One job with one step per source file."""
 
     def __init__(self, app_context, job_manager):
         self.app_context = app_context

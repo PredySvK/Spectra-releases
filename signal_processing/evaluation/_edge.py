@@ -2,7 +2,7 @@
 # FILE: signal_processing/evaluation/_edge.py
 # =====================================================================
 """
-The edge flag on a Single value (ADR §1.64 point 7), one rule for Max and
+The edge flag on a Single value, one rule for Max and
 Top-N maxima: a sample is on the edge when it is the first or last *finite*
 sample of its curve. An order cut above Nyquist (or below resolution) has a
 NaN tail, so its valid range ends before the array does -- a maximum on the

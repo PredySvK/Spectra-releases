@@ -65,7 +65,7 @@ class RibbonBar(QTabWidget):
         self.app_context.log(f"WORKSPACE: Mode shifted to [{self.app_context.current_analysis_mode.upper()}] via '{tab_label}'.")
 
         # The Workflow tab swaps sub_area's centre from the analysis docks to the
-        # WorkflowView; every other tab swaps it back (ADR §1.6 phase 7C).
+        # WorkflowView; every other tab swaps it back.
         show_workflow = getattr(self.parent(), "show_workflow_view", None)
         if callable(show_workflow):
             show_workflow(self.app_context.current_analysis_mode == "workflow")

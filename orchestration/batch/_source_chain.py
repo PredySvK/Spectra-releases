@@ -158,7 +158,7 @@ def _run_source_chain(entry, directory: str, channel_labels: Sequence[str],
     write this measurement's shard into every save block it belongs to.
 
     The write happens out here, not in the GUI-thread callback, for two reasons
-    (ADR §1.21): a spectrogram shard is tens of megabytes, so writing it on the
+   : a spectrogram shard is tens of megabytes, so writing it on the
     GUI thread would stutter the window; and returning the manifest entries
     instead of the blocks means what crosses back to the GUI thread is names
     and numbers, not the arrays that were just persisted.

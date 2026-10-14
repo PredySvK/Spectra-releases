@@ -1,6 +1,6 @@
 """
 Background work for one open dock, and the one rule for whether its result
-is still wanted when it lands (ADR §1.84).
+is still wanted when it lands.
 
 A dock task is keyed by the dock *and* what it is for: a newer task with the
 same purpose on the same dock supersedes the older one, a task with another

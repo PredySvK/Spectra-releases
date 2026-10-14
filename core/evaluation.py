@@ -2,7 +2,7 @@
 # FILE: core/evaluation.py
 # =====================================================================
 """
-Evaluation's data model (ADR §1.64): Single value, Evaluation table and
+Evaluation's data model: Single value, Evaluation table and
 Evaluation config. Pure data -- no Qt, no I/O, no knowledge of a dock. A dock
 is only one adapter that can produce the (block, identity) pairs an
 Evaluation runs over (signal_processing/evaluation/runner.py); a future
@@ -43,7 +43,7 @@ class CurveIdentity:
 class SingleValue:
     """
     One number an Evaluation extracted from one curve, together with where on
-    the curve it sits (ADR §1.64 point 4/6).
+    the curve it sits.
 
     Holds the source block and the sample index into it rather than a scaled
     number: the block already carries everything a later Format/Amplitude
@@ -121,7 +121,7 @@ class EvaluationTable:
 class EvaluationConfig:
     """
     Which Evaluation a dock has selected and with what parameters, as data
-    with a JSON round trip (ADR §1.64 point 1).
+    with a JSON round trip.
     """
     evaluation_name: str = "max"
     params: Dict[str, Any] = field(default_factory=dict)

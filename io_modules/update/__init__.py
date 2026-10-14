@@ -1,4 +1,4 @@
-"""Public release reading and Update offer decisions (ADR §1.140)."""
+"""Public release reading and Update offer decisions."""
 
 from ._update_offer import UpdateOffer, resolve_update_offer
 from ._release import read_latest_release

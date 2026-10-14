@@ -1,4 +1,4 @@
-"""Bookkeeping for live Orders computed one job per dropped channel (ADR §1.30, §1.117)."""
+"""Bookkeeping for live Orders computed one job per dropped channel."""
 
 import threading
 from collections import OrderedDict
@@ -55,7 +55,7 @@ class LiveOrderMemo:
         # is what lets them build one TrackingPlan between them (#99). Holds one
         # file's plan only (~8 bytes per tacho sample): channels interleaved
         # across files rebuild it, the price of not keeping a 15 MB plan per file
-        # for the whole session (ADR §1.117).
+        # for the whole session.
         self._plan: Tuple[Optional[_PlanIdentity], Optional[Tuple[threading.Lock, dict]]] = (None, None)
 
     def result_for(self, key) -> Optional[list]:

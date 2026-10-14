@@ -46,7 +46,7 @@ LEVEL_CURVE_KINDS = (KIND_OVERALL_LEVEL, KIND_ORDER_RESIDUAL)
 # the cut, not a property of the numbers in it -- see ARCHITECTURE_DECISIONS
 # §1.18. Named here so the two reading sites and the factory cannot drift.
 PARAM_ORDER = "order"
-# The whole order list a Residual was computed against (ADR §1.141 point 6).
+# The whole order list a Residual was computed against.
 PARAM_ORDERS = "orders_to_extract"
 
 # An Overall Level's band as requested, in Provenance.params -- what a
@@ -139,7 +139,7 @@ KINDS: Dict[str, KindSpec] = {
         display_only_params=("amplitude_mode",),
     ),
     # No cache_exempt_params: a Residual is a function of the whole order list
-    # (ADR §1.141 point 6), so a set with other orders is another result.
+    #, so a set with other orders is another result.
     KIND_ORDER_RESIDUAL: KindSpec(
         axis_quantities=("rpm",), requires_processing=True,
         description="Energy of the Overall Level band outside the selected orders' bands.",

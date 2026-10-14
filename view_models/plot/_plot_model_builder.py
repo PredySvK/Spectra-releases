@@ -4,7 +4,7 @@ Raw arrays + a ``UnitPreferences`` in, a finished ``PlotModel`` out.
 The conversion logic that ``graph_dock`` runs inline on every plot -- global
 unit scaling, unit-string sanitising, legend text, the primary-vs-secondary
 axis decision -- lives here as pure functions instead, so the renderer can be
-handed a model it only has to draw (ARCHITECTURE_DECISIONS §1.7). Lives in
+handed a model it only has to draw. Lives in
 ``view_models/plot`` because a plot model is presentation state on Floor 3,
 importing no Qt and no ``app_context``: the builders are exercised in a plain
 unit test with no ``QApplication``. Re-scaling a finished model lives in
@@ -91,7 +91,7 @@ _WRAPPED_BLOCK_NAME_PREFIXES = ("1D Spectrum(", "Waterfall(", "Overall Level(", 
 
 def to_decibels(values: np.ndarray, is_squared: bool) -> np.ndarray:
     """
-    The one dB conversion rule for a spectral quantity (ADR §1.60): a squared
+    The one dB conversion rule for a spectral quantity: a squared
     (power/PSD) format is already energy, so it only needs 10*log10; a linear
     (amplitude) format needs 20*log10 to land on the same dB scale. Callers
     work out ``is_squared`` themselves -- a canonical block asks the requested
@@ -180,7 +180,7 @@ def resolve_overlay_display_scaling(
     its own (so Local Filter's Order/Analysis type/Parameter set facets gate
     on it like the dock's own base curve does), and the on-the-fly display
     scaling a canonical spectrum or order-cut block carries instead of
-    pre-scaled values (ADR §1.60 / §1.62 point 22).
+    pre-scaled values.
 
     The values stay linear, in the block's own unit: dB is applied only after
     the global-unit conversion (`build_scaled_overlay_trace`), so an overlay
@@ -221,7 +221,7 @@ def amplitude_mode_for_kind(
     overall_level_amplitude_mode: str,
 ) -> str:
     """
-    A dock's own View/Amplitude setting (ADR §1.62 point 22), keyed on the
+    A dock's own View/Amplitude setting, keyed on the
     dock's own kind -- so an order cut dropped onto an Overall Level dock (or
     the reverse, issue #128) picks up whatever RMS/Peak that dock is already
     showing rather than the dropped curve's own ribbon tab.
@@ -305,7 +305,7 @@ def build_spectrum_model(
     """
     The model behind ``GraphDock.plot_blocks`` for a spectrum block.
 
-    Supports on-the-fly scaling of canonical spectral data (ADR §1.60) and optional
+    Supports on-the-fly scaling of canonical spectral data and optional
     dB scale matching spectrograms.
     """
     if getattr(block, "is_canonical", False):
@@ -416,7 +416,7 @@ def build_order_cuts_model(
     ``x`` .. ``title`` override the base curve as an ``add_curve`` caller
     hands it over; left out, each is read off the first cut.
 
-    Applies sqrt(2) scaling when amplitude_mode == "peak" (ADR §1.60).
+    Applies sqrt(2) scaling when amplitude_mode == "peak".
     """
     first = blocks[0]
     x = first.primary_axis.values if x is None else x
@@ -463,12 +463,12 @@ def _level_legend_text(block, base_legend: str) -> str:
     \"OAL\" plus the band, but only when it is not the Full Bandwidth default --
     shared by the base curve (``build_overall_level_model``) and every overlay
     curve (``build_overall_level_overlay_trace``) so the two can never drift
-    into two slightly different band-naming rules (ADR §1.62 point 13). A
+    into two slightly different band-naming rules. A
     Parameter Set's identity is the *requested* band (``provenance.params``),
     but a changed band is shown with the *effective* one (``metadata``) --
     what was actually integrated over this file after clipping to its
     Nyquist. A Residual rides the same builders and reads "Residual ..."
-    (ADR §1.141): its band is always the default one.
+   : its band is always the default one.
     """
     if block.kind == KIND_ORDER_RESIDUAL:
         return f"Residual {base_legend}"
@@ -483,7 +483,7 @@ def _level_legend_text(block, base_legend: str) -> str:
 
 
 def overall_level_effective_band(block) -> Tuple[float, float]:
-    """The (f_start, f_stop) actually integrated for `block` (ADR §1.62 point 9)."""
+    """The (f_start, f_stop) actually integrated for `block`."""
     lo = block.metadata.get(META_EFFECTIVE_F_START)
     hi = block.metadata.get(META_EFFECTIVE_F_STOP)
     return (float(lo), float(hi))
@@ -511,7 +511,7 @@ def overall_level_band_differs_from_dock(model: PlotModel, block) -> bool:
 def _linear_amplitude_display(values: np.ndarray, value_unit: str, amplitude_mode: str, *, block=None):
     """
     The shared RMS<->Peak display rule for an order cut or an Overall Level
-    block (ADR §1.60, §1.62 point 5): Peak = sqrt(2) * RMS, unit suffixed via
+    block: Peak = sqrt(2) * RMS, unit suffixed via
     ``format_order_unit``. RMS passes ``values``/``value_unit`` through
     untouched -- the unit is whatever the block/trace already carries, not
     forced into a canonical \"unit RMS\" spelling, so a caller comparing against
@@ -618,7 +618,7 @@ def build_overall_level_model(
     the default (F min 10 Hz, Full Bandwidth): a Parameter Set's identity is
     the *requested* band (``provenance.params``), but a changed band is shown
     with the *effective* one (``metadata``) -- what was actually integrated
-    over this file after clipping to its Nyquist (ADR §1.62 point 13).
+    over this file after clipping to its Nyquist.
 
     Amplitude RMS/Peak is a display setting, not a recompute (ADR §1.60,
     §1.62 point 5) -- ``result_set_id`` lets a curve read off the Result Pool

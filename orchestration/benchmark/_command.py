@@ -8,7 +8,7 @@ from typing import List, Optional
 def build_benchmark_command(python: str, root: str, plan_path: str, out_dir: str, *,
                             full: bool, quick: bool = False, baseline: Optional[str] = None,
                             log_path: Optional[str] = None) -> List[str]:
-    """`benchmark.py` for Headless, `main.py --benchmark` for Full (ADR §1.132).
+    """`benchmark.py` for Headless, `main.py --benchmark` for Full.
 
     A frozen build has no scripts to hand to `python`: it runs itself
     (`Spectra.exe --benchmark[-headless]`), and, having no console, reports

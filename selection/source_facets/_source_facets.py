@@ -22,7 +22,7 @@ from core.project_model import NVHProject, ResultSetRef, SourceEntry
 from selection.channel_identity import split_channel_base_and_direction
 from selection.parameter_sets import orders_equal
 
-# The "(Empty)" bucket row (ADR §1.56): a gating facet offers this value when at
+# The "(Empty)" bucket row: a gating facet offers this value when at
 # least one trace / source carries no value for it, and a value-less trace is
 # gated through it like any other value. Defined here rather than in
 # gui/filter_panel/trace_filter.py because the value builders that append it
@@ -37,7 +37,7 @@ def with_empty_row(sorted_values: List[Any], has_missing: bool) -> List[Any]:
     """
     `sorted_values` (a facet's real values, already ordered) plus one
     EMPTY_FACET_VALUE row at the end when `has_missing` -- some trace / source
-    carries no value for the facet (ADR §1.56). The row is left off when the
+    carries no value for the facet. The row is left off when the
     facet has no real values at all: an "(Empty)"-only facet is not a facet.
     """
     values = list(sorted_values)
@@ -74,7 +74,7 @@ class FieldCardinality:
     """
     How many distinct values a column carries across the current pool, and
     why that makes it unusable as a facet right now, or None when it is fine
-    (ARCHITECTURE_DECISIONS §1.32 "Merané 2026-09-06", ticket #42). Configure
+   . Configure
     Filters shows `distinct_count` next to every column's label ("Setup (1)"),
     not only the greyed ones -- "how many metadata values are in the pool" is
     useful information on a column the user is about to check, too.
@@ -100,7 +100,7 @@ def field_cardinality(values: Iterable[Any], *, per_measurement: bool = True,
 
     `pool_label` names the value universe in the "cannot narrow" reason -- "the
     pool" for a Global card, "this graph" for a Local one, whose count is read
-    off the focused dock's own traces instead (ARCHITECTURE_DECISIONS §1.33).
+    off the focused dock's own traces instead.
 
     Cardinality, not the column's name, is the only signal: `Comment 1` looks
     like the same kind of column as `Test no.` but has 6 values on 36 rows and
@@ -159,7 +159,7 @@ def _narrowed_to(fields: Dict[str, Dict[str, Any]],
                  allowed_keys: Optional[Iterable[str]]) -> Dict[str, Dict[str, Any]]:
     """`fields` restricted to `allowed_keys`, or unchanged when it is None --
     the Filter card's column list narrowing the offering on top of the
-    usable_as_filter gate (ARCHITECTURE_DECISIONS §1.32)."""
+    usable_as_filter gate."""
     if allowed_keys is None:
         return fields
     allowed = set(allowed_keys)
@@ -286,7 +286,7 @@ def build_metadata_facets(sources: Iterable[SourceEntry],
 
     `allowed_keys`, when given, narrows the offering to those keys on top of
     the `usable_as_filter` gate -- the Filter card's own column list
-    (ARCHITECTURE_DECISIONS §1.32): `usable_as_filter` decides what *may*
+   : `usable_as_filter` decides what *may*
     appear, the card decides what is *on it*. None keeps the pre-§1.32
     behaviour (every opted-in field), which the batch resolver still relies on.
     """
@@ -321,7 +321,7 @@ def source_field_value(source: SourceEntry, schema: Dict[str, Dict[str, Any]],
     `source`'s string value for one categorical filter field, or None when the
     field is not a categorical filter field or the source has no value for it --
     what selection.trace_filter's metadata gating family reads per trace
-    (ADR §1.56), the counterpart of TraceIdentity's pre-resolved Identity values.
+   , the counterpart of TraceIdentity's pre-resolved Identity values.
     """
     config = categorical_schema_fields(schema).get(key)
     if config is None:
@@ -371,7 +371,7 @@ def build_identity_facets_from_sources(sources: Iterable[SourceEntry],
 
     The Local counterpart reads the same values off a dock's own traces
     instead -- selection.trace_filter.identity_facets_from_traces
-    (ARCHITECTURE_DECISIONS §1.33).
+   .
     """
     from core.filter_card_config import (
         COLUMN_CHANNEL_TYPE, COLUMN_DATA_POOL_LABEL, COLUMN_DIRECTION,
@@ -430,7 +430,7 @@ def apply_metadata_facets(sources: Iterable[SourceEntry], schema: Dict[str, Dict
 
     `fields` names the schema fields to evaluate in place of the Filter panel's
     offer (categorical_schema_fields): a saved query names its own fields and has
-    already checked their kind, so usable_as_filter is not asked (ADR §1.116).
+    already checked their kind, so usable_as_filter is not asked.
     """
     fields = (categorical_schema_fields(schema) if fields is None
               else {key: schema[key] for key in fields if key in schema})
@@ -461,7 +461,7 @@ def build_range_facets(sources: Iterable[SourceEntry],
     source is left out, same as an empty categorical facet.
 
     `allowed_keys` narrows the offering to the Filter card's own columns, same
-    as build_metadata_facets (ARCHITECTURE_DECISIONS §1.32).
+    as build_metadata_facets.
     """
     fields = _narrowed_to(ranged_schema_fields(schema), allowed_keys)
     spans: Dict[str, Tuple[Any, Any]] = {}
@@ -554,7 +554,7 @@ def apply_range_facets(sources: Iterable[SourceEntry], schema: Dict[str, Dict[st
     categorical facet).
 
     `fields` names the schema fields to evaluate in place of the Filter panel's
-    offer (ranged_schema_fields), for a saved query (ADR §1.116).
+    offer (ranged_schema_fields), for a saved query.
     """
     fields = (ranged_schema_fields(schema) if fields is None
               else {key: schema[key] for key in fields if key in schema})
@@ -665,7 +665,7 @@ def resolve_channel_type(source: Optional[SourceEntry], identity: ChannelIdentit
     The Channel type a channel is judged by, in the pool and on a graph
     alike: the type the project stores for the source channel of that identity
     -- the value the Global card's facet was built from, so a channel stored
-    with none is "(Empty)" (None here) whatever the reader says (ADR §1.97).
+    with none is "(Empty)" (None here) whatever the reader says.
     `fallback_type` only stands in where the project has nothing to say: no
     source entry, or one that lists no such channel.
     """
@@ -737,7 +737,7 @@ def _matching_channel_labels(source, schema, column_values, channels):
 
 def apply_column_facets(sources: Iterable[SourceEntry], schema: Mapping[str, Any],
                         column_values: Mapping[str, Iterable[str]]) -> Dict[str, set]:
-    """Measurement × channel pairs satisfying a column rule (ADR §1.131).
+    """Measurement × channel pairs satisfying a column rule.
 
     OR within each column, AND across columns. Missing keys impose nothing;
     empty value sets reject every pair. Schema validity is the caller's concern.
@@ -788,12 +788,12 @@ def visible_pool_channels(runs, entries_by_path, schema: Dict[str, Dict[str, Any
     apply_range_facets, so a measurement with no value for the field is hidden
     like one no metadata filter can judge. `selected_identity_values` maps a
     built-in Identity column (core.filter_card_config COLUMN_*) to the values
-    it lets through, EMPTY_FACET_VALUE standing for "has none" (ADR §1.56):
+    it lets through, EMPTY_FACET_VALUE standing for "has none":
     File name and Data Pool label hide whole measurements, Direction and
     Channel type hide channels. Result set is ignored -- the pool holds
     measurements, and none of them has a result set to be judged by.
 
-    `column_values` supplies an already normalized column rule (ADR §1.131),
+    `column_values` supplies an already normalized column rule,
     preserving empty constraints. Legacy panel picks keep their existing
     "empty means no pool narrowing" policy; the shared predicate is identical.
     """

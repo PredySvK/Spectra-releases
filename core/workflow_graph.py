@@ -3,7 +3,7 @@
 # =====================================================================
 """
 `Workflow` -- a block diagram (a DAG) of processing blocks, runnable over a whole
-dataset (ARCHITECTURE_DECISIONS 1.6, Epic P).
+dataset.
 
 This replaces `core/recipe.py`. A recipe was an *ordered chain*: the wire between
 two steps was their adjacency in a list. The target picture the user described --

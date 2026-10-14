@@ -266,7 +266,7 @@ class ResultPoolPanel(QWidget):
                 kind_item.setCheckState(0, Qt.CheckState.PartiallyChecked)
         self._suppress_item_changed = False
 
-        # Never silently empty (ADR §1.25): when the focused widget is not a
+        # Never silently empty: when the focused widget is not a
         # graph (a spectrogram, the startup placeholder) the tree still shows
         # the sets, but disabled, and the header says why.
         self.tree.setEnabled(is_graph)

@@ -66,7 +66,7 @@ class TabSpec:
 
     ``analysis_kind`` matches the dock's own ``analysis_kind`` ("time" |
     "spectrum" | "orders" | "overall_level" | "spectrogram"). A
-    ``SpectrogramDock`` has no traces (ARCHITECTURE_DECISIONS §1.7) -- ``traces`` holds just
+    ``SpectrogramDock`` has no traces -- ``traces`` holds just
     its one vibration channel. No separate tacho ``TraceSpec``: S6 restores a
     spectrogram through the same ``build_shell``+``dispatch_compute(...,
     is_fresh_open=True)`` pair a live open uses, and
@@ -80,7 +80,7 @@ class TabSpec:
     analysis_kind: str = "time"
     # The base curve first, then every curve dragged onto the dock afterwards
     # -- one identity for both, resolved the same way on reopen
-    # (ARCHITECTURE_DECISIONS §1.86).
+    #.
     traces: List[TraceSpec] = field(default_factory=list)
     # The dock's own id, handed back to the rebuilt dock on reopen so a custom
     # Local filter card's `owner_dock_id` still names it (ARCHITECTURE_DECISIONS
@@ -98,14 +98,14 @@ class TabSpec:
     # gui.handlers.filter_routing.FILTER_STATE_KEY.
     filter_selections: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     # Result-set ids read onto this dock via `gui.handlers.result_content.
-    # ResultContentHandler.load_into_dock` (ARCHITECTURE_DECISIONS §1.30, plan F5) --
+    # ResultContentHandler.load_into_dock` --
     # `GraphCurves.loaded_result_set_ids`, captured so a dock's h5 content
     # survives a save/reopen the same way its dropped channels already do.
     # Just ids, not the curves themselves: same "recipe, not a cache" rule
     # this file's own docstring states for `traces`, and re-reading is the
     # one path `ResultContentHandler.load_into_dock` already has.
     loaded_result_set_ids: List[str] = field(default_factory=list)
-    # This dock's evaluation configuration (ADR §1.64 point 1, issue #138):
+    # This dock's evaluation configuration:
     # evaluation algorithm name, parameters, and whether to respect the trace filter.
     # Single values are not persisted; they are recomputed on demand.
     evaluation_config: EvaluationConfig = field(default_factory=EvaluationConfig)

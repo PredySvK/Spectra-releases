@@ -46,7 +46,7 @@ def cut_frames(time_data: np.ndarray, fft_size: int, hop_size: int,
     """
     Yields one windowed Frame at a time, in order, without holding the whole
     set at once -- frame_fft consumes this lazily so a spectrum never
-    materialises every frame's Unscaled power together (ADR §1.58 point 13).
+    materialises every frame's Unscaled power together.
     """
     starts = frame_starts(len(time_data), fft_size, hop_size)
     for start in starts:

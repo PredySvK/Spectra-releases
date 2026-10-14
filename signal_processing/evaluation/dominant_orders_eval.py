@@ -2,7 +2,7 @@
 # FILE: signal_processing/evaluation/dominant_orders_eval.py
 # =====================================================================
 """
-Dominant orders (ADR §1.64 point 8, issue #142, CONTEXT.md Dominant order):
+Dominant orders:
 the N orders of one rpm-tracked spectrogram with the highest maximum
 amplitude anywhere along their order line.
 
@@ -225,7 +225,7 @@ def extract_dominant_orders(
     order_resolution: float = DEFAULT_ORDER_RESOLUTION,
     detector: OrderDetector = detect_from_order_map,
 ) -> Tuple[SingleValue, ...]:
-    """Extraction on one spectrogram (ADR §1.64 point 2): zero to `n` rows,
+    """Extraction on one spectrogram: zero to `n` rows,
     ranked by amplitude, never padded. A time-tracked spectrogram or any
     other block kind gives no rows."""
     if not is_rpm_spectrogram(block):

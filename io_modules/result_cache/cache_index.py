@@ -3,7 +3,7 @@
 # =====================================================================
 """
 `<project>/cache/index.json` -- the answer to "do I already have this result?"
-without opening a single HDF5 file (ADR §1.21).
+without opening a single HDF5 file.
 
 One entry per (result set × measurement): which kind, computed with which
 parameters, over which source, covering which channels and which blocks. That

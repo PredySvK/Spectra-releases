@@ -3,7 +3,7 @@
 # =====================================================================
 """
 Recipe: a tracked waterfall (rpm-tracked or time-tracked), built from the
-steps in signal_processing/dsp/steps/ (ADR §1.58, §1.60):
+steps in signal_processing/dsp/steps/:
 
     cut_trigger_blocks    -> Windowed analysis blocks, one per tracking trigger
     canonical_power_matrix -> Blocks to Unscaled power to canonical bin energy
@@ -44,7 +44,7 @@ def compute_tracked_spectrogram(
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Computes a tracked waterfall as canonical bin energy (P_canon) per bin
-    in squared units by default, or scaled to a legacy display format (ADR §1.60).
+    in squared units by default, or scaled to a legacy display format.
     """
     if plan is None:
         raise ValueError("A TrackingPlan is required.")

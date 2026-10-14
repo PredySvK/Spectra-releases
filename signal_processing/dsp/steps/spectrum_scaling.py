@@ -6,7 +6,7 @@ Step: the scaling table (Format x Amplitude, ACF/ECF correction, PSD, edge
 correction) that turns averaged Unscaled power (CONTEXT.md) into canonical
 bin energy (P_canon) and canonical bin energy into a displayable spectrum.
 
-The table itself lives in `core/scaling_table.py` (ADR §1.61): `core/`
+The table itself lives in `core/scaling_table.py`: `core/`
 cannot import `signal_processing/`, but `core/data_block.py` needs the same
 formula to compute a display view of a stored block, so the table exists
 once in `core/` and both this step and `data_block.py` call it. This module

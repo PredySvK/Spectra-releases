@@ -2,7 +2,7 @@
 # FILE: gui/handlers/workflow_authoring.py
 # =====================================================================
 """
-Workflow ribbon actions (ARCHITECTURE_DECISIONS §1.6, Epic P phase 7C):
+Workflow ribbon actions:
 make a new (empty) workflow, move one between projects as JSON, delete one.
 Building the graph up -- adding blocks, editing params, picking the input
 selection -- happens inside `WorkflowView`, not here.

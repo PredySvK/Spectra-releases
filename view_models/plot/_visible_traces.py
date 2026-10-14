@@ -25,7 +25,7 @@ from ._plot_model import PlotModel, Trace
 
 # The mask _draw_all() draws through: None means "no filter, draw everything"
 # (GraphCurves.trace_filter). A hidden trace stays in the model's recipe --
-# masking is a view state, not a data edit (ARCHITECTURE_DECISIONS §1.28).
+# masking is a view state, not a data edit.
 Mask = Optional[Callable[[Trace], bool]]
 
 
@@ -36,8 +36,8 @@ class HiddenReason(enum.Enum):
     ``view.title`` and the domain name."""
 
     NONE = "none"
-    MASK = "mask"          # the user's filter hid them (ADR §1.25 wording kept)
-    X_DOMAIN = "x_domain"  # nothing survives the X projection (ADR §1.30)
+    MASK = "mask"          # the user's filter hid them
+    X_DOMAIN = "x_domain"  # nothing survives the X projection
     THIRD_AXIS = "third_axis"  # a third incompatible secondary unit, no ViewBox for it
 
 
@@ -54,7 +54,7 @@ def trace_fits_x_domain(trace: Trace, domain: str) -> bool:
     """Whether ``trace`` can be drawn against a dock whose X domain is
     ``domain``. Undeclared (``""``) on either side draws unconditionally
     (plot_model.Trace docstring); otherwise a matching quantity is free and
-    anything else needs a registered, exact projection (ADR §1.30)."""
+    anything else needs a registered, exact projection."""
     if not domain or not trace.x_quantity:
         return True
     return can_project(trace.x_quantity, domain, trace.compute_spec or {})
@@ -64,7 +64,7 @@ def drop_third_axis_unit(traces: List[Trace]) -> Tuple[List[Trace], int, Optiona
     """Only one secondary Y axis exists (``SecondaryAxis.ensure`` replaces
     rather than stacks). The first secondary unit encountered wins the axis;
     a later secondary trace whose unit doesn't fit it is excluded here
-    instead of drawn-then-erased, so it can be reported (ADR §1.30 / plan F6).
+    instead of drawn-then-erased, so it can be reported.
     Returns the kept traces, how many were dropped, and the unit that won."""
     kept: List[Trace] = []
     established_unit: Optional[str] = None

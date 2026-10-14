@@ -1,5 +1,5 @@
 """
-Qt-free curve carousel and the rendering mode a graph draws in (ADR §1.163).
+Qt-free curve carousel and the rendering mode a graph draws in.
 
 A graph holding a curve above ``LARGE_CURVE_POINTS`` draws through OpenGL,
 every other one through the raster viewport. A carousel curve keeps its slot;
@@ -13,7 +13,7 @@ from typing import Iterable, Optional, Set, Tuple
 from ._plot_model import Pen, Trace
 
 # Above this many points a curve is large: it gets clipToView/autoDownsample
-# and puts its graph on the OpenGL viewport (ADR §1.163).
+# and puts its graph on the OpenGL viewport.
 LARGE_CURVE_POINTS = 20_000
 
 # The raster carousel's line styles, one per round of hues. Qt-free names;

@@ -2,7 +2,7 @@
 # FILE: view_models/evaluation/_evaluation_table_view.py
 # =====================================================================
 """
-Qt-free formatting for the Evaluation card's table (ADR §1.64 point 11):
+Qt-free formatting for the Evaluation card's table:
 turns an EvaluationTable into row cell text/sort-key data and computes the
 table's headers. EvaluationPanel (gui/bottom_panels/evaluation_panel.py)
 does the Qt wiring -- building QTableWidgetItem, enabling widgets -- and

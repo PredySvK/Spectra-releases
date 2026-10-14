@@ -41,7 +41,7 @@ from core.workflow_graph import Workflow
 # and re-saved by an older build that drops the field.
 PROJECT_FORMAT_VERSION = 2
 OLDEST_READABLE_PROJECT_FORMAT_VERSION = 1
-# On an incompatible format change, raise both limits together (ADR §1.140).
+# On an incompatible format change, raise both limits together.
 
 PROJECT_EXTENSION = ".nvhproject"
 
@@ -164,7 +164,7 @@ class SourceEntry:
     # excel_metadata / file_metadata parsed once to the schema's typed `kind`
     # (int/float/date/str), keyed by schema field name -- so the comparator can
     # filter "speed 2000..4000" numerically instead of on "10000" < "9000" as
-    # text (ADR §1.1). Derived: rebuilt on every scan by
+    # text. Derived: rebuilt on every scan by
     # ProjectSession.sync_source_metadata from the raw dicts above and the
     # project schema. Dates are stored as ISO "YYYY-MM-DD" strings (JSON-native,
     # chronologically sortable); selection.source_facets parses them back.
@@ -317,13 +317,13 @@ class FilterSelection:
     # own traces are allowed to show, gated the same §1.29 way as Channel/Order
     # rather than Metadata/Parameter Set's "empty means no constraint".
     checked_result_kinds: Set[str] = field(default_factory=set)
-    # Numeric/date facets (ARCHITECTURE_DECISIONS §1.32): field key -> (lo, hi)
+    # Numeric/date facets: field key -> (lo, hi)
     # in the field's own type. A key's *presence* here is the "user has moved
     # this range" flag -- an untouched range imposes no constraint and its
     # bounds are recomputed from the live pool on every rebuild, so there is
     # nothing to store for it until the user actually drags it.
     checked_ranges: Dict[str, Tuple[Any, Any]] = field(default_factory=dict)
-    # The "(Empty)" bucket per gating facet (ADR §1.56): the set of tokens whose
+    # The "(Empty)" bucket per gating facet: the set of tokens whose
     # value-less traces stay visible. A token is a GATING_FACETS family name for
     # the scalar families (`order`, `result_kind`, `parameter_set`) and the
     # column key for the keyed ones (Identity columns, metadata fields). Gated
@@ -394,20 +394,20 @@ class NVHProject:
     sources: List[SourceEntry] = field(default_factory=list)
     result_sets: List[ResultSetRef] = field(default_factory=list)
 
-    # Named queries saying what a batch runs over (ADR §1.12). A project
+    # Named queries saying what a batch runs over. A project
     # decision like a metadata edit, not cosmetics, so it is a typed field
     # rather than another key in ui_state -- a selection that quietly vanished
     # would take a saved recipe's meaning with it.
     selections: List[MeasurementSelection] = field(default_factory=list)
 
-    # Block-diagram workflows (ADR §1.6, Epic P phase 7A). A graph of processing
+    # Block-diagram workflows. A graph of processing
     # nodes the user built once and can re-run on new data. A project decision,
     # like `selections` above and for the same reason -- a workflow that quietly
     # vanished would take a campaign's whole analysis definition with it -- so it
     # is a typed field, not a key in ui_state.
     workflows: List[Workflow] = field(default_factory=list)
 
-    # Per-card Filter card column configuration (ADR §1.32): which columns a
+    # Per-card Filter card column configuration: which columns a
     # card shows, in what order, drawn as which widget. A typed field beside
     # `selections` and `workflows`, not another key in `ui_state`, and for the
     # same reason -- the user invests order, widgets and defaults into it, so

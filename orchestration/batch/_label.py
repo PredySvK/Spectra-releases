@@ -2,7 +2,7 @@
 # FILE: orchestration/batch/_label.py
 # =====================================================================
 """
-Default result set labeling for batch workflows (ADR §1.6 phase 7C, §1.21).
+Default result set labeling for batch workflows.
 
 When a workflow run or batch is executed without an explicit user-given label,
 a default folder name is derived from the terminal block's parameters and the

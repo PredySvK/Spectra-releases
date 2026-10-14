@@ -6,7 +6,7 @@ Ribbon tab for the live Overall Level dock (band energy against speed or time, A
 
 Left to right: Refresh, then RibbonGroups -- Spectrum, View, Band, Tacho
 Tracking, Options, Batch. View/Amplitude (issue #128) mirrors Order
-Tracking's group: an instant redraw, no recompute (ADR §1.60, §1.62 point 5).
+Tracking's group: an instant redraw, no recompute.
 Generates an OverallLevelConfig DTO for the DSP backend.
 """
 from PySide6.QtCore import Signal

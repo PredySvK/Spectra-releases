@@ -1,4 +1,4 @@
-"""FilterSelectionStore -- the Qt-free state half of FilterPanel (ADR §1.39).
+"""FilterSelectionStore -- the Qt-free state half of FilterPanel.
 
 FilterPanel is a QWidget, but a chunk of what it holds is pure data with no Qt
 in it: the two dicts of checked state (one core.project_model.FilterSelection
@@ -14,7 +14,7 @@ call. It keeps its own light Dict[card_id, scope] (kept in sync by the panel on
 add / scope flip / delete) so the fold does not need the Qt FilterProfile
 objects.
 
-Lives in session/trace_filter.py (ADR §1.57 / #170), not core/: Global/Local scoping
+Lives in session/trace_filter.py, not core/: Global/Local scoping
 and per-dock keying is a session concept, holding the open project's evolving
 filter selection state. core/ is pure data without behaviour over collections,
 and session/ may import core/ and selection/ but not gui/. Glossary term: **Filter
@@ -27,9 +27,9 @@ panel's 9 _checked_* property pairs for one self._sel window onto
 active_selection().
 
 The gui.handlers / gui.workspace persistence callers reach this straight through
-the read-only FilterPanel.selection_store property (ADR §1.51), not through a
+the read-only FilterPanel.selection_store property, not through a
 forwarding method per call. serialize_profile_identities / restore_profile_identities
-moved off FilterPanel too, onto FilterProfileRegistry below (ADR §1.68 / #177) --
+moved off FilterPanel too, onto FilterProfileRegistry below --
 that class owns the profile list itself, so FilterPanel no longer holds any of
 this component's Qt-free state.
 """
@@ -175,7 +175,7 @@ class FilterSelectionStore:
             if d_id == dock_id
         }
 
-    # ---- §1.29 staleness bookkeeping (ADR §1.44) ------------------------
+    # ---- §1.29 staleness bookkeeping ------------------------
 
     def offered_facets(self, card_id: str, dock_id: Optional[str]) -> Optional[OfferedFacets]:
         """What the (card, dock) was last offered for real, or None if it never
@@ -267,11 +267,11 @@ class FilterSelectionStore:
         self._offered.clear()
         self._seen.clear()
 
-    # ---- serialization: a project's ui_state round-trip (ADR §1.39 T2) ----
+    # ---- serialization: a project's ui_state round-trip ----
     #
     # import_* rejects an entry whose card is gone by testing `card_id in
     # self._scope` -- the panel syncs that map on every add/delete, so this
-    # needs no Qt FilterProfile object (ADR §1.39, "Scope bez leaku").
+    # needs no Qt FilterProfile object.
 
     def export_global_selections(self) -> Dict[str, dict]:
         """Every Global card's one shared selection, JSON-safe, keyed by card id."""
@@ -310,10 +310,10 @@ class FilterSelectionStore:
 
 
 class FilterProfileRegistry:
-    """Owns FilterPanel's Qt-free profile bookkeeping (ADR §1.68 / #177): the
+    """Owns FilterPanel's Qt-free profile bookkeeping: the
     list of FilterProfile identities, which one is active app-wide, which dock
     currently has focus, and the per-dock memory of a custom Local card's last
-    active state (ADR §1.37, ticket #66).
+    active state.
 
     This is the other half of what #170 already carried into session/ as
     FilterSelectionStore -- that class owns the checked *values*, this one
@@ -456,7 +456,7 @@ class FilterProfileRegistry:
 
     def prune_active_card_memory(self) -> None:
         """Drops dict entries pointing at a card that no longer exists --
-        called after a profile or a dock's cards are removed (ADR §1.37)."""
+        called after a profile or a dock's cards are removed."""
         self._active_card_by_dock = {
             dock_id: profile_id
             for dock_id, profile_id in self._active_card_by_dock.items()
@@ -478,7 +478,7 @@ class FilterProfileRegistry:
         if new_scope == "local" and self._current_dock_id is None:
             return False
         # migrate_scope carries the checked state, the offering and the seen
-        # mark together (ADR §1.44) -- the flipped card must not keep a
+        # mark together -- the flipped card must not keep a
         # mask's checked values while forgetting which of them were ever on
         # offer (§1.29).
         self._store.migrate_scope(profile_id, new_scope, self._current_dock_id)

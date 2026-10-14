@@ -16,7 +16,7 @@ the drop handler, freezing the app on a large source file. Both now happen on
 a worker thread; the drop handler only ever sees a result that is already
 there or dispatches a request and moves on.
 
-The result-set cache lookup moved onto this worker too (ADR §1.54, issue #84):
+The result-set cache lookup moved onto this worker too:
 the drop handler no longer asks the cache synchronously (an HDF5 read on the
 GUI thread) and no longer shows a "compute this? [Yes]/[No]" dialog on a miss.
 The worker body asks the cache first -- via the hardcoded-write_index=False
@@ -162,7 +162,7 @@ class LiveOrderResults(QObject):
             return
         _, channel_name = entry
         if result_set_label is not None:
-            # The hit/miss verdict lands on the GUI thread here (ADR §1.54); the
+            # The hit/miss verdict lands on the GUI thread here; the
             # single-dock path logs the same "no recompute" line.
             self.app_context.log(
                 f"PROJECT: Live channel '{channel_name}' loaded from result set "

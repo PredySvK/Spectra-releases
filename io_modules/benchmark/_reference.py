@@ -1,4 +1,4 @@
-"""Deterministic reference signal generator and cache for Benchmark (ADR §1.132, #482)."""
+"""Deterministic reference signal generator and cache for Benchmark."""
 
 import hashlib
 import json

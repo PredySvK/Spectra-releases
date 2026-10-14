@@ -2,7 +2,7 @@
 # FILE: gui/bottom_panels/evaluation_panel.py
 # =====================================================================
 """
-The Evaluation card of the bottom Output panel (ADR Â§1.64, issues #135/#136/#137/#139/#140/#141/#142):
+The Evaluation card of the bottom Output panel:
 Single values pulled out of the focused dock's curves, one Evaluation table.
 
 Recomputes on four events -- a dock-focus change (the same event the Filter
@@ -12,7 +12,7 @@ toggle, and the card itself becoming visible.
 
 Display switches (RMS / Peak amplitude, Linear / Power / PSD format for
 spectra, and global engineering units) rescale the Single values instantly
-without recomputing the evaluation (ADR Â§1.64 point 4, Â§1.60, Â§1.61).
+without recomputing the evaluation.
 
 Toolbar includes "Columnsâ€¦" (Issue #139) to configure metadata columns shown
 in the table, persisted per dock in EvaluationConfig.metadata_columns.
@@ -350,7 +350,7 @@ class EvaluationPanel(QWidget):
         self.btn_columns.clicked.connect(self._open_columns_dialog)
         header.addWidget(self.btn_columns)
 
-        # Default on (ADR Â§1.64 point 1). Remembered per dock.
+        # Default on. Remembered per dock.
         self.chk_respect_filter = QCheckBox("Respect Trace filter")
         self.chk_respect_filter.setChecked(True)
         self.chk_respect_filter.toggled.connect(self._on_respect_trace_filter_changed)

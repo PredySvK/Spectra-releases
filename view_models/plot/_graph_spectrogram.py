@@ -3,7 +3,7 @@ The one owner of the spectrogram a single graph holds -- ``GraphCurves``'
 counterpart for a dock whose content is one 2D map rather than a curve list.
 
 A ``GraphSpectrogram`` keeps the ``SpectrogramModel`` a dock draws, built from
-the canonical block it was given (ADR §1.60). Showing a block and rebuilding it
+the canonical block it was given. Showing a block and rebuilding it
 in other display settings both go through it and end in exactly one
 ``on_change`` call, so the dock draws what changed and never builds the model
 itself.

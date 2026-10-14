@@ -55,7 +55,7 @@ def _format_order(order: float) -> str:
 
 def _facet_entries(values: Any, label_of: Callable[[Any], str]) -> List[Tuple[Any, str]]:
     """`(value, label)` pairs for a checkbox list, with the "(Empty)" bucket row
-    (ADR §1.56) labelled literally rather than run through `label_of` (which
+    labelled literally rather than run through `label_of` (which
     would choke on the non-numeric sentinel)."""
     return [(v, v if v == EMPTY_FACET_VALUE else label_of(v)) for v in values]
 
@@ -63,7 +63,7 @@ def _facet_entries(values: Any, label_of: Callable[[Any], str]) -> List[Tuple[An
 def _format_number(value: Any) -> str:
     """A number for a range bound, without redundant trailing zeros
     ("25600.0000" -> "25600", "1.50" -> "1.5"). A value that is not numeric is
-    returned as its plain string (ARCHITECTURE_DECISIONS §1.37). Metadata
+    returned as its plain string. Metadata
     checkbox labels do not come through here: they are categorical text and
     shown literally (#405)."""
     try:

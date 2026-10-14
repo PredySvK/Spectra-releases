@@ -2,7 +2,7 @@
 # FILE: signal_processing/evaluation/__init__.py
 # =====================================================================
 """
-Evaluation (ADR §1.64): pulling Single values out of a set of curves.
+Evaluation: pulling Single values out of a set of curves.
 
 No Qt, no app_context (tests/test_architecture.py enforces it) -- an
 Evaluation is a function of blocks and identities, so it runs the same way

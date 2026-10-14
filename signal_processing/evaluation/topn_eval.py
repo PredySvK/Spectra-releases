@@ -2,7 +2,7 @@
 # FILE: signal_processing/evaluation/topn_eval.py
 # =====================================================================
 """
-Top-N maxima (ADR §1.64 point 7, CONTEXT.md Local maximum / Top-N maxima): the
+Top-N maxima: the
 N highest Local maxima of a curve, ranked by height -- never "dominant
 maxima" ranked by prominence, and never padded with empty rows when a curve
 holds fewer humps than N.
@@ -38,7 +38,7 @@ DEFAULT_MIN_DISTANCE_FRACTION = 0.05  # of the curve's own X-axis range, used on
 
 def _amplitude_db(block: NVHDataBlock) -> np.ndarray:
     """Amplitude in dB, fixed at Linear/RMS regardless of the table's current
-    display switches (ADR §1.64 point 4) -- the position of a maximum must
+    display switches -- the position of a maximum must
     not move when the user flips RMS<->Peak or Linear<->Power<->PSD."""
     values, _unit = block.to_display_values("linear", "rms")
     amplitude = np.asarray(values, dtype=float)
@@ -126,7 +126,7 @@ def extract_topn_maxima(
     min_distance: Optional[float] = None,
     min_prominence_db: float = DEFAULT_MIN_PROMINENCE_DB,
 ) -> Tuple[SingleValue, ...]:
-    """Extraction on one curve (ADR §1.64 point 2). Returns zero to n rows,
+    """Extraction on one curve. Returns zero to n rows,
     ranked by height, never padded to n and never a dash row -- a curve with
     no qualifying hump simply contributes no rows to the table (unlike Max,
     which always returns exactly one)."""

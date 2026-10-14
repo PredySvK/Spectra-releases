@@ -321,7 +321,7 @@ class FilterCardConfig:
 
 def renumbered(columns) -> Tuple[FilterColumnConfig, ...]:
     """`columns` in the given sequence order, orders reassigned 1..N. Public
-    (ADR §1.47) so `gui/filter_panel/filter_card.py` builds cards through this
+    so `gui/filter_panel/filter_card.py` builds cards through this
     one rule instead of keeping a hand-synced twin."""
     return tuple(
         replace(column, order=position)

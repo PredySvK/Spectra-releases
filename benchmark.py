@@ -1,5 +1,5 @@
 """
-Headless Benchmark (ADR §1.132): time a plan's analyses without Qt and write
+Headless Benchmark: time a plan's analyses without Qt and write
 the Benchmark report as JSON + Markdown.
 
     python benchmark.py plan.toml [--out DIR] [--quick] [--baseline BASELINE]

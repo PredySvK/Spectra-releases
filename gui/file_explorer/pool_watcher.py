@@ -11,7 +11,7 @@ do not know is that a file they cannot see has appeared.
 Two things make a naive QFileSystemWatcher useless here, and both are handled
 below rather than left to surprise someone later:
 
-  - The scan cache lives under the project now (ADR §1.22), not in the data
+  - The scan cache lives under the project now, not in the data
     folder, so a refresh writing it no longer touches anything watched here.
     The watcher still compares what the measurement files look like rather than
     whether something in the folder moved: any other stray file dropped next to

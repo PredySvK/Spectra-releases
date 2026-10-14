@@ -3,7 +3,7 @@
 # =====================================================================
 """
 Recipe: an averaged single-sided spectrum, built from the steps in
-signal_processing/dsp/steps/ (ADR §1.58, §1.60).
+signal_processing/dsp/steps/.
 
     frame_cutting    -> Frames, cut at a uniform hop and windowed
     frame_fft        -> Frames to Unscaled power, in fixed-size batches
@@ -11,7 +11,7 @@ signal_processing/dsp/steps/ (ADR §1.58, §1.60).
     spectrum_scaling -> canonical bin energy (P_canon) in squared units
 
 Short and batch-size-agnostic on purpose: this is a recipe, not a second
-workflow engine (ADR §1.58 point 2) -- it only calls the steps in order and
+workflow engine -- it only calls the steps in order and
 does not know frame_fft's batch size exists.
 """
 
@@ -47,7 +47,7 @@ def compute_averaged_spectrum(
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
     """
     Computes a single-sided averaged spectrum in canonical bin energy (P_canon)
-    in squared units by default, or scaled to a legacy display format (ADR §1.60).
+    in squared units by default, or scaled to a legacy display format.
     """
     if amplitude_mode != "rms":
         normalize_dsp_choice(amplitude_mode, VALID_AMPLITUDE_MODES, "amplitude_mode")

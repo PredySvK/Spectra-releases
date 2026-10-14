@@ -3,7 +3,7 @@
 # =====================================================================
 """
 Step: band integration over a per-bin energy spectrum, with fractional bin
-weights (ADR §1.58 point 4, §1.60).
+weights.
 
 Band RMS (signal_processing/dsp/levels.py) integrates a single fixed
 [f_start, f_stop] with `integrate_band`; Overall Level (same module) integrates
@@ -14,7 +14,7 @@ Overall Level curve must equal the Band RMS readout over the same spectrum
 integrates a band whose centre and width move with rpm, one row per tracking
 trigger, with `integrate_moving_band` -- the vectorised gather orders.py used
 to do inline, moved here so the fixed-band and moving-band cases cannot drift
-apart on the fractional-weight math they share. Residual (ADR §1.141)
+apart on the fractional-weight math they share. Residual
 integrates the fixed band outside the union of several moving bands with
 `integrate_band_rows_outside_moving_bands`.
 """
@@ -183,7 +183,7 @@ def integrate_band_rows_outside_moving_bands(
     """
     Per row of canonical `energy_matrix` (n_rows, n_freqs): the energy of the
     fixed band [f_start, f_stop] outside the union of several moving bands --
-    Residual (ADR §1.141). `center_freqs` and `band_widths` are (n_bands,
+    Residual. `center_freqs` and `band_widths` are (n_bands,
     n_rows); each band is the one `integrate_moving_band` integrates, and one
     that would be NaN there masks nothing. The union counts shared energy once,
     so the result never exceeds `integrate_band_rows` over the same band.

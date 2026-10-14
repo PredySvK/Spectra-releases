@@ -1,6 +1,6 @@
 """
 Re-scaling a finished ``PlotModel`` in memory -- display settings, RMS/Peak,
-global units, X domain -- without disk I/O or DSP recomputation (ADR §1.60).
+global units, X domain -- without disk I/O or DSP recomputation.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ def rebuild_spectrum_with_display_settings(
     prefs: Optional[UnitPreferences] = None,
 ) -> PlotModel:
     """
-    Re-scales a spectrum PlotModel on the fly from its canonical blocks (ADR §1.60).
+    Re-scales a spectrum PlotModel on the fly from its canonical blocks.
     Runs purely in-memory (< 1 ms), without disk I/O or DSP recomputation.
     """
     prefs = prefs or UnitPreferences()
@@ -168,7 +168,7 @@ def rebuild_amplitude_mode_display(
 ) -> PlotModel:
     """
     Re-scales every order-cut or Overall Level trace in ``model`` between RMS
-    and Peak (ADR §1.60, §1.62 point 22). Runs purely in-memory (< 1 ms),
+    and Peak. Runs purely in-memory (< 1 ms),
     without disk I/O or DSP recomputation.
 
     Keyed on each trace's own block kind, not the dock's ``analysis_kind``: a
@@ -276,7 +276,7 @@ def rebuild_with_units(model: PlotModel, prefs: UnitPreferences) -> PlotModel:
 
     A trace already shown in dB stays in dB, re-derived from its new-unit
     linear value last, off its own pre-rebuild ``unit`` and its
-    ``compute_spec["spectrum_format"]`` (ADR §1.89).
+    ``compute_spec["spectrum_format"]``.
     """
     new_traces: List[Trace] = []
     base_unit: Optional[str] = None
@@ -363,7 +363,7 @@ def rebuild_with_domain(model: PlotModel, to_quantity: str) -> PlotModel:
     A fresh model with ``x_domain`` set to ``to_quantity`` and every
     projectable trace's ``x`` recomputed from its untouched ``x_raw`` --
     the X-axis counterpart of ``rebuild_with_units``, and for the same reason
-    (ARCHITECTURE_DECISIONS §1.30): changing what domain the dock shows is a
+   : changing what domain the dock shows is a
     model rebuild, not something ``_draw_all()`` recomputes on every paint.
 
     A trace whose own quantity cannot be projected onto ``to_quantity`` is

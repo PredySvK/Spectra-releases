@@ -3,7 +3,7 @@
 # =====================================================================
 """
 `MeasurementSelection` -- the named query that says what a batch operation runs
-over (ARCHITECTURE_DECISIONS §1.12).
+over.
 
 Lives in core/ because it is pure data: no I/O, no Qt, JSON round-trippable, so
 it can be stored in a project today and inside a workflow recipe later. The
@@ -48,7 +48,7 @@ class MeasurementSelection:
     reasoning as NVHDataBlock's read-only `values` (§1.18): a half-frozen object
     is worse than a mutable one, because it invites the assumption it is safe.
 
-    `column_values` maps Filter column keys to accepted text values (ADR §1.131).
+    `column_values` maps Filter column keys to accepted text values.
     An absent key imposes no constraint; a present empty tuple selects nothing.
     Identity columns and categorical metadata share this one map.
     """

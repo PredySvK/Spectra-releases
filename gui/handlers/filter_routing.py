@@ -35,7 +35,7 @@ what the on-screen facets are built from: the whole Data Pool for a Global
 profile's measurement facets (its Calculated columns come from the open docks
 unioned with the Result Pool, ADR §1.36), or whatever the focused dock is
 actually drawing for a Local one -- a result-content dock offers nothing
-special here once its h5 curves are ordinary Traces (ADR §1.38).
+special here once its h5 curves are ordinary Traces.
 
 All internal documentation strings and variable labels are standardly written
 in English.
@@ -83,7 +83,7 @@ def _curves_traces(widget) -> list:
 class FilterRoutingHandler:
     """
     The one owner of the Filter panel's facets and of the mask they produce on
-    every open dock (ADR §1.76, ticket #234). See the module docstring for why
+    every open dock. See the module docstring for why
     the panel half and the mask half are one class.
     """
 
@@ -109,10 +109,10 @@ class FilterRoutingHandler:
         last-applied snapshot having actually moved on (R6') unless `force` skips
         that gate -- for callers whose reason to redraw is invisible to the key
         (reapply_active_filter_everywhere below). A SpectrogramDock has no traces
-        to mask (ADR §1.7) and is left untouched.
+        to mask and is left untouched.
 
         Every GraphDock gets the same in-memory mask, including a result-content
-        dock (ADR §1.30) -- the disk-side query this used to route the Compare dock
+        dock -- the disk-side query this used to route the Compare dock
         to separately (cli_apply_filters) is gone, along with the identity check
         that picked it out.
         """
@@ -179,7 +179,7 @@ class FilterRoutingHandler:
         it travels on that graph's own TabSpec instead
         (Workspace.restore_open_tabs, same call site as this function),
         which is also where a dock's loaded h5 result-set ids travel
-        (ARCHITECTURE_DECISIONS §1.30, plan F5).
+       .
         """
         panel = self.filter_panel
         if panel is None:
@@ -206,7 +206,7 @@ class FilterRoutingHandler:
         panel.cb_filter_data_pool.setChecked(state.filter_data_pool)
         panel.cb_filter_data_pool.blockSignals(blocked)
 
-        # Same treatment for the panel-wide "Show all" switch (ADR §1.32) -- one
+        # Same treatment for the panel-wide "Show all" switch -- one
         # checkbox for the whole panel, restored without emitting.
         panel.set_show_all(state.show_all)
 
@@ -253,7 +253,7 @@ class FilterRoutingHandler:
     def _open_dock_traces(self) -> list:
         """
         Every trace drawn on any open workspace dock -- what a Global card's
-        Calculated-metadata facets are built from (ADR §1.36), where a Local card
+        Calculated-metadata facets are built from, where a Local card
         sees only the focused dock. A tab container exposing just `currentWidget`
         (some test doubles) collapses to that one dock.
         """
@@ -318,7 +318,7 @@ class FilterRoutingHandler:
         schema = context.pool.schema().master
 
         # Which metadata/Channel/Identity columns this profile's card carries
-        # decides the offering (ADR §1.32/§1.33, tickets #41/#42), and since #50
+        # decides the offering, and since #50
         # also the order, the widget and the column count. A never-configured card
         # of either scope resolves to `Channel` plus the user's Default pins (ADR
         # §1.56 -- no block-kind derivation); a stored card is left verbatim (no
@@ -350,7 +350,7 @@ class FilterRoutingHandler:
         """
         The schema-field and built-in column cardinalities Configure Filters shows
         for a Local card -- read off the focused dock's own traces and their
-        resolved sources, not the pool (ADR §1.33). Returns (schema_cardinalities,
+        resolved sources, not the pool. Returns (schema_cardinalities,
         builtin_cardinalities), both keyed the same way the pool-wide versions are.
         """
         identities = _identities_for(self._focused_dock_traces(), session)
@@ -475,7 +475,7 @@ class FilterRoutingHandler:
 
     def toggle_show_all(self, enabled: bool) -> None:
         """Wired to FilterPanel.show_all_toggled -- the panel-wide switch that
-        blanks every mask and the Data Pool narrowing at once (ADR §1.32).
+        blanks every mask and the Data Pool narrowing at once.
 
         Every open dock is force-swept, not just the focused one: showing_all() is
         in dock.curves.applied_mask_key, but a dock the user never focused has no
@@ -495,7 +495,7 @@ class FilterRoutingHandler:
     def open_filter_field_selection(self) -> None:
         """
         Configure Filters: which columns sit on the card you are standing on
-        (ARCHITECTURE_DECISIONS §1.32, tickets #41/#42). It configures the active
+       . It configures the active
         profile's card, not the app-wide schema -- Global and Local can carry
         different columns. `usable_as_filter` still decides what the dialog is
         allowed to list (Metadata and Filter Settings' job), and still feeds the
@@ -518,9 +518,9 @@ class FilterRoutingHandler:
 
         # A Local card offers only what the focused dock draws, so its counts and
         # "cannot narrow" verdicts are read off that dock's traces, not the pool
-        # (ADR §1.33). A never-configured card of either scope resolves the same way
+        #. A never-configured card of either scope resolves the same way
         # now -- `Channel` plus the user's Default pins, no block-kind derivation
-        # and no growing (ADR §1.56).
+        # and no growing.
         schema_cardinalities = builtin_cardinalities = None
         if panel.active_profile_scope() != "global":
             schema_cardinalities, builtin_cardinalities = self._local_card_cardinalities(
@@ -529,7 +529,7 @@ class FilterRoutingHandler:
         else:
             # A Global card keeps the pool-wide schema-field read, but its Calculated
             # columns count the graph cards plus the Result Pool, not result sets
-            # alone (ADR §1.36) -- the same universe refresh_filter_panel offers
+            # alone -- the same universe refresh_filter_panel offers
             # values from, so a "(0)" here means the column really would narrow
             # nothing.
             open_dock_identities = _identities_for(self._open_dock_traces(), session)

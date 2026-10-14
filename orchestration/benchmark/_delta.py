@@ -1,5 +1,5 @@
 """
-Compute Benchmark deltas against a baseline report (ADR §1.132, #483).
+Compute Benchmark deltas against a baseline report.
 
 Pure function over two Benchmark report dicts: matches cases present in both
 reports, calculates wall time and per-step deltas from medians, and tracks cases

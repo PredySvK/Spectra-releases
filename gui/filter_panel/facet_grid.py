@@ -118,7 +118,7 @@ class FacetGrid(QWidget):
         # as a multi-select holds checkable QActions instead (§1.34), and
         # isChecked/setChecked/text are all anyone here ever wanted from them.
         self._metadata_checkboxes: Dict[str, List[_Control]] = {}
-        # Built-in Identity facets other than Channel (ADR §1.33): column key ->
+        # Built-in Identity facets other than Channel: column key ->
         # {value: control}.
         self._identity_value_checkboxes: Dict[str, Dict[str, _Control]] = {}
         self._channel_checkboxes: List[Tuple[ChannelIdentity, _Control]] = []
@@ -137,7 +137,7 @@ class FacetGrid(QWidget):
         # scroll position and multi-select menu state for a single click).
         # Kept alongside (not instead of) each family's own storage above,
         # which several call sites and tests already read in that family's own
-        # shape (ADR §1.34's "one control type, many per-family containers").
+        # shape.
         self._live_controls: Dict[str, Dict[Any, _Control]] = {}
         # (lo widget, hi widget, kind) per ranged field currently on screen --
         # kind decides how _on_range_changed reads the widgets back (float
@@ -159,7 +159,7 @@ class FacetGrid(QWidget):
         self._offered_metadata_values: Dict[str, Set[str]] = {}
 
         # The "populated for real at least once" set also lives in
-        # FilterSelectionStore now (ADR §1.44), keyed by the same Global->None
+        # FilterSelectionStore now, keyed by the same Global->None
         # fold as the selections themselves.
 
         # The last populate_facets() ResolvedFacets, replayed by FilterPanel when
@@ -225,7 +225,7 @@ class FacetGrid(QWidget):
         """
         What the current (card, dock) was last offered for real -- the mask
         the remembered picks are read through so nothing invisible can filter
-        (§1.29). Read-through onto FilterSelectionStore._offered (ADR §1.44);
+        (§1.29). Read-through onto FilterSelectionStore._offered;
         empty until populate_facets has run for real for this combo, which is
         what lets a freshly opened dock draw its own curves.
         """
@@ -260,7 +260,7 @@ class FacetGrid(QWidget):
         """
         `facets` is the single `selection.trace_filter.ResolvedFacets`
         that `gui.handlers.filter_routing.refresh_filter_panel` resolves from
-        the workspace state (ADR §1.38) -- one flat, named record in place of
+        the workspace state -- one flat, named record in place of
         the positional facet tuple this used to take. The field notes below
         describe what each part carries.
 
@@ -279,9 +279,9 @@ class FacetGrid(QWidget):
         `range_facets`
         is build_range_facets's output (field key -> (lo, hi) spanning the
         current pool/dock) for the opted-in numeric/date fields
-        (ARCHITECTURE_DECISIONS §1.32) -- a field the user has already moved
+        -- a field the user has already moved
         (self._sel.checked_ranges) keeps its own bounds instead of the freshly
-        computed span. `identity_facets` (ADR §1.33) is the built-in Identity
+        computed span. `identity_facets` is the built-in Identity
         facets other than Channel -- column key (core.filter_card_config
         COLUMN_*) -> sorted distinct values -- from the pool for a Global card
         (selection.source_facets.build_identity_facets_from_sources) or the
@@ -301,7 +301,7 @@ class FacetGrid(QWidget):
         `is_replay` is set only by FilterPanel._replay_last_populate() (a tab
         switch, not a real change of scope); it is passed straight to
         resolve_panel_render, which is where the §1.29 default-everything
-        heuristic needs to know the difference (ADR §1.42).
+        heuristic needs to know the difference.
 
         Returns that round's PanelRender, so the owner can word its own
         "nothing to filter" status (FilterPanel names its scope there).
@@ -317,7 +317,7 @@ class FacetGrid(QWidget):
         # Every decision this round -- which boxes in what order, which offered
         # values to tick, whether to record the offering, the preserved range
         # bounds -- is resolve_panel_render, a
-        # pure function (ADR §1.48; §1.29 heuristic rationale in its docstring).
+        # pure function.
         # The grid hands it the two lookups it is blind to (both from
         # FilterSelectionStore, ADR §1.44) and then only renders.
         active_id, dock_id = self._selection_key()
@@ -339,7 +339,7 @@ class FacetGrid(QWidget):
         }
 
         # Tear the old widgets down before landing the new checked state, so the
-        # write-back is never interleaved with deleteLater() (ADR §1.48).
+        # write-back is never interleaved with deleteLater().
         while self._facets_layout.count() > 1:
             item = self._facets_layout.takeAt(0)
             widget = item.widget()
@@ -381,7 +381,7 @@ class FacetGrid(QWidget):
         "give me the widget, take a group box". Called only for keys in
         `render.ordered_columns` -- the presence test that decides which facets
         have something to offer lives once, in `ResolvedFacets.ordered_columns`
-        (ADR §1.48), not a second time here. The card picks both the order the
+       , not a second time here. The card picks both the order the
         boxes are built in and which widget each one gets (§1.34).
         """
         facets = render.facets
@@ -409,7 +409,7 @@ class FacetGrid(QWidget):
 
         # A range field: resolve_panel_render already resolved its bounds -- the
         # user's own (FilterSelection.checked_ranges) where they moved one, the
-        # freshly computed span otherwise (ADR §1.42/§1.48).
+        # freshly computed span otherwise.
         span = (facets.ranges or {}).get(key, render.range_bounds[key])
         return lambda _widget: self._build_range_group(
             key, schema.get(key, {}).get("custom_label", key), render.range_bounds[key],
@@ -580,9 +580,9 @@ class FacetGrid(QWidget):
     def _build_range_group(self, key: str, label: str, bounds: Tuple[Any, Any], kind: str,
                            span: Optional[Tuple[Any, Any]] = None) -> QGroupBox:
         """
-        A numeric/date facet's `min..max` widget (ARCHITECTURE_DECISIONS §1.32).
+        A numeric/date facet's `min..max` widget.
 
-        `bounds` is what plan_populate resolved for this field (ADR §1.42): the
+        `bounds` is what plan_populate resolved for this field: the
         current pool/dock's own span until the user edits either side, then
         their own bounds -- `self._sel.checked_ranges` gaining a key for it is
         the "touched" flag (FilterSelection.checked_ranges), and an untouched
@@ -649,7 +649,7 @@ class FacetGrid(QWidget):
         self._emit_selection_changed()
 
     def _toggle_empty_bucket(self, token: str, checked: bool) -> None:
-        """Check / uncheck one gating facet's "(Empty)" row (ADR §1.56). `token`
+        """Check / uncheck one gating facet's "(Empty)" row. `token`
         is the family name for the scalar families (`order`, `result_kind`) or
         the column key for the keyed ones (Identity / metadata)."""
         if checked:
@@ -664,7 +664,7 @@ class FacetGrid(QWidget):
         """Wrap a facet's `is_checked` / `on_toggled` so the EMPTY_FACET_VALUE
         entry routes to `checked_empty_buckets[token]` instead of the family's
         own checked collection -- the "(Empty)" row is one checkbox in the same
-        list as every other value (ADR §1.56)."""
+        list as every other value."""
         def checked(value: Any) -> bool:
             if value == EMPTY_FACET_VALUE:
                 return token in self._sel.checked_empty_buckets
@@ -737,7 +737,7 @@ class FacetGrid(QWidget):
         """
         One row per Parameter Set: a mask checkbox whose hover tooltip carries
         the full settings list, not a per-row label -- the same text twice was
-        only clutter (ARCHITECTURE_DECISIONS §1.37). The "primary" radio is gone
+        only clutter. The "primary" radio is gone
         (§1.56): a dropped channel is computed with `default_primary_index`.
         """
         box = QGroupBox("Parameter Set")
@@ -757,7 +757,7 @@ class FacetGrid(QWidget):
             live[ps.index] = cb
 
         if offers_empty:
-            # A trace whose settings match no offered set (ADR §1.56) -- one
+            # A trace whose settings match no offered set -- one
             # more checkbox in the same list, routed to checked_empty_buckets.
             empty_cb = QCheckBox(EMPTY_FACET_VALUE)
             empty_cb.setChecked("parameter_set" in self._sel.checked_empty_buckets)

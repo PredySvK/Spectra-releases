@@ -3,7 +3,7 @@
 # =====================================================================
 """
 A form that renders one block's parameters straight from its
-`core/dsp_configs.py` dataclass (ARCHITECTURE_DECISIONS §1.6, Epic P phase 7C).
+`core/dsp_configs.py` dataclass.
 
 Lives in gui/ because it is a Qt widget. It is deliberately generic -- it walks
 `dataclasses.fields(config_cls)` and picks a widget per field type -- rather than
@@ -85,7 +85,7 @@ _CHOICES: Dict[str, list] = {
 
 def _choices_for(config_cls: Any, name: str) -> list:
     choices = _CHOICES.get(name, [])
-    # The spectrogram refuses "any" for RPM tracking (ADR §1.58 point 8); its ribbon omits it.
+    # The spectrogram refuses "any" for RPM tracking; its ribbon omits it.
     if name == "direction" and config_cls.__name__ == "SpectrogramConfig":
         return [c for c in choices if c[1] != "any"]
     return choices

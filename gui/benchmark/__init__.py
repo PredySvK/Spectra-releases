@@ -1,5 +1,5 @@
 """
-Full Benchmark (ADR §1.132): time the real click path up to paint.
+Full Benchmark: time the real click path up to paint.
 
 `main.py --benchmark` builds a `BenchmarkApplication` -- a QApplication that
 times graph paints and main-window repaints as Benchmark steps -- and hands

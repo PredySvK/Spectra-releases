@@ -131,7 +131,7 @@ def identities_match(left: TraceIdentity, right: TraceIdentity) -> bool:
     if not signatures_match(left.parameter_signature, right.parameter_signature):
         return False
     # Only settings both sides state are compared: a curve from a cache written
-    # before they were recorded cannot be judged on them (ADR §1.101).
+    # before they were recorded cannot be judged on them.
     return all(
         signature_value_matches(value, right.computation[key])
         for key, value in left.computation.items() if key in right.computation
@@ -183,13 +183,13 @@ class OfferedFacets:
     # channel_identities -- it is what tells "unchecked" apart from "never
     # offered" for a mask.
     identity_values: Dict[str, FrozenSet[str]] = field(default_factory=dict)
-    # Discrete metadata fields (ADR §1.56): schema field key -> the values the
+    # Discrete metadata fields: schema field key -> the values the
     # panel put a checkbox on screen for. Same role as identity_values -- the
     # metadata family is a sixth gating family now, not the pre-§1.56 "empty
     # selection constrains nothing" block. EMPTY_FACET_VALUE is stripped out of
     # these sets (it lives in empty_buckets instead).
     metadata_values: Dict[str, FrozenSet[str]] = field(default_factory=dict)
-    # The "(Empty)" bucket tokens on offer this round (ADR §1.56): a scalar
+    # The "(Empty)" bucket tokens on offer this round: a scalar
     # family's name (`order`, `result_kind`, `parameter_set`) or a keyed
     # family's column key. Part of the staleness key like every other offered
     # value -- a facet that starts offering "(Empty)" must force a redraw.
@@ -231,7 +231,7 @@ class Facet:
     hides: Callable[[TraceIdentity, FilterSelection, "OfferedFacets", Dict[str, Dict[str, Any]]], bool]
     offered_from_resolved: Callable[["ResolvedFacets"], Any]
     # The "(Empty)" bucket tokens this family offers for one `ResolvedFacets`
-    # (ADR §1.56): a one-element set with the family name for the scalar
+    #: a one-element set with the family name for the scalar
     # families, or one key per keyed column that has a value-less trace. Empty
     # when every trace carries a value.
     offers_empty: Callable[["ResolvedFacets"], Set[str]]
@@ -276,7 +276,7 @@ def _default_step(current: Set[Any], offered: Set[Any], previously_offered: Opti
 def _fold_empty_default(token: str, checks: "DefaultedChecks", offered: "OfferedFacets",
                         previously_offered: Optional["OfferedFacets"]) -> None:
     """
-    The §1.29 default heuristic for one facet's "(Empty)" bucket (ADR §1.56):
+    The §1.29 default heuristic for one facet's "(Empty)" bucket:
     the sentinel is just another newly-offered value -- ticked the first time
     the facet offers it, left alone once the user has had a chance to uncheck
     it. `checks.checked_empty_buckets` is one flat set across families, so this
@@ -384,7 +384,7 @@ def _identity_columns_facet() -> Facet:
     File name, Data Pool label, Result set -- §1.33): one register row, the
     per-column loop kept inside. Each column gates exactly like Channel; a trace
     with no value for a column (no source, a blank direction) lands in that
-    column's "(Empty)" bucket and is gated through it (ADR §1.56).
+    column's "(Empty)" bucket and is gated through it.
     """
     def hides(identity: TraceIdentity, selection: FilterSelection, offered: "OfferedFacets",
               schema: Dict[str, Dict[str, Any]]) -> bool:
@@ -458,7 +458,7 @@ def _parameter_set_facet() -> Facet:
     from what is on offer (#349). A trace whose signature matches no
     offered set (a dropped live channel, one built before compute_spec was
     stamped, or a settings combination the current offering does not list)
-    lands in the "(Empty)" bucket (ADR §1.56).
+    lands in the "(Empty)" bucket.
     """
     def hides(identity: TraceIdentity, selection: FilterSelection, offered: "OfferedFacets",
               schema: Dict[str, Dict[str, Any]]) -> bool:
@@ -517,7 +517,7 @@ def _parameter_set_facet() -> Facet:
 
 def _metadata_columns_facet() -> Facet:
     """
-    Discrete metadata fields (ADR §1.56): the sixth gating family. Each opted-in
+    Discrete metadata fields: the sixth gating family. Each opted-in
     categorical schema column on the card gates exactly like an Identity column
     -- offered and unchecked hides the trace carrying that value; a trace whose
     source has no value for the column, or no source at all, lands in the
@@ -619,7 +619,7 @@ class DefaultedChecks:
     panel to write straight back onto its FilterSelection.
 
     Ranges stay absent: a range is "touched" only by an explicit edit
-    (ARCHITECTURE_DECISIONS §1.32), never auto-checked. Metadata is here now
+   , never auto-checked. Metadata is here now
     (§1.56): it gates like Identity, so a newly-offered value ticks itself.
 
     Plain mutable sets, not frozen: the panel's checkbox handlers .add/.discard
@@ -766,7 +766,7 @@ def missing_range_value_fields(identities: List["TraceIdentity"], schema: Dict[s
 
     Kept separate from trace_matches on purpose: trace_matches runs inside
     render()'s per-trace hot loop and must stay a pure function with no
-    side effects (ARCHITECTURE_DECISIONS §1.32), so the "log this once"
+    side effects, so the "log this once"
     decision lives here instead, computed once per mask rebuild.
     """
     if not checked_ranges:
@@ -902,12 +902,12 @@ def facets_from_traces(identities: List[TraceIdentity],
     #166) -- this module reads only the identity, never the Trace itself.
 
     `allowed_keys` narrows the metadata/range offering to the Local card's own
-    columns (ARCHITECTURE_DECISIONS §1.32, ticket #41). Channel/Order/Result
+    columns. Channel/Order/Result
     Kind/Parameter Set stay as they are -- the card's Identity/Calculated
     columns govern them only from #42/#45 on.
 
     Every discrete family's value list gains an EMPTY_FACET_VALUE row when at
-    least one trace carries no value for it (ADR §1.56): a source-less trace for
+    least one trace carries no value for it: a source-less trace for
     metadata, a time-domain trace for Order, an undeclared-x_quantity trace for
     Result Kind. The row is left off when every trace has a value.
     """
@@ -946,7 +946,7 @@ def traces_without_parameter_set(identities: List[TraceIdentity],
     """
     Whether any of `identities` has a parameter signature that resolves to none
     of `parameter_sets` (or no signature at all) -- the "(Empty)" bucket flag for
-    the Parameter Set family (ADR §1.56). Kept out of `facets_from_traces` /
+    the Parameter Set family. Kept out of `facets_from_traces` /
     `global_calculated_facets` so their return shape does not change: the
     Parameter Set offering is a list of objects that cannot carry the sentinel
     row in band the way Order's float list can.
@@ -965,7 +965,7 @@ def identity_facets_from_traces(identities: List[TraceIdentity],
     label, Result set -- §1.33) a Local card offers: the distinct values its
     own traces carry for each column in `keys`, sorted, empty facets left out.
     A column that has real values and at least one trace with none gains an
-    EMPTY_FACET_VALUE row (ADR §1.56). The Global counterpart reads the pool
+    EMPTY_FACET_VALUE row. The Global counterpart reads the pool
     instead (selection.source_facets.build_identity_facets_from_sources).
 
     `identities` is resolved once by the caller via `identity_for_trace`
@@ -986,7 +986,7 @@ def identity_facets_from_traces(identities: List[TraceIdentity],
 
 def global_parameter_sets(project, identities: List[TraceIdentity]) -> List[ParameterSet]:
     """
-    The Parameter Sets a Global card offers (ADR §1.36): the project's, at their
+    The Parameter Sets a Global card offers: the project's, at their
     stable project-wide index, plus one extra (numbered after the last) per
     dock-drawn settings signature no result set accounts for. A dock trace that
     maps onto a project set adds nothing -- signatures_match bridges the two
@@ -1015,7 +1015,7 @@ def global_parameter_sets(project, identities: List[TraceIdentity]) -> List[Para
 def global_calculated_facets(project, identities: List[TraceIdentity]
                              ) -> Tuple[List[Any], List[Any], List[ParameterSet]]:
     """
-    A Global card's Order / Analysis type / Parameter set offering (ADR §1.36):
+    A Global card's Order / Analysis type / Parameter set offering:
     the union of what every open dock draws and what the project's Result Pool
     holds. The single path that decides this universe.
 
@@ -1023,7 +1023,7 @@ def global_calculated_facets(project, identities: List[TraceIdentity]
     caller via `identity_for_trace` (ticket #166).
 
     Order / Analysis type gain an EMPTY_FACET_VALUE row when an open dock draws
-    a curve that carries no order / no result kind (ADR §1.56).
+    a curve that carries no order / no result kind.
     """
     orders = {identity.order for identity in identities if identity.order is not None}
     orders.update(build_order_facet(project.result_sets))

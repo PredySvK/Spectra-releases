@@ -244,7 +244,7 @@ def unload_result_sets_from_dock(dock, ref_ids: Iterable[str]) -> None:
     a dropped channel, a live compute, a base curve off a measurement -- is
     never touched. Pens are not reassigned: a pen is fixed when its curve is
     built and removing other curves does not recolour what stays
-    (ARCHITECTURE_DECISIONS §1.31).
+   .
 
     Any of `ref_ids` still queued for a read (ResultContentHandler.load_into_dock
     submitted a job but it has not landed) is dropped from the pending set too,

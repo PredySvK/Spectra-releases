@@ -165,7 +165,7 @@ def _run_orders(run: _Run, descriptors, orders, label: str | None) -> int:
 def _run_overall_level(run: _Run, descriptors, label: str | None) -> int:
     """
     Overall Level of one drop in one task; how many channels are served.
-    Tacho is resolved once per source file (ADR §1.62).
+    Tacho is resolved once per source file.
     """
     target = run.target
     inputs = target.overall_level_inputs()

@@ -20,7 +20,7 @@ def lookup_or_compute_order_cuts(
     plan_scratch: Optional[Tuple[threading.Lock, dict]] = None,
 ):
     """
-    Runs on a worker thread (ADR §1.54): ask the result-set cache whether this
+    Runs on a worker thread: ask the result-set cache whether this
     exact order cut was already computed and saved, then rebuild the order
     blocks from the stored amplitudes on a hit or compute them on a miss. The
     cache is asked through `find_cached_result_background`, whose `write_index`
@@ -45,7 +45,7 @@ def lookup_or_compute_order_cuts(
     if cached is not None:
         # A hit reads the vibration channel only for the block's name and
         # inherited sensor context -- never the tacho, and never raw data for
-        # the maths (ADR §1.54: a hit is always cheaper than a miss). Same
+        # the maths. Same
         # builder the freshly computed path funnels into, so a cached curve and
         # a recomputed one end up in an identically assembled block. The blocks
         # come back in the requested order (find_cached_result misses outright

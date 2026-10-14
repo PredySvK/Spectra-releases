@@ -625,7 +625,7 @@ class GraphCurves:
         ``abandon_result_sets`` -- so a second tick while the first is still
         queued submits nothing new, and an untick before it lands can still
         cancel it. The graph owns the whole lifecycle request -> land /
-        abandon -> unload (ADR §1.104)."""
+        abandon -> unload."""
         self._holds_result_content = True
         self._pending_result_set_ids = self._pending_result_set_ids | frozenset(ids)
 

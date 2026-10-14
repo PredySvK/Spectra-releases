@@ -1,4 +1,4 @@
-# Runtime dependencies for Spectra (NVH_Tool_v01).
+# Runtime dependencies for Spectra.
 #
 # Hand-curated, NOT `pip freeze`: the working .venv is shared with unrelated
 # projects (a whole Django stack), so a freeze would be mostly noise. Every line
