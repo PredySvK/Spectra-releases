@@ -34,7 +34,8 @@ from view_models.help import (
     resolve_help_link,
     resolve_help_topic,
 )
-from gui.appearance import APP_TOKENS, THEME
+from gui import appearance
+from gui.appearance import APP_TOKENS
 
 
 _LANGUAGE_KEY = "help_language"
@@ -220,7 +221,7 @@ class HelpWindow(QWidget):
             self._update_nav_buttons()
         self._topic_id = topic_id
         self._select_in_tree(topic_id)
-        page = build_help_page(topic_id, self._language, fragment, theme=THEME)
+        page = build_help_page(topic_id, self._language, fragment, theme=appearance.THEME)
         self._page_file.write_text(page.html, encoding="utf-8")
         self.view.load(QUrl.fromLocalFile(str(self._page_file)))
 

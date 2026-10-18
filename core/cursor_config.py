@@ -5,7 +5,7 @@
 `CursorConfig` -- which lines the Cursor Box shows and in what order.
 
 Shape only: frozen data that round-trips through JSON so the GUI can keep it in
-`shared_settings`. A key is either a fixed value key below or (later) a metadata
+the shared QSettings group. A key is either a fixed value key below or (later) a metadata
 field key; the box builder skips a key the graph or project does not have.
 The edit helpers below are what Cursor Settings drives: Priority is the field's
 position in `fields`, so toggle / move / set-order all just reshape the tuple.

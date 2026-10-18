@@ -1,6 +1,7 @@
 """Add optional paired order curves through the workspace's drop route."""
 
-from core.block_kinds import PARAM_ORDER
+from selection.channel_identity import build_channel_key
+from view_models.plot import resolve_order_curve_identity
 from PySide6.QtCore import QObject
 from orchestration.companion_curves import run_companion_curves
 from orchestration.dock_tasks import PURPOSE_DROP
@@ -9,11 +10,10 @@ from orchestration.dock_tasks import PURPOSE_DROP
 def _curve_identities(dock):
     model = dock.curves.model
     return {
-        (meta["file_path"], meta["channel_index"], spec[PARAM_ORDER])
+        identity
         for trace in (model.traces if model else [])
-        for meta, spec in ((trace.meta_ref or {}, trace.compute_spec or {}),)
-        if trace.x_quantity == "rpm" and "file_path" in meta
-        and "channel_index" in meta and spec.get(PARAM_ORDER) is not None
+        if trace.x_quantity == "rpm"
+        and (identity := resolve_order_curve_identity(trace)) is not None
     }
 
 
@@ -47,8 +47,8 @@ class CompanionCurvesHandler(QObject):
             for origin, descriptor in rows:
                 if origin not in current:
                     continue
-                key = (descriptor["file_path"], descriptor["channel_index"])
-                order = descriptor["orders_to_extract"][0]
+                key = build_channel_key(descriptor["file_path"], descriptor["channel_index"])
+                order = float(descriptor["orders_to_extract"][0])
                 if (*key, order) in current:
                     continue
                 if key not in descriptors:
@@ -57,7 +57,7 @@ class CompanionCurvesHandler(QObject):
                     descriptors[key]["orders_to_extract"].append(order)
             if descriptors:
                 dock._companion_added = getattr(dock, "_companion_added", set()) | {
-                    (d["file_path"], d["channel_index"], order)
+                    (*build_channel_key(d["file_path"], d["channel_index"]), order)
                     for d in descriptors.values() for order in d["orders_to_extract"]}
                 self.route_channel_drop(dock, list(descriptors.values()))
 

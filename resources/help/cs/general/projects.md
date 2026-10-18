@@ -62,4 +62,4 @@ Cache jsou odvozená data. `cache/index.json`, který umožňuje hledání zamí
 
 ### Scan cache
 
-Odděleně od výsledků: pro každou datovou složku drží `cache/scan/` přečtený soupis kanálů a metadata, takže opakovaný sken znovu čte jen soubory, jejichž velikost nebo čas změny se změnily. Cache zapsaná starším formátem se zahodí. Smazání stojí jen nový sken a nic víc (opravy jednotek jsou v projektu, ne tady). Projekt bez souboru drží scan cache v dočasné oblasti počítače (`NVH_Tool\untitled_scan`); ty starší než 14 dní se při startu odstraní.
+Odděleně od výsledků: pro každou datovou složku drží `cache/scan/` přečtený soupis kanálů a metadata, takže opakovaný sken znovu čte jen soubory, jejichž velikost nebo čas změny se změnily. Cache zapsaná starším formátem se zahodí. Smazání stojí jen nový sken a nic víc (opravy jednotek jsou v projektu, ne tady). Projekt bez souboru drží scan cache v dočasné oblasti počítače (`Spectra\untitled_scan`); ty starší než 14 dní se při startu odstraní.

@@ -13,10 +13,10 @@ from core.project_model import DataRoot, SourceEntry
 from io_modules.measurement_files import canonical_path
 from io_modules.project_store import (
     DirectoryIndex,
-    build_sources_by_path,
     read_file_listing,
     read_root_directories,
 )
+from session.source_location import build_source_location
 
 REGISTRATION_SLOT_KEY = "pool_registration"
 
@@ -51,7 +51,7 @@ def _read_pool_registration(
     """Worker step: resolve the roots, then index every pool folder the
     project's sources do not reach."""
     root_directories = read_root_directories(project_path, roots)
-    known = build_sources_by_path(roots, sources, root_directories)
+    known = build_source_location(roots, sources, root_directories).entries_by_path
     return root_directories, {
         directory: DirectoryIndex(read_file_listing(directory), root_directories)
         for directory in unregistered_pool_directories(pool_directories, known)
@@ -84,7 +84,7 @@ def run_pool_registration(session, runner, pool_directories: Sequence[str], *,
             log(f"PROJECT: Registering '{directory}' with this project "
                 f"before computing -- it was not part of it yet.")
             session.add_data_directory(directory, index=index)
-        on_ready(session.sources_by_path(root_directories))
+        on_ready(session.refresh_source_location(root_directories).entries_by_path)
 
     return runner.submit(
         "Register Data Pool folders",

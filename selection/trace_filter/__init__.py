@@ -9,6 +9,8 @@ Architecture:
 - Filter card configuration, defaults, and cardinalities (_filter_card.py).
 - Panel facets resolution (ResolvedFacets) and render plan (PanelRender).
 - The selection read as a Data Pool query (PoolQuery, _pool_query.py).
+- Every edit to one FilterSelection -- a value checked, a range bound moved,
+  checks taken over (_selection_edit.py, ADR §1.172).
 
 Does NOT import Qt, gui, orchestration, view_models, session, or io_modules.
 """
@@ -60,6 +62,13 @@ from ._pool_query import (
     PoolQuery,
     resolve_pool_query,
 )
+from ._selection_edit import (
+    resolve_value_checked,
+    write_checks,
+    write_range_bound,
+    write_ranges,
+    write_value_check,
+)
 
 __all__ = [
     # TraceIdentity & gating
@@ -105,4 +114,10 @@ __all__ = [
     # Data Pool query
     "PoolQuery",
     "resolve_pool_query",
+    # Edits to one Filter selection
+    "resolve_value_checked",
+    "write_checks",
+    "write_range_bound",
+    "write_ranges",
+    "write_value_check",
 ]

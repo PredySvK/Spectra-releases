@@ -34,7 +34,7 @@ class _SingleSlotCache:
     changed) just re-parses, same outcome as if the cache did not exist --
     it is derived and safe to drop at any time. Bounded to one entry because
     the common access pattern is "every channel of one file, one after
-    another"; cross-file concurrency (quick_scan_directory's
+    another"; cross-file concurrency (scan_directory's
     ThreadPoolExecutor) degrades to cache-miss-and-reparse rather than
     corrupt data, since the slot is only ever read under the lock and
     validated by its stamp before use.

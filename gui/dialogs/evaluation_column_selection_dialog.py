@@ -30,11 +30,12 @@ from PySide6.QtWidgets import (
 )
 
 from core.filter_card_config import (
-    BUILTIN_COLUMN_LABELS, CALCULATED_BUILTIN_ORDER,
+    CALCULATED_BUILTIN_ORDER,
     GROUP_RAW, IDENTITY_BUILTIN_ORDER,
 )
 from gui.dialogs.dialog_state import remember_dialog_geometry
 from selection.trace_filter import schema_field_group
+from view_models.evaluation import build_column_descriptor, build_schema_field_descriptor
 from gui.appearance import APP_TOKENS
 
 
@@ -56,18 +57,19 @@ class EvaluationColumnSelectionDialog(QDialog):
 
         # Collect available fields per group
         # 1. Identity
-        identity_fields = [(key, BUILTIN_COLUMN_LABELS.get(key, key)) for key in IDENTITY_BUILTIN_ORDER]
+        identity_fields = [(key, build_column_descriptor(key, schema).label) for key in IDENTITY_BUILTIN_ORDER]
 
         # 2. Raw & 3. Excel (strictly active only)
         raw_fields: List[Tuple[str, str]] = []
         excel_fields: List[Tuple[str, str]] = []
 
         for key, field_cfg in schema.items():
-            # Check is_active (rule from Issue #6 and ADR §1.64 point 10)
-            if field_cfg.get("is_active", True) is False:
+            # Active-only rule (Issue #6, ADR §1.64 point 10), shared with the table.
+            descriptor = build_schema_field_descriptor(key, field_cfg)
+            if not descriptor.is_active:
                 continue
 
-            label = field_cfg.get("custom_label") or field_cfg.get("field_name") or key
+            label = descriptor.label
             group = schema_field_group(dict(field_cfg))
             if group == GROUP_RAW:
                 raw_fields.append((key, label))
@@ -79,7 +81,7 @@ class EvaluationColumnSelectionDialog(QDialog):
         excel_fields.sort(key=lambda item: item[1].casefold())
 
         # 4. Calculated
-        calculated_fields = [(key, BUILTIN_COLUMN_LABELS.get(key, key)) for key in CALCULATED_BUILTIN_ORDER]
+        calculated_fields = [(key, build_column_descriptor(key, schema).label) for key in CALCULATED_BUILTIN_ORDER]
 
         # Valid keys that are offered
         valid_offered_keys = {k for k, _ in identity_fields + raw_fields + excel_fields + calculated_fields}

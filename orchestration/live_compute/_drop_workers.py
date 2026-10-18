@@ -1,58 +1,123 @@
 """Background worker payloads for channels dropped onto live analysis docks."""
 
-import time
+import dataclasses
+from typing import Any, Dict, Optional
 
-from core.block_kinds import KIND_OVERALL_LEVEL, PARAM_ORDER
-from core.data_block import build_source_ref, display_meta_from
+from core.block_kinds import KIND_ORDER_CUT, KIND_OVERALL_LEVEL, KIND_SPECTRUM
+from core.channel_drop import TAB_CACHE_KEY
 from io_modules.data_accessor import DataAccessor
+from orchestration.live_compute._cache_hit import build_curve_subject
 from orchestration.live_compute._file_tracking import FileTracking
-from orchestration.live_compute._order_cut_cache import (
-    find_cached_order_cuts, rebuild_cached_order_blocks,
+from orchestration.live_compute._live_result import (
+    LiveFailure, LiveRequest, run_live_compute,
 )
-from signal_processing.result_blocks import (
-    compute_order_cuts,
-    compute_overall_level,
-    compute_spectrum,
-    build_overall_level_missing_line,
-)
+from orchestration.live_compute._restore_config import RestoreConfig, build_restore_config_line
+from orchestration.tab_cache import resolve_tab_cache_read_path
 
 
-def read_simple_drops(prepared, spectrum_config, progress_fn=None):
-    """Read dropped channels and, when requested, compute their spectra."""
+@dataclasses.dataclass(frozen=True)
+class DropRestore:
+    """
+    What the restored overlays of one drop task bring along:
+    `project_path` finds the Tab cache file each descriptor names
+    (`TAB_CACHE_KEY`), read before anything is computed; `resolved` is the
+    saved recipe the task's config came from, said in one line per channel
+    -- only when that channel is computed after all. `subject` names the
+    analysis in that line ("Spectrum").
+    """
+    project_path: Optional[str] = None
+    subject: str = ""
+    resolved: Optional[RestoreConfig] = None
+
+    def request_fields(self, desc, channel_name: str) -> Dict[str, Any]:
+        """The `LiveRequest` fields of one restored descriptor."""
+        notices = ()
+        if self.resolved is not None:
+            notices = (build_restore_config_line(build_curve_subject(self.subject, channel_name), self.resolved),)
+        return {
+            "tab_cache_path": resolve_tab_cache_read_path(self.project_path, desc.get(TAB_CACHE_KEY)),
+            "compute_notices": notices,
+        }
+
+
+def _restore_fields(restore: Optional[DropRestore], desc, channel_name: str) -> Dict[str, Any]:
+    return restore.request_fields(desc, channel_name) if restore is not None else {}
+
+
+def read_simple_drops(prepared, spectrum_config, finder=None, progress_fn=None, *,
+                      restore: Optional[DropRestore] = None):
+    """
+    Read dropped channels and, with a `spectrum_config`, make their spectra:
+    one `run_live_compute` per channel, so a spectrum the result-set cache
+    already holds reads nothing (`finder`, None to skip the cache), nor one a
+    restored overlay finds in its Tab cache file (`restore`).
+
+    Returns `(rendered, log_lines)`; a row is `(desc, data_block,
+    spectrum_result)` -- `data_block` the raw channel read (None for a hit),
+    `spectrum_result` the spectrum's `LiveResult`, None without a
+    `spectrum_config`.
+    """
     rendered, log_lines = [], []
     for position, (desc, mock_run, mock_meta) in enumerate(prepared):
         # Channels finished so far; the last is counted when the task returns.
         if progress_fn is not None and position:
             progress_fn(position, len(prepared))
-        try:
-            io_start = time.perf_counter()
-            data_block = DataAccessor.fetch_channel_data(mock_run, mock_meta)
-            io_time = time.perf_counter() - io_start
-
-            spectrum_block, dsp_time = None, 0.0
-            if spectrum_config is not None:
-                dsp_start = time.perf_counter()
-                spectrum_block = compute_spectrum(data_block, spectrum_config)
-                dsp_time = time.perf_counter() - dsp_start
-
-            rendered.append((desc, data_block, spectrum_block, io_time, dsp_time))
-        except Exception as error:
+        failure = None
+        if spectrum_config is None:
+            try:
+                rendered.append((desc, DataAccessor.fetch_channel_data(mock_run, mock_meta), None))
+            except Exception as error:
+                failure = error
+        else:
+            result = run_live_compute(LiveRequest(
+                run_index=mock_run, channel_meta=mock_meta, block_kind=KIND_SPECTRUM,
+                config=spectrum_config,
+                **_restore_fields(restore, desc, desc.get("channel_name", "")),
+            ), finder)
+            log_lines.extend(result.notices)
+            if isinstance(result, LiveFailure):
+                failure = result.message
+            else:
+                rendered.append((desc, result.vib_block, result))
+        if failure is not None:
             log_lines.append(
                 f"ERROR: Dropped channel processing failed for "
-                f"{desc.get('channel_name', 'Unknown')}: {error}"
+                f"{desc.get('channel_name', 'Unknown')}: {failure}"
             )
     return rendered, log_lines
 
 
-def lookup_or_compute_order_drops(
-    prepared, project_session, config, config_dict, dock_tacho, dock_tacho_path,
-    use_cache: bool = True, with_overall_level: bool = False, progress_fn=None,
-):
-    """Load cached order cuts or read and compute them for one dropped batch.
+def run_order_drops(prepared, finder, config, dock_tacho, dock_tacho_path,
+                                  with_overall_level=False, progress_fn=None, *,
+                                  restore: Optional[DropRestore] = None):
+    """
+    The order cuts of one dropped batch, one `run_live_compute` per channel.
+    `with_overall_level` adds each channel's Overall Level and Residual
+    curves -- and then nothing comes from the cache (ADR §1.141 point 10,
+    decided inside `run_live_compute`).
+    """
+    return _run_live_drops(prepared, finder, config, KIND_ORDER_CUT, dock_tacho, dock_tacho_path,
+                           progress_fn, with_overall_level=with_overall_level, restore=restore)
 
-    `with_overall_level` computes every channel with its Overall Level and
-    Residual curves, never from the cache; each block
-    rides as one more row."""
+
+def run_overall_level_drops(prepared, finder, config, dock_tacho, dock_tacho_path,
+                                      progress_fn=None, *, restore: Optional[DropRestore] = None):
+    """The Overall Level of one dropped batch, one `run_live_compute` per channel."""
+    if config.tracking_mode == "time":
+        dock_tacho = None
+    return _run_live_drops(prepared, finder, config, KIND_OVERALL_LEVEL, dock_tacho, dock_tacho_path,
+                           progress_fn, restore=restore)
+
+
+def _run_live_drops(prepared, finder, config, block_kind, dock_tacho, dock_tacho_path,
+                    progress_fn, with_overall_level=False, restore: Optional[DropRestore] = None):
+    """
+    `(rendered, log_lines)`: a `(desc, channel_name, LiveResult)` row per
+    channel that landed, a log line per one that failed -- a failing channel
+    does not take its siblings down. `finder` is a
+    `ProjectSession.cache_finder` callable, None to skip the cache; `restore`
+    is what restored overlays read first (their Tab cache files).
+    """
     rendered, log_lines = [], []
     tracking = FileTracking()
     tracking.seed_tacho(dock_tacho_path, dock_tacho)
@@ -60,96 +125,14 @@ def lookup_or_compute_order_drops(
         # Channels finished so far; the last is counted when the task returns.
         if progress_fn is not None and position:
             progress_fn(position, len(prepared))
-        try:
-            cached = None
-            if use_cache and not with_overall_level and project_session is not None:
-                cached = find_cached_order_cuts(
-                    project_session.find_cached_result_background, desc["file_path"], ch_name,
-                    mock_meta, config_dict, config.orders_to_extract,
-                )
-            if cached is not None:
-                live_blocks = rebuild_cached_order_blocks(cached)
-                rpm_axis = live_blocks[0].primary_axis.values
-                unit = live_blocks[0].value_unit
-                order_rows = [
-                    (order, rpm_axis, block.values, unit, block)
-                    for order, block in zip(config.orders_to_extract, live_blocks)
-                ]
-                # A cache hit has no block, but the legend and unit conversion
-                # take the same display meta a read would stamp.
-                metadata = display_meta_from(build_source_ref(mock_run, mock_meta), mock_meta.type)
-                rendered.append((
-                    desc, ch_name, cached.result_set_label, order_rows, metadata, None, None,
-                ))
-                continue
-
-            io_start = time.perf_counter()
-            data_block = DataAccessor.fetch_channel_data(mock_run, mock_meta)
-            run_tacho = tracking.tacho_for(desc["file_path"], mock_run, tacho_meta)
-            io_time = time.perf_counter() - io_start
-
-            dsp_start = time.perf_counter()
-            order_blocks = compute_order_cuts(
-                data_block, run_tacho, config,
-                scratch=tracking.scratch_for(desc["file_path"]),
-                with_overall_level=with_overall_level,
-            )
-            dsp_time = time.perf_counter() - dsp_start
-            missing = build_overall_level_missing_line(order_blocks) if with_overall_level else None
-            if missing:
-                log_lines.append(missing)
-
-            # The Overall Level and Residual rows carry no order number: their key is None.
-            order_rows = [
-                (result_block.provenance.params.get(PARAM_ORDER), result_block.primary_axis.values,
-                 result_block.values, result_block.value_unit, result_block)
-                for result_block in order_blocks
-            ]
-            rendered.append((
-                desc, ch_name, None, order_rows, data_block.display_meta(), io_time, dsp_time,
-            ))
-        except Exception as error:
-            log_lines.append(f"ERROR: Dropped channel processing failed for {ch_name}: {error}")
-    return rendered, log_lines
-
-
-def build_overall_level_drop_payloads(
-    prepared, use_cache, finder, config, config_dict, against_time, dock_tacho, dock_tacho_path,
-    progress_fn=None,
-):
-    """Load cached Overall Level blocks or compute them for one dropped batch."""
-    rendered, log_lines = [], []
-    tracking = FileTracking()
-    tracking.seed_tacho(dock_tacho_path, dock_tacho)
-    for position, (desc, ch_name, mock_run, mock_meta, tacho_meta) in enumerate(prepared):
-        if progress_fn is not None and position:
-            progress_fn(position, len(prepared))
-        try:
-            if use_cache and finder is not None:
-                cached_block = finder(
-                    desc["file_path"], ch_name, KIND_OVERALL_LEVEL, config_dict,
-                    channel_index=getattr(mock_meta, "index", None),
-                )
-                if cached_block is not None:
-                    label = cached_block.metadata.get("result_set_label", "")
-                    rendered.append((desc, ch_name, label, cached_block, None, None))
-                    continue
-
-            io_start = time.perf_counter()
-            data_block = DataAccessor.fetch_channel_data(mock_run, mock_meta)
-            run_tacho = None
-            if not against_time:
-                run_tacho = tracking.tacho_for(desc["file_path"], mock_run, tacho_meta)
-            io_time = time.perf_counter() - io_start
-
-            dsp_start = time.perf_counter()
-            result_block = compute_overall_level(
-                data_block, run_tacho, config,
-                scratch=tracking.scratch_for(desc["file_path"]),
-            )
-            dsp_time = time.perf_counter() - dsp_start
-
-            rendered.append((desc, ch_name, None, result_block, io_time, dsp_time))
-        except Exception as error:
-            log_lines.append(f"ERROR: Dropped channel processing failed for {ch_name}: {error}")
+        result = tracking.run(LiveRequest(
+            run_index=mock_run, channel_meta=mock_meta, block_kind=block_kind, config=config,
+            with_overall_level=with_overall_level, tacho_meta=tacho_meta,
+            **_restore_fields(restore, desc, ch_name),
+        ), finder)
+        log_lines.extend(result.notices)
+        if isinstance(result, LiveFailure):
+            log_lines.append(f"ERROR: Dropped channel processing failed for {ch_name}: {result.message}")
+            continue
+        rendered.append((desc, ch_name, result))
     return rendered, log_lines

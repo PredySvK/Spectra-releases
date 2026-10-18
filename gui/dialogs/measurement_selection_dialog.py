@@ -30,7 +30,9 @@ from selection.measurement_selection import (
     build_checks_from_selection, build_selection_from_checks, resolve, resolve_selection_facets,
 )
 from selection.source_facets import all_pool_sources
-from selection.trace_filter import build_column_for_key, resolve_card, resolve_panel_facets
+from selection.trace_filter import (
+    build_column_for_key, resolve_card, resolve_panel_facets, write_checks,
+)
 from session.trace_filter import FilterSelectionStore
 
 from gui.dialogs.dialog_state import remember_dialog_geometry
@@ -62,6 +64,8 @@ class MeasurementSelectionDialog(QDialog):
         self._job_runner = job_runner
         self._taken_names = set(taken_names) | {WHOLE_POOL_SELECTION_NAME}
         self._sources = all_pool_sources(session.project)
+        # the rule an Edit opened: an unchanged column keeps its restriction (#700)
+        self._original_column_values = selection.column_values if selection else {}
         self._facets = None
         self._card: Optional[FilterCardConfig] = None
         self._resolution: Optional[SelectionResolution] = None
@@ -110,11 +114,7 @@ class MeasurementSelectionDialog(QDialog):
                     and (key in schema or key in BUILTIN_COLUMN_KEYS)):
                 card = add_column(card, build_column_for_key(key, schema))
         self._populate(card)
-        checks = build_checks_from_selection(selection, self._facets)
-        current = self.grid.filter_selection
-        for name in ("checked_metadata_values", "checked_identity_values",
-                     "checked_channel_identities", "checked_empty_buckets"):
-            setattr(current, name, getattr(checks, name))
+        write_checks(self.grid.filter_selection, build_checks_from_selection(selection, self._facets))
         self._populate(card)
 
     # ---- grid -----------------------------------------------------------
@@ -140,8 +140,7 @@ class MeasurementSelectionDialog(QDialog):
         finally:
             dialog.deleteLater()
         if updated != card:
-            self._session.project.put_filter_card(updated)
-            self._session.mark_dirty()
+            self._session.put_filter_card(updated)
         self._populate(updated)
 
     # ---- count ----------------------------------------------------------
@@ -149,7 +148,8 @@ class MeasurementSelectionDialog(QDialog):
     def selection(self) -> MeasurementSelection:
         """The rule the current checkmarks describe, under the typed name."""
         return build_selection_from_checks(
-            self.txt_name.text().strip(), self.grid.filter_selection, self._facets)
+            self.txt_name.text().strip(), self.grid.filter_selection, self._facets,
+            original_column_values=self._original_column_values)
 
     def _recount(self) -> None:
         self._resolution = None

@@ -7,14 +7,46 @@ spectrum -- linear, peak hold, or exponential.
 
 Consumes batches one at a time so the running result is the only thing ever
 held in memory; a spectrum never needs every frame's power at once
-(ADR §1.58 point 13).
+(ADR §1.58 point 13). `skip_invalid_frames` sits in front of it and drops the
+frames an invalid (NaN) sample fell in, so one bad sample costs those frames,
+not the whole spectrum (#673).
 """
 
+from dataclasses import dataclass
 from typing import Iterator
 
 import numpy as np
 
 from core.dsp_configs import VALID_AVERAGING_TYPES, normalize_dsp_choice
+
+
+@dataclass
+class FrameCount:
+    """How many frames `skip_invalid_frames` saw and how many of them it dropped."""
+    frames: int = 0
+    skipped: int = 0
+
+
+def skip_invalid_frames(power_batches: Iterator[np.ndarray], count: FrameCount) -> Iterator[np.ndarray]:
+    """
+    `power_batches` without the frames holding a non-finite value, tallied in
+    `count`. Raises once the stream ends if every frame was dropped: an average
+    of nothing must not reach the user as a spectrum.
+    """
+    for batch in power_batches:
+        valid = np.all(np.isfinite(batch), axis=1)
+        n_valid = int(np.count_nonzero(valid))
+        count.frames += len(batch)
+        count.skipped += len(batch) - n_valid
+        if n_valid == len(batch):
+            yield batch
+        elif n_valid:
+            yield batch[valid]
+    if count.frames and count.skipped == count.frames:
+        raise ValueError(
+            f"Every one of the {count.frames} frames holds an invalid (NaN) sample; "
+            "there is nothing left to average."
+        )
 
 
 def average_batches(power_batches: Iterator[np.ndarray], averaging_type: str,

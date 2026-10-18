@@ -26,7 +26,7 @@ dialog reads `record.percent`.
 
 The two hazards of background work are the manager's business
 rather than this module's: a second Add supersedes the first through
-`slot_key`, and Cancel goes through `job_manager.cancel`, which stops
+`slot_key`, and Cancel goes through `job_runner.cancel`, which stops
 dispatching further folders and drops what the one in flight returns.
 
 The modal progress dialog is deliberately still here rather than being left to
@@ -71,17 +71,17 @@ class DataPoolHandler(QObject):
     call it, while the panel it refreshes is that same explorer.
     """
 
-    def __init__(self, app_context, job_manager, parent_widget):
+    def __init__(self, app_context, job_runner, parent_widget):
         super().__init__(parent_widget)
         self.app_context = app_context
         self.parent_widget = parent_widget
         self.explorer_panel = None
-        self.job_manager = job_manager
+        self.job_runner = job_runner
         self._use_case = PoolIngestUseCase(
-            app_context.pool, app_context.project_session, job_manager
+            app_context.pool, app_context.project_session, job_runner
         )
         self._dialog = None
-        job_manager.job_changed.connect(self._on_job_changed)
+        job_runner.job_changed.connect(self._on_job_changed)
 
     def set_explorer_panel(self, explorer_panel) -> None:
         """Hands over the Explorer dock once the composition root has built it."""
@@ -202,7 +202,7 @@ class DataPoolHandler(QObject):
         """Mirrors the step the manager is on into the modal dialog."""
         if job_id != self._job_id or self._dialog is None:
             return
-        record = self.job_manager.record(job_id)
+        record = self.job_runner.record(job_id)
         if record is None:
             return
         self._dialog.setValue(record.percent)
@@ -290,7 +290,7 @@ class DataPoolHandler(QObject):
         than landing in the pool afterwards, and no further folder is started.
         """
         if self._job_id is not None:
-            self.job_manager.cancel(self._job_id)
+            self.job_runner.cancel(self._job_id)
         self._close_dialog()
 
     def _close_dialog(self):

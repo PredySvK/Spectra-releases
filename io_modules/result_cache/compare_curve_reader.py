@@ -38,22 +38,6 @@ from io_modules.result_cache.cache_reader import ResultCacheReader
 ReadPlanItem = Dict[str, Any]
 
 
-def _build_compute_spec_for_stored(block) -> Dict[str, Any]:
-    """
-    ``Trace.compute_spec`` for a curve read off disk -- the processing settings
-    the block was written with (``block.meta["processing"]``, already flat) plus
-    whatever identity params the block carries (``block.params``, e.g. the order
-    an order cut was extracted at). Without the order in here, a loaded order-cut
-    curve can be drawn but never projected onto frequency (core.axis_projections
-    needs it) or matched by an Order mask -- see ARCHITECTURE_DECISIONS §1.30.
-    """
-    spec = dict((block.meta or {}).get("processing") or {})
-    spec.update(block.params or {})
-    # Not a setting the Parameter Set signature is built from (#428).
-    spec.pop(PARAM_COMPUTATION, None)
-    return spec
-
-
 def read_result_curves(
     read_plan: List[ReadPlanItem], order_selection: Optional[List[float]] = None
 ) -> Tuple[List[dict], int, List[str]]:
@@ -66,7 +50,7 @@ def read_result_curves(
     identity a live compute gives its result -- so plot_model_builder turns it
     into the exact legend shape a live curve gets, and the Filter panel's
     Channel facet resolves the same bare channel name either way. Plus `kind`, `x_quantity` and
-    `compute_spec` -- what gui.workspace.plot_model.Trace needs to take part in
+    the full `block` -- what gui.workspace.plot_model.Trace needs to take part in
     axis projection (core.axis_projections) and an Order/Result-Kind mask, read
     straight off the stored block rather than re-derived from the legend text --
     and `result_set_id` (item["ref_id"], passed through untouched) so the GUI
@@ -181,7 +165,6 @@ def read_result_curves(
                                 "label": block.name or label,
                                 "unit": display_unit, "meta": meta,
                                 "kind": kind, "x_quantity": block.axes[0].quantity,
-                                "compute_spec": _build_compute_spec_for_stored(block),
                                 "result_set_id": ref_id,
                                 "block": full_block,
                                 # Which measurement and channel the curve is

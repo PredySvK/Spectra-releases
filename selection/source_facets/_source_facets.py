@@ -621,7 +621,7 @@ def pool_source_entries(runs, entries_by_path) -> List[SourceEntry]:
     """
     The project entries behind the measurements currently in the Data Pool.
 
-    Takes the map from ProjectSession.sources_by_path() rather than a session,
+    Takes the map from SourceLocation.entries_by_path rather than a session,
     so this module stays free of everything above it. A run with no entry is
     left out: it has no stored metadata, so there is nothing here to filter it
     by.

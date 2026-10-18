@@ -18,6 +18,9 @@ own speed column, because MASTA's speed steps are not shared between pairs:
     row 4  "Speed (rev/min)" | "Amplitude (<unit>)"
     row 5+ rpm | amplitude, either of them possibly stored as text
 
+A row of a channel's pair that is not two numbers is a Lost part of that
+channel; the blank rows below a shorter channel's end are not (§1.177).
+
 The header is Raw metadata of each channel, read at scan: design, scenario,
 damping and description_1..N (row 2's comma segments left once the Order and
 Damping keywords are taken out). The order goes to the block, not a facet.
@@ -35,6 +38,7 @@ from core.data_block import Acquisition, NVHDataBlock, Provenance
 from core.models import FUNC_TYPE_ORDER_FUNCTION, ChannelMetadata, MeasurementRunIndex
 from core.units import determine_channel_type
 from io_modules.measurement_files import canonical_path, file_stamp
+from io_modules.number_pairs import NumberPairs, build_lost_rows_part, read_number_pairs
 
 _HEADER_ROWS = 4
 _LOCATION_RE = re.compile(r"^\s*([XYZ])\s*,.*\\([^\\]+?)\s*$")
@@ -113,18 +117,6 @@ def is_masta_file(file_path: str) -> bool:
             and str(rows[3][0] or "").strip().lower() == _SPEED_HEADER)
 
 
-def _parse_number(cell) -> Optional[float]:
-    """A cell as a number, or None for a blank or a non-number (a footer, a note)."""
-    if isinstance(cell, str):
-        cell = cell.strip()
-        if "," in cell and "." not in cell:
-            cell = cell.replace(",", ".")   # Number stored as text with a decimal comma.
-    try:
-        return float(cell)
-    except (TypeError, ValueError):
-        return None
-
-
 def _resolve_channel_indices(rows) -> List[int]:
     """Column pairs headed by a housing location; a stray trailing column is not a channel."""
     return [index for index in range(len(rows[0]) // 2)
@@ -151,7 +143,11 @@ class AccReaderMasta:
                                        channel_type=determine_channel_type(unit, name), unit=unit)
                 meta.func_type = FUNC_TYPE_ORDER_FUNCTION
                 meta.block_kind = KIND_ORDER_CUT
-                meta.num_pts = len(self._read_pairs(rows, pair))
+                pairs, lost_rows = self._read_pairs(rows, pair)
+                meta.num_pts = len(pairs)
+                lost_part = build_lost_rows_part(index, lost_rows)
+                if lost_part is not None:
+                    run_index.lost_parts.append(lost_part)
                 design_match = _DESIGN_RE.search(str(rows[0][2 * pair]))
                 meta.design = design_match.group(1).strip() if design_match else ""
                 meta.scenario = str(rows[2][2 * pair] or "").strip()
@@ -171,17 +167,9 @@ class AccReaderMasta:
         return f"{location}:{axis}", (unit_match.group(1).strip() if unit_match else "unknown")
 
     @staticmethod
-    def _read_pairs(rows, index: int) -> List[tuple]:
+    def _read_pairs(rows, index: int) -> NumberPairs:
         """(rpm, amplitude) of one channel; a pair ends where its columns run out."""
-        pairs = []
-        for row in rows[_HEADER_ROWS:]:
-            cells = row[2 * index: 2 * index + 2]
-            if len(cells) < 2:
-                continue
-            rpm, amplitude = _parse_number(cells[0]), _parse_number(cells[1])
-            if rpm is not None and amplitude is not None:
-                pairs.append((rpm, amplitude))
-        return pairs
+        return read_number_pairs(row[2 * index: 2 * index + 2] for row in rows[_HEADER_ROWS:])
 
     def read_single_channel_data(self, dataset_index: int) -> NVHDataBlock:
         """
@@ -195,7 +183,7 @@ class AccReaderMasta:
             raise IndexError(
                 f"Channel index {dataset_index} is not a channel of {os.path.basename(self.file_path)}.")
         name, unit = self._resolve_name_and_unit(rows, pair)
-        pairs = np.asarray(self._read_pairs(rows, pair), dtype=np.float64).reshape(-1, 2)
+        pairs = np.asarray(self._read_pairs(rows, pair).pairs, dtype=np.float64).reshape(-1, 2)
         order, _, _ = _parse_result_type(str(rows[1][2 * pair] or ""))
         return NVHDataBlock.order_cut(
             name=name, values=pairs[:, 1], rpm=pairs[:, 0], order=order,

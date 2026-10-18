@@ -19,7 +19,7 @@ constant table, not state.
 from dataclasses import dataclass
 from typing import Callable, Dict, Tuple
 
-from core.block_kinds import KIND_ORDER_CUT, KIND_OVERALL_LEVEL, KIND_SPECTROGRAM, KIND_SPECTRUM
+from core.block_kinds import KIND_SPECTROGRAM, KINDS
 from core.data_block import NVHDataBlock
 from core.evaluation import CurveIdentity, SingleValue
 from signal_processing.evaluation.dominant_orders_eval import extract_dominant_orders
@@ -28,10 +28,15 @@ from signal_processing.evaluation.topn_eval import extract_topn_maxima
 from signal_processing.evaluation.typed_orders_eval import extract_typed_orders
 
 # Curve-shaped kinds only -- a spectrogram is a map (ADR §1.64 "Vedome
-# nedorobené": Dominant orders is the evaluation that reads one). Shared by
-# every Evaluation below since a graph's own visible curves are never more
-# than these three kinds.
-_CURVE_BLOCK_KINDS = (KIND_SPECTRUM, KIND_ORDER_CUT, KIND_OVERALL_LEVEL)
+# nedorobené": Dominant orders is the evaluation that reads one). Derived from
+# the register of block kinds rather than listed by hand: every computed
+# one-axis kind is a curve Max / Top-N maxima read, so a new one needs no
+# second edit here (#675: the Residual was missing from a hand-written list).
+# A raw time response is one-axis too but not computed, and stays out.
+_CURVE_BLOCK_KINDS = tuple(
+    kind for kind, spec in KINDS.items()
+    if spec.requires_processing and len(spec.axis_quantities) == 1
+)
 
 
 @dataclass(frozen=True)
@@ -44,10 +49,16 @@ class EvaluationSpec:
     # and future (Top-N maxima returns 0..N).
     extract: Callable[..., Tuple[SingleValue, ...]]
     help_topic: str
+    # True when extract takes `amplitude_mode` and runner.evaluate runs it once
+    # per Amplitude: Max / Top-N maxima on a spectrum can pick
+    # other bins in Peak. Typed and Dominant orders read order cuts, whose
+    # Peak is RMS times sqrt(2) everywhere, so one run serves both.
+    ranks_by_amplitude: bool = False
 
 
-def _max_rows(block: NVHDataBlock, identity: CurveIdentity, **_params) -> Tuple[SingleValue, ...]:
-    return (extract_max(block, identity),)
+def _max_rows(block: NVHDataBlock, identity: CurveIdentity,
+              amplitude_mode: str = "rms", **_params) -> Tuple[SingleValue, ...]:
+    return (extract_max(block, identity, amplitude_mode),)
 
 
 EVALUATIONS: Dict[str, EvaluationSpec] = {
@@ -57,6 +68,7 @@ EVALUATIONS: Dict[str, EvaluationSpec] = {
         accepted_block_kinds=_CURVE_BLOCK_KINDS,
         extract=_max_rows,
         help_topic="evaluation_max",
+        ranks_by_amplitude=True,
     ),
     "topn_maxima": EvaluationSpec(
         name="topn_maxima",
@@ -64,6 +76,7 @@ EVALUATIONS: Dict[str, EvaluationSpec] = {
         accepted_block_kinds=_CURVE_BLOCK_KINDS,
         extract=extract_topn_maxima,
         help_topic="evaluation_topn_maxima",
+        ranks_by_amplitude=True,
     ),
     "typed_orders": EvaluationSpec(
         name="typed_orders",

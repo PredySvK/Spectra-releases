@@ -85,7 +85,7 @@ class WelcomePage(QWidget):
     open_recent_requested = Signal(str)
     path_dropped = Signal(str)
 
-    def __init__(self, job_runner: Optional[JobRunner] = None, parent=None):
+    def __init__(self, job_runner: JobRunner, parent=None):
         super().__init__(parent)
         self.job_runner = job_runner
         self.setAcceptDrops(True)
@@ -194,7 +194,7 @@ class WelcomePage(QWidget):
         if has_any:
             self.recent_list.setCurrentItem(self.recent_list.item(0))
 
-        if not shown or self.job_runner is None:
+        if not shown:
             return
 
         steps = [

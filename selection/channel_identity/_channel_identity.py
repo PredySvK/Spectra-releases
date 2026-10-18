@@ -108,6 +108,36 @@ def resolve_stripped_override(channel_label: str,
 
 
 
+def resolve_unit_correction(channel_label: str,
+                            overrides: Mapping[str, str],
+                            channel_identities: Iterable[Tuple[str, str]]) -> Optional[str]:
+    """
+    The corrected unit filed for the channel `channel_label`, or None.
+
+    The same decision `resolve_stripped_override` makes from the other side
+    (which channel does a correction belong to), asked from the channel's:
+    an override filed under exactly this label always applies, even without a
+    channel inventory; otherwise the label is first resolved to its inventory
+    channel (it may be the plain name of a channel keyed by reader label), and
+    an override applies only when `resolve_stripped_override` assigns it to
+    that very channel -- so a plain
+    name never reaches one of two same-named columns (#423), and an empty
+    inventory applies no stripped-name correction at all.
+    """
+    if channel_label in overrides:
+        return overrides[channel_label]
+    identities = list(channel_identities)
+    channel_key = resolve_stripped_override(channel_label, identities)
+    if channel_key is None:
+        return None
+    if channel_key in overrides:
+        return overrides[channel_key]
+    for override_label, unit in overrides.items():
+        if resolve_stripped_override(override_label, identities) == channel_key:
+            return unit
+    return None
+
+
 def build_channel_key(file_path: str, channel_index: Any) -> Tuple[str, int]:
     """
     The one hashable key that tells a channel of a file from every other one.

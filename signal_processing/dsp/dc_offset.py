@@ -13,6 +13,8 @@ def remove_dc_offset(y_data: np.ndarray, channel_type: str = "accelerometer") ->
     """
     Removes the zero-frequency (DC) offset by subtracting the block mean.
     Strictly bypasses sensors like Tacho or RPM where the absolute mean value is critical.
+    The mean is taken over the finite samples only: one invalid (NaN) sample
+    must not turn every other sample into NaN (#673).
 
     Parameters:
         y_data (np.ndarray): 1D array of the time domain signal.
@@ -29,4 +31,9 @@ def remove_dc_offset(y_data: np.ndarray, channel_type: str = "accelerometer") ->
         return y_data
 
     # Subtract the arithmetic mean (AC coupling emulation)
-    return y_data - np.mean(y_data)
+    finite = np.isfinite(y_data)
+    if finite.all():
+        return y_data - np.mean(y_data)
+    if not finite.any():
+        return y_data
+    return y_data - np.mean(y_data[finite])

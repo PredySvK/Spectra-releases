@@ -56,13 +56,14 @@ class MainWindowFrame(QWidget):
         # the Jobs dock render from it, and every controller that runs work in
         # the background receives it by constructor.
         from gui.jobs.qt_job_runner import QtJobRunner
-        self.job_manager = QtJobRunner(self.app_context, parent=self)
+        self.job_runner = QtJobRunner(parent=self)
+        self.job_runner.step_failed.connect(self._log_job_step_failure)
 
         # Wire scan-cache adoption to QtJobRunner so the GUI thread does not copy
         # files synchronously during save_as (audit 02 finding 6.3 / #82).
         from io_modules.project_store import adopt_untitled_scan_caches
         self.app_context.project_session.set_cache_adopter(
-            lambda path, roots: self.job_manager.submit(
+            lambda path, roots: self.job_runner.submit(
                 "Adopt scan caches",
                 fn=adopt_untitled_scan_caches,
                 args=(path, roots),
@@ -76,20 +77,20 @@ class MainWindowFrame(QWidget):
         # up inside init_ui() and takes this controller by constructor (#235,
         # #239).
         from gui.workspace.workflow_run_bridge import WorkflowRunBridge
-        self.workflow_run_bridge = WorkflowRunBridge(self.app_context, self.job_manager)
+        self.workflow_run_bridge = WorkflowRunBridge(self.app_context, self.job_runner)
 
         # Same reason again: ProjectDocumentHandler resets the live-compute
         # queue on every project swap and is built inside init_ui() (#236).
         from gui.workspace.live_order_results import LiveOrderResults
         self.live_order_results = LiveOrderResults(
-            self.app_context, self.job_manager,
+            self.app_context, self.job_runner,
         )
 
         # The shell hands in how to install a downloaded Update
         # (None outside the shell); Settings uses the same background path.
         from gui.update import UpdateHandler
         self.update_handler = UpdateHandler(
-            self.job_manager, self, install_update, shared_settings=self.app_context.shared_settings)
+            self.job_runner, self, install_update, settings_store=self.app_context.settings_store)
 
         self.init_ui()
         # The layout is restored later, the first time the workspace becomes
@@ -99,23 +100,11 @@ class MainWindowFrame(QWidget):
         # now snaps every manually resized dock back to its size hint.
         self._layout_restored = False
 
-        # Built inside init_ui (ahead of workspace, which takes it by
-        # constructor); only the result signals are wired here, once both ends
-        # exist.
-        self.spectral_requests.spectrum_ready.connect(self.workspace.plot_frequency_block)
-        self.spectral_requests.waterfall_ready.connect(self.workspace.plot_spectrogram_block)
-
-        # --- NEW: Connect Order Tracking signal ---
-        self.spectral_requests.order_cuts_ready.connect(self.workspace.plot_order_cuts)
-        self.spectral_requests.overall_level_ready.connect(self.workspace.plot_overall_level_block)
-
-        self.spectral_requests.computation_failed.connect(
-            self.workspace.report_computation_failure
-        )
 
         # The Project ribbon tab's own refresh tail, wired to the runner: a
         # finished batch run can have changed the project's result-set list.
         self.project_document.bind_run_finished(self.workflow_run_bridge)
+        self.project_document.bind_project_session()
 
         # Coalesced rather than applied per finished channel: every re-apply
         # re-reads every checked result set off disk, so dropping N channels at
@@ -158,7 +147,7 @@ class MainWindowFrame(QWidget):
         # The one owner of what the Data Pool holds (#240). Built before
         # explorer_panel below, which hands it down to the three tabs that call
         # it; it gets that same panel back by setter once it exists.
-        self.data_pool = DataPoolHandler(self.app_context, self.job_manager, self)
+        self.data_pool = DataPoolHandler(self.app_context, self.job_runner, self)
 
         self.workspace_tabs = QTabWidget()
         self.workspace_tabs.setObjectName("WorkspaceTabs")
@@ -166,14 +155,9 @@ class MainWindowFrame(QWidget):
         self.workspace_tabs.setMovable(True)
         self.workspace_tabs.setTabsClosable(True)
 
-        # Both are built here rather than after init_ui, so workspace below
-        # can take them by constructor instead of reaching back into the window
-        # for them (#242). Neither needs the manager to be built -- the
-        # controller's result signals are connected to it afterwards, in
-        # __init__, and the drop handler only needs the tab widget above.
-        from gui.workspace.spectral_requests import SpectralRequests
-        self.spectral_requests = SpectralRequests(self.app_context, self.job_manager)
-
+        # Built here rather than after init_ui, so workspace below can take it
+        # by constructor instead of reaching back into the window for it
+        # (#242); the drop handler only needs the tab widget above.
         from gui.handlers.live_channel_drop import LiveChannelDropHandler
         self.live_drop_handler = LiveChannelDropHandler(
             self.app_context, self.live_order_results, self.workspace_tabs,
@@ -187,7 +171,7 @@ class MainWindowFrame(QWidget):
         # never replaced, unlike Workspace, which is built after this.
         self.result_content_handler = ResultContentHandler(
             self.app_context, functools.partial(find_dock_by_id, self.workspace_tabs),
-            self.job_manager, self,
+            self.job_runner, self,
         )
 
         from gui.workspace.graph_dock import GraphDock
@@ -217,7 +201,7 @@ class MainWindowFrame(QWidget):
             # window at call time, once both are up (#234).
             refresh_and_apply_for_focused_dock=(
                 lambda: self.filter_routing.refresh_and_apply_for_focused_dock()),
-            job_runner=self.job_manager,
+            job_runner=self.job_runner,
         )
         self.data_pool.set_explorer_panel(self.explorer_panel)
         explorer_dock = QDockWidget("Explorer", sub_area)
@@ -242,7 +226,7 @@ class MainWindowFrame(QWidget):
         # bar and no features -- it cannot be closed, moved or floated, so it is
         # always there. WorkspaceLayout pins its height.
         from gui.jobs.job_status_bar import JobStatusBar
-        self.job_status_bar = JobStatusBar(self.job_manager)
+        self.job_status_bar = JobStatusBar(self.job_runner)
         job_status_dock = QDockWidget("Job Status", sub_area)
         job_status_dock.setWidget(self.job_status_bar)
         job_status_dock.setObjectName("JobStatusDock")
@@ -269,7 +253,7 @@ class MainWindowFrame(QWidget):
         self.app_context.logger_callback = self.log_panel.log_message
 
         from gui.jobs.jobs_dock import JobsDockWidget
-        self.jobs_panel = JobsDockWidget(self.job_manager)
+        self.jobs_panel = JobsDockWidget(self.job_runner)
 
         # Built before BottomPanel (below) since the Evaluation card needs it
         # for its dock tasks -- the same live-dock pattern (DockTasks, ADR
@@ -279,8 +263,7 @@ class MainWindowFrame(QWidget):
             app_context=self.app_context, tab_widget=self.workspace_tabs,
             placeholder_graph=self.placeholder_graph,
             filter_panel=self.filter_panel,
-            job_manager=self.job_manager,
-            spectral_requests=self.spectral_requests,
+            job_runner=self.job_runner,
             live_drop_handler=self.live_drop_handler,
             result_content_handler=self.result_content_handler,
             filter_routing=self.filter_routing,
@@ -288,7 +271,7 @@ class MainWindowFrame(QWidget):
         self.explorer_panel.bind_workspace(self.workspace)
         from gui.handlers.selection_drop import SelectionDropHandler
         self.workspace.bind_selection_drops(
-            SelectionDropHandler(self.app_context, self.job_manager, self.workspace))
+            SelectionDropHandler(self.app_context, self.job_runner, self.workspace))
         self.explorer_panel.selections_panel.selection_activated.connect(self.workspace.draw_selection)
         self.evaluation_panel = EvaluationPanel(self.app_context, self.workspace)
         # The one dependency that cannot go the other way round: the card is
@@ -359,7 +342,7 @@ class MainWindowFrame(QWidget):
 
         self.dataset_authoring = DatasetAuthoringHandler(
             self.app_context,
-            self.job_manager,
+            self.job_runner,
             self,
             log_panel=self.log_panel,
             data_pool=self.data_pool,
@@ -382,7 +365,7 @@ class MainWindowFrame(QWidget):
             show_workspace=self.show_workspace,
             set_titlebar_text=self.set_titlebar_text,
             show_x_axis_unit=self._show_x_axis_unit_in_settings,
-            job_runner=self.job_manager,
+            job_runner=self.job_runner,
         )
 
         project_tab.btn_select_dir.clicked.connect(self.project_document.select_data_directory)
@@ -409,7 +392,7 @@ class MainWindowFrame(QWidget):
         # built before init_ui() for exactly this.
         self.batch_run = BatchRunHandler(
             self.app_context, self.ribbon, self.workflow_run_bridge,
-            self.workflow_view, self, job_runner=self.job_manager,
+            self.workflow_view, self, job_runner=self.job_runner,
         )
         workflow_tab = self.ribbon.tab_workflow
         workflow_tab.btn_new.clicked.connect(self.workflow_authoring.new_workflow)
@@ -431,7 +414,7 @@ class MainWindowFrame(QWidget):
         # a direct connect fed QAbstractButton.clicked's `checked` bool into
         # it, so every click was silently treated as a tab-open of a non-dock.
         # S4 (ideas/session_persistence/PLAN.md) moved the "fresh open" branch
-        # into dispatch_compute's `is_fresh_open` -- refresh_active_spectrogram
+        # into dispatch_compute's `origin` -- refresh_active_spectrogram
         # takes no extra parameter to feed anymore, so a direct connect is safe.
         self.ribbon.tab_acc_spectrogram.btn_recalculate.clicked.connect(
             self.workspace.refresh_active_spectrogram)
@@ -518,7 +501,7 @@ class MainWindowFrame(QWidget):
         # workspace (docks + graphs). One stack, one place that swaps them, so
         # "no project" always looks the same however it was reached -- fresh
         # start, or a project closed. See _set_project_ui_enabled.
-        self.welcome_page = WelcomePage(job_runner=self.job_manager)
+        self.welcome_page = WelcomePage(job_runner=self.job_runner)
         self.welcome_page.set_changelog(read_changelog())
         self.welcome_page.new_project_requested.connect(self.project_document.new_project)
         self.welcome_page.open_project_requested.connect(
@@ -535,6 +518,11 @@ class MainWindowFrame(QWidget):
         self._set_project_ui_enabled(False)
 
     # ---- frameless title bar --------------------------------------------
+
+    def _log_job_step_failure(self, job_id: int, message: str) -> None:
+        record = self.job_runner.record(job_id)
+        label = record.label if record is not None else f"job {job_id}"
+        self.app_context.log(f"ERROR: {label} -- {message}")
 
     def _open_benchmark_dialog(self) -> None:
         from gui.benchmark import BenchmarkDialog
@@ -755,6 +743,8 @@ class MainWindowFrame(QWidget):
         session = getattr(getattr(self, "app_context", None), "project_session", None)
         if session is not None:
             session.set_cache_adopter(None)
+            session.set_open_tabs_capture(None)
+            session.set_saved_listener(None)
 
         # The folder watcher outlives the widgets it would refresh otherwise,
         # and a notification arriving after the window is gone rebuilds a tree
@@ -776,10 +766,18 @@ class MainWindowFrame(QWidget):
         # If the wait times out, un-cancellable steps remaining in the pool
         # require a hard exit on shutdown to avoid lingering as an invisible
         # process (#414). Returns whether all pools drained.
+        # Tab cache writes are the exception to "cancel": the result they
+        # keep is one the user just waited for, so the last window waits for
+        # them first, with a line on the status strip.
+        workspace = getattr(self, "workspace", None)
+        if wait_for_jobs and workspace is not None:
+            strip = getattr(self, "job_status_bar", None)
+            workspace.finish_tab_cache_writes(
+                show_note=strip.show_note if strip is not None else None)
         idle = True
-        job_manager = getattr(self, "job_manager", None)
-        if job_manager is not None:
-            job_manager.cancel_all()
+        job_runner = getattr(self, "job_runner", None)
+        if job_runner is not None:
+            job_runner.cancel_all()
             if wait_for_jobs:
-                idle = job_manager.wait_for_done(2000)
+                idle = job_runner.wait_for_done(2000)
         return idle

@@ -62,4 +62,4 @@ The cache is derived data. `cache/index.json`, which lets a lookup reject candid
 
 ### Scan cache
 
-Separate from results: for each data folder `cache/scan/` keeps the parsed channel inventory and metadata, so a rescan re-reads only files whose size or modification time changed. A cache written in an older format is discarded. Deleting it costs a re-scan and nothing else (unit corrections live in the project, not here). A project without a file keeps its scan caches in a temporary area of the PC (`NVH_Tool\untitled_scan`); those older than 14 days are removed at startup.
+Separate from results: for each data folder `cache/scan/` keeps the parsed channel inventory and metadata, so a rescan re-reads only files whose size or modification time changed. A cache written in an older format is discarded. Deleting it costs a re-scan and nothing else (unit corrections live in the project, not here). A project without a file keeps its scan caches in a temporary area of the PC (`Spectra\untitled_scan`); those older than 14 days are removed at startup.

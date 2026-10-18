@@ -21,15 +21,20 @@ from orchestration.jobs import JobRunner
 # drop       -- channels dropped onto the dock (and Refresh Last N, which
 #               re-drops); never superseded, see _ADDITIVE_PURPOSES
 # evaluation -- the Evaluation card's table over the dock's curves
+# tab_cache  -- writing a landed curve to its Tab cache file;
+#               never superseded: each write is its own file
 PURPOSE_COMPUTE = "compute"
 PURPOSE_DROP = "drop"
 PURPOSE_EVALUATION = "evaluation"
-_PURPOSES = (PURPOSE_COMPUTE, PURPOSE_DROP, PURPOSE_EVALUATION)
+PURPOSE_TAB_CACHE = "tab_cache"
+_PURPOSES = (PURPOSE_COMPUTE, PURPOSE_DROP, PURPOSE_EVALUATION, PURPOSE_TAB_CACHE)
 
 # Purposes whose tasks add to the dock rather than replace what it shows: a
 # second drop is more curves, not a newer version of the first drop, so each
-# task gets a slot of its own and only closing the dock stops it (#286).
-_ADDITIVE_PURPOSES = (PURPOSE_DROP,)
+# task gets a slot of its own and only closing the dock stops it (#286). A
+# Tab cache write is one file per curve, so a later one does not make an
+# earlier one stale either.
+_ADDITIVE_PURPOSES = (PURPOSE_DROP, PURPOSE_TAB_CACHE)
 
 
 def _slot_key(dock_id: str, purpose: str) -> str:
@@ -61,14 +66,16 @@ class DockTasks:
         self._additive_slots: Dict[str, Set[str]] = {}
 
     def run(self, dock_id: str, fn: Callable, *args, purpose: str,
-            on_success: Callable[[object], None],
+            on_success: Optional[Callable[[object], None]] = None,
             on_error: Callable[[str], None],
             job_label: Optional[str] = None, progress_units: int = 1,
             **kwargs) -> None:
         """
         `progress_units` > 1 is a bulk task (several channels in one drop): it
         is loud, named `job_label`, and `fn` gets a `progress_fn(done, total)`
-        that moves the job's counter channel by channel (#469).
+        that moves the job's counter channel by channel (#469). Without
+        `on_success` the result is not wanted, only that it was made (a Tab
+        cache write).
         """
         if purpose not in _PURPOSES:
             raise ValueError(f"unknown dock task purpose {purpose!r}; expected one of {_PURPOSES}")
@@ -87,7 +94,7 @@ class DockTasks:
 
         def _delivered(payload, _index):
             _landed()
-            if self._is_open(dock_id):
+            if on_success is not None and self._is_open(dock_id):
                 on_success(payload)
 
         def _failed(message, _index):
@@ -107,6 +114,13 @@ class DockTasks:
             **({"progress_keyword": "progress_fn", "step_sizes": [progress_units]}
                if bulk else {}),
         )
+
+    def count_in_flight(self, purpose: str) -> int:
+        """How many tasks of an additive `purpose` (drop, Tab cache write)
+        have not landed yet, over every dock (#731)."""
+        prefix = f"dock:{purpose}:"
+        return sum(1 for slots in self._additive_slots.values()
+                   for slot_key in slots if slot_key.startswith(prefix))
 
     def cancel(self, dock_id: str) -> None:
         """Stops every task still running for a dock that is being closed."""

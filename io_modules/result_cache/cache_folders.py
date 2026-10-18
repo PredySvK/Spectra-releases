@@ -3,7 +3,8 @@
 # =====================================================================
 """
 Filesystem side of a result-set commit: create, swap and retire the folder
-that backs a `ResultSetRef`.
+that backs a `ResultSetRef` -- and copy it into another project folder when
+Save As moves the project.
 
 Split out of `io_modules/project_result_sets.py` (#172): that mixin mixed
 disk operations into the same method bodies as the project-state bookkeeping
@@ -15,6 +16,14 @@ in `io_modules` regardless of which layer calls it.
 import os
 import shutil
 import time
+from typing import Callable, Iterable, List, Optional, Sequence, Tuple
+
+from core.jobs import CancelToken
+
+# Read/write chunk for copy_result_sets: large enough that a multi-gigabyte
+# spectrogram set is not dominated by call overhead, small enough that Cancel
+# and the progress bar react within a fraction of a second.
+_COPY_CHUNK_BYTES = 8 * 1024 * 1024
 
 # An overwrite writes its shards next to the set it replaces and swaps the two
 # folders at the very end, so the existing result set survives intact until the
@@ -129,3 +138,84 @@ def discard_retired(final_folder: str) -> None:
             os.remove(retired + ".h5")
         except OSError:
             pass
+
+
+def _files_under(path: str) -> List[Tuple[str, str]]:
+    """(absolute file, path relative to `path`) for a folder; the file itself for a file."""
+    if os.path.isfile(path):
+        return [(path, "")]
+    found = []
+    for folder, _dirs, files in os.walk(path):
+        for name in files:
+            full = os.path.join(folder, name)
+            found.append((full, os.path.relpath(full, path)))
+    return found
+
+
+def measure_result_sets(paths: Iterable[str]) -> int:
+    """Total size in bytes of the given result-set folders (or format-1 files)."""
+    return sum(os.path.getsize(full) for path in paths for full, _ in _files_under(path))
+
+
+def copy_result_sets(copies: Sequence[Tuple[str, str]],
+                     cancel_token: Optional[CancelToken] = None,
+                     progress_fn: Optional[Callable[[int, int], None]] = None) -> List[str]:
+    """
+    Copies result-set folders (or format-1 files), `(source, destination)` each,
+    and returns the destinations it created.
+
+    All or nothing: every destination must not exist yet -- the caller picked
+    a free name, and refusing here guarantees nothing already on disk is
+    overwritten -- and on any failure or cancellation (JobCancelled) whatever
+    this call created is removed again before the exception propagates.
+    Reports progress in bytes.
+    """
+    for source, destination in copies:
+        if not os.path.exists(source):
+            raise FileNotFoundError(f"'{source}' no longer exists; nothing to copy.")
+        if os.path.exists(destination):
+            raise FileExistsError(f"'{destination}' already exists; refusing to overwrite it.")
+
+    plan = [(source, destination, _files_under(source)) for source, destination in copies]
+    total = sum(os.path.getsize(full) for _s, _d, files in plan for full, _ in files)
+    done = 0
+    created: List[str] = []
+    try:
+        for source, destination, files in plan:
+            if os.path.isfile(source):
+                os.makedirs(os.path.dirname(destination), exist_ok=True)
+            else:
+                os.makedirs(os.path.dirname(destination), exist_ok=True)
+                os.mkdir(destination)
+            created.append(destination)
+            for full, relative in files:
+                target = os.path.join(destination, relative) if relative else destination
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                with open(full, "rb") as reader, open(target, "wb") as writer:
+                    while True:
+                        if cancel_token is not None:
+                            cancel_token.raise_if_cancelled()
+                        chunk = reader.read(_COPY_CHUNK_BYTES)
+                        if not chunk:
+                            break
+                        writer.write(chunk)
+                        done += len(chunk)
+                        if progress_fn is not None:
+                            progress_fn(done, total)
+                shutil.copystat(full, target)
+    except BaseException:
+        remove_result_sets(created)
+        raise
+    return created
+
+
+def remove_result_sets(paths: Iterable[str]) -> None:
+    """Deletes copied result-set folders or files, best-effort (never raises)."""
+    for path in paths:
+        if os.path.isdir(path):
+            remove_tree(path)
+        elif path and os.path.isfile(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass

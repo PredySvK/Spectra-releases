@@ -15,11 +15,11 @@ All internal documentation strings and variable labels are standardly written
 in English.
 """
 
-import traceback
 from typing import Callable, List, Optional, Protocol, runtime_checkable
 
-from core.jobs import JobCancelled, JobRecord, JobState
+from core.jobs import JobRecord, JobState
 from orchestration.jobs._job_lifecycle import JobLifecycle
+from orchestration.jobs._job_step import StepOutcomeKind, run_job_step
 
 
 @runtime_checkable
@@ -183,36 +183,26 @@ class SynchronousJobRunner:
     def _run_step(self, job: JobLifecycle, index: int, step: tuple,
                   cancel_token_keyword, progress_keyword) -> None:
         step_label, fn, args, kwargs = step
-        job.start_step(step_label)
 
-        call_kwargs = dict(kwargs or {})
-        if cancel_token_keyword:
-            call_kwargs[cancel_token_keyword] = job.cancel_token
-        if progress_keyword:
-            call_kwargs[progress_keyword] = (
-                lambda done, total: job.report_progress(index, done, total)
-            )
+        def start():
+            job.start_step(step_label)
+            job.in_flight = 1
 
-        job.in_flight = 1
-        failure = None
-        cancelled = False
-        payload = None
-        try:
-            payload = fn(*args, **call_kwargs)
-        except JobCancelled:
-            # The step noticed the token and unwound. Not a failure.
-            cancelled = True
-        except Exception as error:
-            failure = (f"{step_label or 'step'}: {error}\n"
-                       f"{traceback.format_exc()}")
+        outcome = run_job_step(
+            step_label, fn, args, kwargs, job.cancel_token,
+            token_keyword=cancel_token_keyword,
+            progress_keyword=progress_keyword,
+            report_progress=lambda done, total: job.report_progress(
+                index, done, total),
+            on_start=start)
 
         job.release_step(index)
-        if cancelled:
+        if outcome.kind is StepOutcomeKind.CANCELLED:
             return
-        if failure is not None:
-            job.deliver_error(failure, index)
+        if outcome.kind is StepOutcomeKind.FAILED:
+            job.deliver_error(outcome.message, index)
         else:
-            job.deliver_result(payload, index)
+            job.deliver_result(outcome.payload, index)
 
     def _finish(self, job: JobLifecycle, state: JobState) -> None:
         if not job.finish(state):

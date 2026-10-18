@@ -1,7 +1,7 @@
 """Pure decisions for pairing channels dropped on a spectrogram dock."""
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 
 SpectrogramDropAction = Literal["reject", "replace", "wait", "compute"]
@@ -32,18 +32,30 @@ def decide_spectrogram_drop(
     tracking_mode: str,
     *,
     channel_name: str,
+    measurement_path: Optional[str] = None,
 ) -> SpectrogramDropDecision:
     """Decide how a dropped channel changes a spectrogram's channel pair.
 
     The caller supplies already-read blocks and applies the returned state.
     This function does not inspect or mutate a dock, log, or dispatch work.
+
+    `measurement_path` is the file of a spectrogram that shows its image
+    without holding the raw channels it was computed from (restored from the
+    Tab cache, ADR §1.178): the channel it lacks is read from there by the
+    compute, so the drop does not wait for it -- and, as with a channel it
+    held, a channel of another file is refused when that one is needed.
     """
     channel_type = data_block.channel_type
     is_tacho = channel_type == "tacho"
     other = existing_vib_block if is_tacho else existing_tacho_block
     source_path = data_block.source.file_path
+    # The channel the dock lacks, still to be read from its measurement.
+    reads_other = (other is None and measurement_path is not None
+                   and (is_tacho or tracking_mode == "rpm"))
+    other_path = other.source.file_path if other is not None else (
+        measurement_path if reads_other else None)
 
-    if other is not None and other.source.file_path != source_path:
+    if other_path is not None and other_path != source_path:
         return SpectrogramDropDecision(
             "reject",
             existing_vib_block,
@@ -62,7 +74,7 @@ def decide_spectrogram_drop(
         if existing_tacho_block is not None:
             messages.append(f"SYSTEM: Replacing previous tacho channel with '{channel_name}'.")
         tacho_block = data_block
-        if vib_block is None:
+        if vib_block is None and not reads_other:
             messages.append("SYSTEM: Tacho registered. Drop a vibration channel to build the waterfall.")
             return SpectrogramDropDecision("wait", vib_block, tacho_block, tuple(messages))
         messages.append("SYSTEM: Tacho registered. Computing waterfall...")
@@ -71,11 +83,11 @@ def decide_spectrogram_drop(
             messages.append(f"SYSTEM: Replacing previous spectrogram channel with '{channel_name}'.")
         vib_block = data_block
 
-    if tracking_mode == "rpm" and tacho_block is None:
+    if tracking_mode == "rpm" and tacho_block is None and not reads_other:
         messages.append("SYSTEM: Vibration loaded. Drop a tacho channel to build the waterfall.")
         return SpectrogramDropDecision("wait", vib_block, tacho_block, tuple(messages))
 
     action = "replace" if (is_tacho and existing_tacho_block is not None) or (
-        not is_tacho and existing_vib_block is not None
+        not is_tacho and (existing_vib_block is not None or measurement_path is not None)
     ) else "compute"
     return SpectrogramDropDecision(action, vib_block, tacho_block, tuple(messages))

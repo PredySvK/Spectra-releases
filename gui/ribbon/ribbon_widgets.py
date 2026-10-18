@@ -39,21 +39,20 @@ RIBBON_TOOLTIP_QSS = (
     "}"
 )
 
-# kind -> (background, hover background, text colour, border colour)
-_KIND = {
-    "primary": (*APP_TOKENS.ribbon_primary, APP_TOKENS.icon_on_accent, "transparent"),
-    "commit":  (*APP_TOKENS.ribbon_commit, APP_TOKENS.icon_on_accent, "transparent"),
-    "danger":  (*APP_TOKENS.ribbon_danger, APP_TOKENS.icon_on_accent, "transparent"),
-    "neutral": ("palette(button)", "palette(midlight)", "palette(button-text)", "palette(mid)"),
-}
-
 _BIG_SIZE = (94, 86)
 _SMALL_HEIGHT = 28
 _STACK_SIZE = QSize(144, 44)  # Refresh over Compute Batch
 
 
 def _button_qss(kind: str) -> str:
-    bg, hover, fg, border = _KIND.get(kind, _KIND["neutral"])
+    # kind -> (background, hover background, text colour, border colour)
+    colours = {
+        "primary": (*APP_TOKENS.ribbon_primary, APP_TOKENS.icon_on_accent, "transparent"),
+        "commit":  (*APP_TOKENS.ribbon_commit, APP_TOKENS.icon_on_accent, "transparent"),
+        "danger":  (*APP_TOKENS.ribbon_danger, APP_TOKENS.icon_on_accent, "transparent"),
+        "neutral": ("palette(button)", "palette(midlight)", "palette(button-text)", "palette(mid)"),
+    }
+    bg, hover, fg, border = colours.get(kind, colours["neutral"])
     return (
         "QToolButton {"
         f"  background-color: {bg}; color: {fg};"

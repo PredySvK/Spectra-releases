@@ -29,9 +29,10 @@ Three ideas do the work here:
   included, whose slot is the dock and the task's purpose.
 
 Ownership: one QtJobRunner per MainWindowFrame, passed to controllers by
-constructor. Not on AppContext, which the view-only second window shares --
-a job queue spanning both windows would let the read-only one enqueue work
-that writes.
+constructor, and required wherever it is taken -- no component builds a
+queue of its own. Not on AppContext: orchestration/ is handed the runner
+explicitly and may not see AppContext, so the constructor is the one path
+for every layer.
 
 Callbacks (on_step / on_error / on_done) are invoked on the GUI thread, from
 slots connected to the runners' signals, and may touch widgets and log.
@@ -93,10 +94,13 @@ class QtJobRunner(QObject):
     job_added = Signal(int)      # job_id
     job_changed = Signal(int)    # job_id -- progress, step label or state moved
     job_finished = Signal(int)   # job_id -- state is terminal
+    # job_id, message -- a step or its result handling failed. The runner
+    # announces it and MainWindowFrame writes it to the System Log, so the
+    # runner never needs AppContext.
+    step_failed = Signal(int, str)
 
-    def __init__(self, app_context=None, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.app_context = app_context
 
         ideal = max(2, QThread.idealThreadCount())
         self._pools = {
@@ -162,7 +166,7 @@ class QtJobRunner(QObject):
 
         job = _Job(record, steps, max(1, width), cancel_token_keyword,
                    progress_keyword, on_step, on_error, on_done,
-                   lambda message: self._log_error(record, message),
+                   lambda message: self.step_failed.emit(job_id, message),
                    step_sizes=step_sizes)
         self._jobs[job_id] = job
         self._records[job_id] = record
@@ -270,10 +274,6 @@ class QtJobRunner(QObject):
         job.notify_done()
         self.job_finished.emit(job.record.job_id)
         self.job_changed.emit(job.record.job_id)
-
-    def _log_error(self, record: JobRecord, message: str) -> None:
-        if self.app_context is not None:
-            self.app_context.log(f"ERROR: {record.label} -- {message}")
 
     # ---- cancellation and queries -------------------------------------
 

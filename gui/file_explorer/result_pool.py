@@ -40,9 +40,6 @@ from io_modules.project_store import project_folder
 from gui.appearance import APP_TOKENS
 
 
-# A result set the project still lists but whose h5 file is gone from disk.
-GHOST_COLOR = APP_TOKENS.item_unreadable
-
 # Marks a top-level row as a Result Kind heading rather than a set. A 2-tuple,
 # so a set row's plain string id can never be mistaken for one.
 _KIND_ROLE = "__result_kind__"
@@ -151,7 +148,8 @@ class ResultPoolPanel(QWidget):
 
                 if ref.id in self._missing_ids:
                     child.setText(0, f"⚠ {label}")
-                    child.setForeground(0, QBrush(QColor(GHOST_COLOR)))
+                    # The project still lists the set but its h5 file is gone from disk.
+                    child.setForeground(0, QBrush(QColor(APP_TOKENS.item_unreadable)))
                     child.setFlags(child.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
                     child.setToolTip(
                         0,
@@ -217,7 +215,7 @@ class ResultPoolPanel(QWidget):
         # The graph's result sets are part of what a Save writes for it.
         session = getattr(self.app_context, "project_session", None)
         if session is not None:
-            session.mark_dirty()
+            session.mark_work_changed()
 
         self._apply_check_states()
 

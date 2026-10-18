@@ -2,9 +2,11 @@
 
 import dataclasses
 import functools
+import json
 from typing import Any
 from typing import Iterable
 
+from core.channel_drop import RECIPE_KEY, TAB_CACHE_KEY
 from view_models.analysis_kinds import ANALYSIS_ORDERS, ANALYSIS_SPECTRUM
 
 from orchestration.channel_drop._drop_plan import plan_channel_drop
@@ -113,19 +115,69 @@ def _run_claimed(run: _Run, descriptors, worker, *args, render, **run_kwargs) ->
     target.run_task(worker, *args, on_success=_on_success, on_error=_on_error, **run_kwargs)
 
 
+def _by_recipe(descriptors) -> list[tuple[dict | None, list[dict]]]:
+    """``descriptors`` split by the saved recipe they carry (``RECIPE_KEY``),
+    in drop order; a drop of new channels carries none and stays one group.
+
+    One task serves one config, so restored overlays saved with different
+    recipes are computed in as many tasks.
+    """
+    groups: dict[str | None, tuple[dict | None, list[dict]]] = {}
+    for desc in descriptors:
+        recipe = desc.get(RECIPE_KEY) or None
+        key = None if recipe is None else json.dumps(recipe, sort_keys=True, default=str)
+        groups.setdefault(key, (recipe, []))[1].append(desc)
+    return list(groups.values())
+
+
+def _config_of(target: DropTarget, recipe, descriptors, read_drop_config):
+    """``(config, restore)`` of one group: the config is ``read_drop_config()``
+    for a new drop, the saved recipe over the ribbon for restored overlays;
+    ``restore`` is what restored overlays bring to the worker -- their Tab
+    cache files and the recipe line -- None for a drop of new channels
+   ."""
+    resolved = target.restored_config(recipe) if recipe is not None else None
+    config = read_drop_config() if resolved is None else resolved.config
+    restored = resolved is not None or any(desc.get(TAB_CACHE_KEY) for desc in descriptors)
+    return config, (target.drop_restore(resolved) if restored else None)
+
+
+def _with_restore(worker, restore):
+    """``worker`` handed what restored overlays bring along; as it is for a new drop."""
+    return worker if restore is None else functools.partial(worker, restore=restore)
+
+
+def _no_pool(path):
+    """The lookup of a lane that never reads the pool (time mode asks for no tacho)."""
+    raise AssertionError(f"the simple lane looked up {path!r} in the pool")
+
+
 def _run_simple(run: _Run, descriptors, *, is_spec: bool, is_spectrum: bool,
                 label: str | None) -> None:
-    """Reads every dropped channel -- and on a spectrum dock computes its FFT -- in one task."""
+    """Reads every dropped channel -- and on a spectrum dock computes its FFT --
+    in one task, one per saved recipe the descriptors carry."""
+    if not is_spectrum:
+        _run_simple_group(run, descriptors, None, is_spec=is_spec, is_spectrum=False, label=label)
+        return
+    for recipe, group in _by_recipe(descriptors):
+        # Read on the GUI thread, before the worker starts: the worker must not reach the shell.
+        config, restore = _config_of(run.target, recipe, group, run.target.spectrum_config)
+        _run_simple_group(run, group, config, is_spec=is_spec, is_spectrum=True, label=label,
+                          restore=restore)
+
+
+def _run_simple_group(run: _Run, descriptors, spectrum_config, *, is_spec: bool,
+                      is_spectrum: bool, label: str | None, restore=None) -> None:
     target = run.target
-    # Read on the GUI thread, before the worker starts: the worker must not reach the shell.
-    spectrum_config = target.spectrum_config() if is_spectrum else None
-    plan = plan_tacho_per_file(descriptors, {}, None, against_time=True)
+    finder = target.cache_finder() if is_spectrum else None
+    plan = plan_tacho_per_file(descriptors, _no_pool, None, against_time=True)
     prepared = [
         (desc, mock_run, mock_meta)
         for desc, _ch_name, mock_run, mock_meta, _tacho_meta in plan.prepared
     ]
     _run_claimed(
-        run, descriptors, run.workers.read_simple_drops, prepared, spectrum_config,
+        run, descriptors, _with_restore(run.workers.read_simple_drops, restore),
+        prepared, spectrum_config, finder,
         render=lambda rendered: target.render_simple(rendered, is_spec=is_spec),
         job_label=label or f"{'Spectrum' if is_spectrum else 'Load'} — {len(prepared)} channels",
         progress_units=len(prepared),
@@ -133,13 +185,23 @@ def _run_simple(run: _Run, descriptors, *, is_spec: bool, is_spectrum: bool,
 
 
 def _run_orders(run: _Run, descriptors, orders, label: str | None) -> int:
-    """Order cuts of one group of channels in one task; how many channels have a tacho and are served."""
+    """Order cuts of one group of channels in one task (one per saved recipe);
+    how many channels have a tacho and are served."""
+    inputs = run.target.order_inputs()
+    served = 0
+    for recipe, group in _by_recipe(descriptors):
+        config, restore = _config_of(run.target, recipe, group, lambda: inputs.config)
+        served += _run_order_group(
+            run, group, dataclasses.replace(config, orders_to_extract=list(orders)), inputs, label,
+            restore)
+    return served
+
+
+def _run_order_group(run: _Run, descriptors, config, inputs, label: str | None, restore) -> int:
     target = run.target
-    inputs = target.order_inputs()
-    config = dataclasses.replace(inputs.config, orders_to_extract=list(orders))
     dock_tacho_path = inputs.dock_tacho.source.file_path if inputs.dock_tacho else None
     plan = plan_tacho_per_file(
-        descriptors, inputs.runs_by_path, dock_tacho_path, against_time=False)
+        descriptors, inputs.run_lookup, dock_tacho_path, against_time=False)
     for refusal in plan.refusals:
         target.log(
             f"ERROR: Cannot extract orders from '{refusal.file_name}' -- "
@@ -151,10 +213,9 @@ def _run_orders(run: _Run, descriptors, orders, label: str | None) -> int:
 
     _run_claimed(
         run, [p[0] for p in prepared],
-        functools.partial(run.workers.lookup_or_compute_order_drops,
+        functools.partial(_with_restore(run.workers.run_order_drops, restore),
                           with_overall_level=inputs.with_overall_level),
-        prepared, inputs.project_session, config, dataclasses.asdict(config),
-        inputs.dock_tacho, dock_tacho_path, inputs.use_cache,
+        prepared, target.cache_finder(), config, inputs.dock_tacho, dock_tacho_path,
         render=target.render_orders,
         job_label=label or f"Order tracking — {len(prepared)} channels",
         progress_units=len(prepared),
@@ -164,16 +225,25 @@ def _run_orders(run: _Run, descriptors, orders, label: str | None) -> int:
 
 def _run_overall_level(run: _Run, descriptors, label: str | None) -> int:
     """
-    Overall Level of one drop in one task; how many channels are served.
+    Overall Level of one drop in one task (one per saved recipe); how many
+    channels are served.
     Tacho is resolved once per source file.
     """
+    inputs = run.target.overall_level_inputs()
+    served = 0
+    for recipe, group in _by_recipe(descriptors):
+        config, restore = _config_of(run.target, recipe, group, lambda: inputs.config)
+        served += _run_overall_level_group(run, group, config, inputs, label, restore)
+    return served
+
+
+def _run_overall_level_group(run: _Run, descriptors, config, inputs, label: str | None,
+                             restore) -> int:
     target = run.target
-    inputs = target.overall_level_inputs()
-    config = inputs.config
     against_time = config.tracking_mode == "time"
     dock_tacho_path = inputs.dock_tacho.source.file_path if inputs.dock_tacho else None
     plan = plan_tacho_per_file(
-        descriptors, inputs.runs_by_path, dock_tacho_path, against_time=against_time)
+        descriptors, inputs.run_lookup, dock_tacho_path, against_time=against_time)
     for refusal in plan.refusals:
         target.log(
             f"ERROR: Cannot track Overall Level against RPM for "
@@ -184,9 +254,8 @@ def _run_overall_level(run: _Run, descriptors, label: str | None) -> int:
         return 0
 
     _run_claimed(
-        run, [p[0] for p in prepared], run.workers.build_overall_level_drop_payloads,
-        prepared, inputs.use_cache, inputs.finder, config, dataclasses.asdict(config),
-        against_time, inputs.dock_tacho, dock_tacho_path,
+        run, [p[0] for p in prepared], _with_restore(run.workers.run_overall_level_drops, restore),
+        prepared, target.cache_finder(), config, inputs.dock_tacho, dock_tacho_path,
         render=target.render_overall_level,
         job_label=label or f"Overall Level — {len(prepared)} channels",
         progress_units=len(prepared),

@@ -55,21 +55,25 @@ class ResultSetSink:
         # Files whose Overall Level F max was clipped to their Nyquist: one
         # summary line at the end, not one per file (§1.62 point 9, #131).
         self._f_stop_clipped_files: int = 0
+        # Files a channel with invalid (NaN) samples fed, likewise (#673).
+        self._invalid_sample_files: int = 0
 
     @property
     def label(self) -> str:
         return self.draft.label
 
     def add(self, entry: Optional[Dict[str, Any]], index: Optional[int] = None,
-            f_stop_clipped: bool = False) -> None:
+            f_stop_clipped: bool = False, invalid_samples: bool = False) -> None:
         """Records one written shard. `None` means the step produced nothing.
 
         If `index` is provided, entries are sorted by `index` upon `finish`,
         ensuring deterministic order regardless of thread completion timing (#375).
-        `f_stop_clipped` says this file's F max was clipped to its Nyquist.
+        `f_stop_clipped` says this file's F max was clipped to its Nyquist,
+        `invalid_samples` that a channel of it held invalid (NaN) samples.
         """
         if entry:
             self._f_stop_clipped_files += bool(f_stop_clipped)
+            self._invalid_sample_files += bool(invalid_samples)
             if index is None:
                 index = self._auto_index
                 self._auto_index += 1
@@ -117,6 +121,11 @@ class ResultSetSink:
             messages.append(
                 f"WARNING: {self.what} -- Overall Level F max clipped to the file's "
                 f"Nyquist in {self._f_stop_clipped_files} of {len(entries)} file(s)."
+            )
+        if self._invalid_sample_files:
+            messages.append(
+                f"WARNING: {self.what} -- invalid (NaN) samples left gaps in "
+                f"{self._invalid_sample_files} of {len(entries)} file(s)."
             )
         return True, messages
 

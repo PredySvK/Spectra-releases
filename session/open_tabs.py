@@ -5,12 +5,11 @@
 The recipe for one open analytical dock and its session persistence data.
 
 Deliberately not a serialised ``PlotModel``: ``Trace.y``/``y_raw`` are numpy
-arrays computed from disk, and persisting them would turn "the recipe" into
-"a cache" -- a different, larger problem this project already tracks
-separately (``ideas/session_persistence/PLAN.md`` §7, the write-behind H5
-cache gated behind ``dispatch_compute`` existing). ``TabSpec`` carries only
-what a fresh drop already carries: which source and channel each curve came
-from, and the ``compute_spec`` it should be recomputed with.
+arrays computed from disk. ``TabSpec`` carries what a fresh drop already
+carries -- which source and channel each curve came from, and the
+``compute_spec`` it should be recomputed with -- plus the name of the curve's
+Tab cache file, where the arrays themselves live. The recipe is
+the fallback when that file is missing or unreadable.
 
 Lives in ``session`` (R01: what is currently open and how it changes over time).
 """
@@ -22,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple, Union
 
 from core.evaluation import EvaluationConfig
+from core.models import ChannelMetadata, MeasurementRunIndex
 from session.data_pool import DeadLink, ResolvedTrace, build_source_lookup, resolve_trace
 
 
@@ -38,14 +38,21 @@ class TraceSpec:
     channel_name: str
     compute_spec: Optional[Dict[str, Any]] = None
     is_base: bool = False
+    # The curve's Tab cache file, relative to the project's `cache/tabs/`
+    #. None -- also a project saved before the Tab cache --
+    # means no file: a restore computes the curve from `compute_spec`.
+    tab_cache_file: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        data = {
             "source_id": self.source_id,
             "channel_name": self.channel_name,
             "compute_spec": self.compute_spec,
             "is_base": self.is_base,
         }
+        if self.tab_cache_file:
+            data["tab_cache_file"] = self.tab_cache_file
+        return data
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "TraceSpec":
@@ -54,6 +61,7 @@ class TraceSpec:
             channel_name=str(data.get("channel_name", "")),
             compute_spec=data.get("compute_spec"),
             is_base=bool(data.get("is_base", False)),
+            tab_cache_file=(str(data["tab_cache_file"]) if data.get("tab_cache_file") else None),
         )
 
 
@@ -68,10 +76,9 @@ class TabSpec:
     "spectrum" | "orders" | "overall_level" | "spectrogram"). A
     ``SpectrogramDock`` has no traces -- ``traces`` holds just
     its one vibration channel. No separate tacho ``TraceSpec``: S6 restores a
-    spectrogram through the same ``build_shell``+``dispatch_compute(...,
-    is_fresh_open=True)`` pair a live open uses, and
-    ``_dispatch_compute`` already auto-links a tacho onto a
-    freshly built dock (``dock.tacho_block is None``) the same way regardless
+    spectrogram through the same ``build_shell``+``dispatch_compute`` pair a
+    live open uses, and ``run_live_compute`` already auto-links a tacho onto a
+    freshly built dock (no tacho bound yet) the same way regardless
     of whether the dock is new or restored -- recording which tacho channel
     had been bound would only shadow that existing, already-deterministic
     lookup.
@@ -128,22 +135,27 @@ class TabSpec:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "TabSpec":
-        raw_eval = data.get("evaluation_config")
-        if isinstance(raw_eval, EvaluationConfig):
-            eval_cfg = raw_eval
-        elif isinstance(raw_eval, dict):
-            eval_cfg = EvaluationConfig.from_dict(raw_eval)
-        else:
-            eval_cfg = EvaluationConfig()
-
         return cls(
             analysis_kind=str(data.get("analysis_kind", "time")),
             traces=[TraceSpec.from_dict(t) for t in data.get("traces", [])],
             dock_id=str(data["dock_id"]) if data.get("dock_id") else None,
             filter_selections={k: dict(v) for k, v in data.get("filter_selections", {}).items()},
             loaded_result_set_ids=[str(rid) for rid in data.get("loaded_result_set_ids", [])],
-            evaluation_config=eval_cfg,
+            # Normalised once, by __post_init__.
+            evaluation_config=data.get("evaluation_config"),
         )
+
+
+@dataclass(frozen=True)
+class RestoredOverlay:
+    """A saved overlay resolved to its live pool entries, with the recipe it
+    was saved with -- what its re-drop computes with -- and its Tab cache
+    file, which the re-drop reads first."""
+
+    run_index: MeasurementRunIndex
+    channel_meta: ChannelMetadata
+    compute_spec: Optional[Dict[str, Any]] = None
+    tab_cache_file: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -153,7 +165,7 @@ class RestoreTab:
     spec: TabSpec
     resolved: Union[ResolvedTrace, DeadLink]
     evaluation_config: EvaluationConfig
-    overlays: Tuple[ResolvedTrace, ...] = ()
+    overlays: Tuple[RestoredOverlay, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -169,15 +181,18 @@ def _default_evaluation() -> EvaluationConfig:
 
 
 def _evaluation_config_for(raw: Mapping[str, Any], spec: TabSpec) -> Tuple[EvaluationConfig, Optional[str]]:
-    """Return a safe EvaluationConfig and a notice for malformed saved data."""
-    if "evaluation_config" not in raw or raw.get("evaluation_config") is None:
-        return _default_evaluation(), None
+    """Return a safe EvaluationConfig and a notice for malformed saved data.
 
+    `spec.evaluation_config` is already normalised by `TabSpec`; `raw` is read
+    only to tell a missing value from a corrupt one for the notice.
+    """
     raw_eval = raw.get("evaluation_config")
+    if raw_eval is None:
+        return _default_evaluation(), None
     if not isinstance(raw_eval, (dict, EvaluationConfig)):
         return _default_evaluation(), "Corrupted evaluation settings in tab state, resetting to default."
 
-    cfg = spec.evaluation_config if isinstance(raw_eval, EvaluationConfig) else EvaluationConfig.from_dict(raw_eval)
+    cfg = spec.evaluation_config
     from signal_processing.evaluation.registry import EVALUATIONS
 
     if cfg.evaluation_name not in EVALUATIONS:
@@ -192,8 +207,8 @@ def _evaluation_config_for(raw: Mapping[str, Any], spec: TabSpec) -> Tuple[Evalu
 
 
 def _resolve_overlays(spec: TabSpec, source_lookup: Dict[str, Any], index: int,
-                      notices: List[str]) -> Tuple[ResolvedTrace, ...]:
-    resolved_overlays: List[ResolvedTrace] = []
+                      notices: List[str]) -> Tuple[RestoredOverlay, ...]:
+    resolved_overlays: List[RestoredOverlay] = []
     for overlay in spec.traces[1:]:
         resolved = resolve_trace(overlay.source_id, overlay.channel_name, source_lookup)
         if isinstance(resolved, DeadLink):
@@ -202,7 +217,9 @@ def _resolve_overlays(spec: TabSpec, source_lookup: Dict[str, Any], index: int,
                 f"could not be restored ({resolved.reason})."
             )
             continue
-        resolved_overlays.append(resolved)
+        resolved_overlays.append(
+            RestoredOverlay(resolved.run_index, resolved.channel_meta, overlay.compute_spec,
+                            overlay.tab_cache_file))
     return tuple(resolved_overlays)
 
 

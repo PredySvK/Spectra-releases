@@ -8,10 +8,11 @@ Groups the Settings window actions that modify QSettings and refresh
 window layout or viewport rendering:
 - "Reset Layout" clears dock layout and dialog geometry keys, restoring factory layout.
 - "Reset All Settings" clears all application settings and restores factory layout.
-- Graph Rendering applies AppContext performance settings to open viewports.
 - The Settings window (gui/settings) reads its field values here and hands back
-  the changed ones on Apply; the result-cache fields persist the values used by
-  subsequent batch runs.
+  the changed ones on Apply. Application settings go to the Settings store; what a
+  change sets off in this window (redraw graphs, rebuild the Explorer, a restart
+  note) is the reaction table, subscribed to the store, so a change from anywhere
+  -- Apply, Cursor Settings, Reset All Settings -- reacts the same.
 - The X axis unit (issue #459, Settings › Units) is stored with the open project,
   not in QSettings, and redraws every open dock.
 
@@ -19,8 +20,10 @@ All internal documentation strings and variable labels are standardly written
 in English.
 """
 
-from typing import Optional
+from typing import Callable, Optional
 from PySide6.QtWidgets import QMessageBox, QWidget
+
+from core.settings import SETTING_DEFINITIONS
 
 __all__ = [
     "WindowSettingsHandler",
@@ -42,18 +45,8 @@ _LAYOUT_KEY_PREFIXES = (
     # Per-dialog remembered size/position (gui/dialogs/dialog_state.py).
     "dialog_geometry_",
 )
-_GRAPH_KEYS = (
-    "perf_downsample_enabled",
-    "perf_auto_mode_active",
-    "perf_manual_factor",
-    "perf_render_screen_only",
-)
-_UNIT_KEYS = (
-    "global_unit_acceleration",
-    "global_unit_pressure",
-    "global_unit_voltage",
-    "global_unit_speed",
-)
+_RESTART_KEYS = frozenset(key for key, definition in SETTING_DEFINITIONS.items()
+                           if definition.applies_after_restart)
 _LAYOUT_KEYS = (
     "primary_startup_data_directory",
 )
@@ -89,7 +82,7 @@ _RESET_ALL_DETAILS = (
 
 class WindowSettingsHandler:
     """
-    Handles layout reset, settings, graph performance, and global units.
+    Handles layout reset, the Settings window's values and what a settings change sets off.
 
     Explicit dependencies injected via constructor:
     - app_context: application settings and performance state.
@@ -118,23 +111,18 @@ class WindowSettingsHandler:
         self.explorer_panel = explorer_panel
         self._parent = parent_widget
         self._applying_panels = False
+        self._reactions = self.build_settings_reactions()
+        # What this process draws with; a restart setting only needs a restart when it differs.
+        self._running_values = {key: app_context.settings_store.value(key) for key in _RESTART_KEYS}
+        app_context.settings_store.subscribe(self.react_to_settings)
 
     def read_settings_values(self) -> dict:
         """The applied value of every Settings window field, keyed like the fields."""
-        context = self.app_context
+        store = self.app_context.settings_store
         return {
             **self.read_panel_values(),
-            "open_last_project_on_startup": context.shared_settings.value(
-                "open_last_project_on_startup", False, type=bool),
-            "check_for_updates_on_startup": context.shared_settings.value(
-                "check_for_updates_on_startup", True, type=bool),
-            "result_cache_compression": context.result_cache_compression,
-            "use_result_cache_lookup": context.use_result_cache_lookup,
-            **{key: getattr(context, key) for key in (*_UNIT_KEYS, *_GRAPH_KEYS)},
-            "highlight_other_opacity": context.highlight_other_opacity,
-            "theme": context.theme,
-            "graph_theme": context.graph_theme,
-            "x_axis_unit": context.project_session.x_axis_unit,
+            **{key: store.value(key) for key in SETTING_DEFINITIONS},
+            "x_axis_unit": self.app_context.project_session.x_axis_unit,
         }
 
     def read_panel_values(self) -> dict:
@@ -164,50 +152,50 @@ class WindowSettingsHandler:
         panels = {key: value for key, value in changed.items() if key in SETTINGS_IMMEDIATE_KEYS}
         if panels:
             self.apply_panel_values(panels)
-        for key in ("open_last_project_on_startup", "check_for_updates_on_startup"):
-            if key in changed:
-                self.app_context.shared_settings.setValue(key, changed[key])
-        if "theme" in changed:
-            self.app_context.theme = changed["theme"]
-            self.app_context.shared_settings.setValue("theme", changed["theme"])
-            QMessageBox.information(self.parent_widget, "Theme", "Theme applies after restart.")
-        if "graph_theme" in changed:
-            self.app_context.graph_theme = changed["graph_theme"]
-            self.app_context.shared_settings.setValue("graph_theme", changed["graph_theme"])
-            QMessageBox.information(self.parent_widget, "Graph theme", "Graph theme applies after restart.")
-        if "result_cache_compression" in changed:
-            self.apply_cache_compression(changed["result_cache_compression"])
-        if "use_result_cache_lookup" in changed:
-            self.apply_use_result_cache_lookup(changed["use_result_cache_lookup"])
-        if any(key in changed for key in _GRAPH_KEYS):
-            values = {key: changed.get(key, getattr(self.app_context, key)) for key in _GRAPH_KEYS}
-            self.app_context.update_graph_settings(
-                downsample_enabled=values["perf_downsample_enabled"],
-                auto_mode_active=values["perf_auto_mode_active"],
-                manual_factor=values["perf_manual_factor"],
-                render_screen_only=values["perf_render_screen_only"],
-            )
-            self.workspace.apply_graph_performance_settings()
-            self.log_panel.log_message("SYSTEM: Graph performance criteria updated successfully.")
-        if "highlight_other_opacity" in changed:
-            self.app_context.set_highlight_other_opacity(changed["highlight_other_opacity"])
-            self.workspace.apply_highlight_opacity()
-        changed_units = [key for key in _UNIT_KEYS if key in changed]
-        if changed_units:
-            self.apply_units({key: changed[key] for key in changed_units})
+        # The store tells react_to_settings what actually changed.
+        self.app_context.settings_store.apply(
+            {key: value for key, value in changed.items() if key in SETTING_DEFINITIONS})
         if "x_axis_unit" in changed:
             self.apply_x_axis_unit(changed["x_axis_unit"])
 
-    def apply_cache_compression(self, value: str) -> None:
-        """Persist the compression used by subsequent result-cache writes."""
-        self.app_context.result_cache_compression = value
-        self.app_context.shared_settings.setValue("result_cache_compression", value)
+    def build_settings_reactions(self) -> tuple[tuple[frozenset, Callable[[dict], None]], ...]:
+        """Key group -> what a change in it sets off in this window; a group reacts once per change."""
+        return (
+            (frozenset(key for key in SETTING_DEFINITIONS if key.startswith("perf_")),
+             self._react_to_graph_performance),
+            (frozenset(key for key in SETTING_DEFINITIONS if key.startswith("global_unit_")),
+             self._react_to_units),
+            (frozenset({"highlight_other_opacity"}), lambda _changed: self.workspace.apply_highlight_opacity()),
+            (_RESTART_KEYS, self._react_to_restart_settings),
+        )
 
-    def apply_use_result_cache_lookup(self, value: bool) -> None:
-        """Persist whether result-cache lookup is enabled for subsequent runs."""
-        enabled = bool(value)
-        self.app_context.use_result_cache_lookup = enabled
-        self.app_context.shared_settings.setValue("use_result_cache_lookup", enabled)
+    def react_to_settings(self, changed: dict) -> None:
+        """Run the reaction of every key group with a changed key."""
+        for keys, reaction in self._reactions:
+            group_changed = {key: value for key, value in changed.items() if key in keys}
+            if group_changed:
+                reaction(group_changed)
+
+    def _react_to_graph_performance(self, _changed: dict) -> None:
+        self.workspace.apply_graph_performance_settings()
+        self.log_panel.log_message("SYSTEM: Graph performance criteria updated successfully.")
+
+    def _react_to_units(self, _changed: dict) -> None:
+        self.app_context.log("SYSTEM: Centralized global engineering units preferred markers updated.")
+        self.workspace.replot_time_docks_for_unit_change()
+        if self.explorer_panel is not None and hasattr(self.explorer_panel, "rebuild_tree_view"):
+            self.explorer_panel.rebuild_tree_view()
+
+    def _react_to_restart_settings(self, changed: dict) -> None:
+        from view_models.settings import SETTINGS_PAGES
+
+        changed = {key: value for key, value in changed.items() if value != self._running_values[key]}
+        if not changed:
+            return
+        labels = {field.key: field.label for page in SETTINGS_PAGES for field in page.fields}
+        names = " and ".join(labels[key] for key in changed)
+        verb = "applies" if len(changed) == 1 else "apply"
+        QMessageBox.information(self.parent_widget, "Restart needed", f"{names} {verb} after restart.")
 
     def apply_x_axis_unit(self, x_axis_unit: str) -> None:
         """Store the global X axis unit with the open project and redraw every dock in it."""
@@ -217,18 +205,6 @@ class WindowSettingsHandler:
         session.set_x_axis_unit(x_axis_unit)
         self.workspace.replot_docks_for_x_axis_unit_change()
         self.log_panel.log_message(f"SYSTEM: X axis unit set to {x_axis_unit}.")
-
-    def apply_units(self, units: dict) -> None:
-        """Persist the application units and refresh their consumers: open graphs and the Explorer."""
-        for key, unit in units.items():
-            self.app_context.update_unit_setting(key, unit)
-        self.app_context.log("SYSTEM: Centralized global engineering units preferred markers updated.")
-        self._refresh_unit_consumers()
-
-    def _refresh_unit_consumers(self) -> None:
-        self.workspace.replot_time_docks_for_unit_change()
-        if self.explorer_panel is not None and hasattr(self.explorer_panel, "rebuild_tree_view"):
-            self.explorer_panel.rebuild_tree_view()
 
     def _confirm(self, title: str, text: str, details: str) -> bool:
         box = QMessageBox(self.parent_widget)
@@ -270,18 +246,8 @@ class WindowSettingsHandler:
             self.log_panel.log_message("SYSTEM: Reset All Settings cancelled.")
             return False
 
-        context = self.app_context
-        # Everything in both groups is app state or user preference -- nothing
-        # external -- so a full clear is the honest whitelist here.
-        context.settings.clear()
-        context.shared_settings.clear()
-        # The in-memory values follow, so nothing (Settings window included)
-        # keeps showing a value that is no longer stored.
-        context.read_shared_settings()
-        self.workspace.apply_graph_performance_settings()
-        self.workspace.apply_highlight_opacity()
-        self._refresh_unit_consumers()
-
+        # Reports every setting, so the reaction table refreshes what shows them.
+        self.app_context.clear_stored_settings()
         self.workspace_layout.restore_factory()
         self.log_panel.log_message(
             "SYSTEM: All settings reset to defaults. Restart to fully apply DSP defaults."

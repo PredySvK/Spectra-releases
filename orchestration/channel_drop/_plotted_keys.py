@@ -2,7 +2,7 @@
 
 from typing import Any, Iterable, Mapping, Set
 
-from core.block_kinds import PARAM_ORDER
+from view_models.plot import resolve_order_curve_identity
 from orchestration.channel_drop._routing import drop_key
 
 
@@ -16,9 +16,7 @@ def read_plotted_keys(curve_descriptors: Iterable[Mapping], traces: Iterable[Any
         if "file_path" in meta_ref and "channel_index" in meta_ref
     }
     keys.update(
-        (*drop_key(trace.meta_ref), float(trace.compute_spec[PARAM_ORDER]))
-        for trace in traces
-        if trace.meta_ref and "file_path" in trace.meta_ref and "channel_index" in trace.meta_ref
-        and trace.compute_spec and trace.compute_spec.get(PARAM_ORDER) is not None
+        identity for trace in traces
+        if (identity := resolve_order_curve_identity(trace)) is not None
     )
     return keys

@@ -4,11 +4,11 @@
 """
 Background compute for channels dropped live onto a result-content dock
 (ARCHITECTURE_DECISIONS §1.30, see gui.handlers.live_channel_drop.
-LiveChannelDropHandler). Mirrors the Qt threading
-orchestration workflow_run_bridge.py and spectral_requests.py already
-use around signal_processing: this owns the live-result cache and Qt signal
-bridge, while QtJobRunner owns queueing and task bookkeeping. It never owns the
-DSP math itself, which stays in signal_processing/.
+LiveChannelDropHandler). Mirrors the Qt threading orchestration
+workflow_run_bridge.py already uses around signal_processing: this owns the
+live-result cache and Qt signal bridge, while QtJobRunner owns queueing and
+task bookkeeping. It never owns the DSP math itself, which stays in
+signal_processing/.
 
 A cache miss here used to run DataAccessor.fetch_channel_data (disk I/O) and
 compute_order_cuts (FFT + order tracking) straight on the GUI thread inside
@@ -19,10 +19,11 @@ there or dispatches a request and moves on.
 The result-set cache lookup moved onto this worker too:
 the drop handler no longer asks the cache synchronously (an HDF5 read on the
 GUI thread) and no longer shows a "compute this? [Yes]/[No]" dialog on a miss.
-The worker body asks the cache first -- via the hardcoded-write_index=False
-background entry point -- and rebuilds the blocks from the stored amplitudes on
-a hit, or computes them on a miss; either way the verdict arrives through the
-same channel_ready callback.
+Each channel is one `live_compute.run_live_compute` step: it asks
+the cache first -- via the hardcoded-write_index=False background entry point --
+and rebuilds the blocks from the stored amplitudes on a hit without reading the
+channel, or reads and computes them on a miss; either way the verdict arrives
+through the same channel_ready callback.
 """
 import os
 from contextlib import contextmanager
@@ -30,11 +31,15 @@ from typing import Optional
 
 from PySide6.QtCore import QObject, Signal
 
+from core.block_kinds import KIND_ORDER_CUT
 from core.dsp_configs import OrderTrackingConfig
 from core.jobs import JobRecord, job_step
 from orchestration.channel_drop import ResultContentMemoKey
 from orchestration.jobs import JobRunner
-from orchestration.live_compute import LiveOrderMemo, lookup_or_compute_order_cuts
+from orchestration.live_compute import (
+    LiveFailure, LiveOrderMemo, LiveRequest, build_cache_hit_line, resolve_cache_finder, run_live_compute,
+)
+from signal_processing.result_blocks import TrackingScratch
 
 
 class LiveOrderResults(QObject):
@@ -47,14 +52,17 @@ class LiveOrderResults(QObject):
     # whether to discard.
     channel_ready = Signal()
 
-    def __init__(self, app_context, job_manager: JobRunner):
+    def __init__(self, app_context, job_runner: JobRunner):
         super().__init__()
         self.app_context = app_context
-        self.job_manager = job_manager
-        # LRU memo, pending tags and the shared TrackingPlan bag (#99), never
-        # written to disk -- persisting live-computed results is the batch save
-        # workflow's job.
+        self.job_runner = job_runner
+        # LRU memo and pending tags, never written to disk -- persisting
+        # live-computed results is the batch save workflow's job.
         self._memo = LiveOrderMemo()
+        # One TrackingPlan bag for every job: N channels dropped from one file
+        # are N steps, and this is what lets them build one plan between them
+        # (#99). It keeps the latest tacho's plan only.
+        self._tracking = TrackingScratch()
         self._batch = None
         self._slots = set()
 
@@ -72,8 +80,9 @@ class LiveOrderResults(QObject):
         protects the direct-handler path used by tests.
         """
         self._memo.reset()
+        self._tracking = TrackingScratch()
         for slot in list(self._slots):
-            self.job_manager.cancel_slot(slot)
+            self.job_runner.cancel_slot(slot)
 
     @staticmethod
     def _slot_key(tag: str) -> str:
@@ -103,9 +112,9 @@ class LiveOrderResults(QObject):
         tag = self._memo.begin(key, channel_meta.name)
         if tag is None:
             return
-        plan_scratch = self._memo.plan_scratch_for(
-            key.file_path, key.size, key.mtime_ns, getattr(tacho_meta, "index", None), config)
-        item = (tag, key, run, tacho_meta, channel_meta, config, plan_scratch)
+        item = (tag, key, LiveRequest(
+            run_index=run, channel_meta=channel_meta, block_kind=KIND_ORDER_CUT,
+            config=config, tacho_meta=tacho_meta))
         if self._batch is not None:
             self._batch[1].append(item)
         else:
@@ -114,21 +123,18 @@ class LiveOrderResults(QObject):
     def _submit(self, label: Optional[str], items: list) -> None:
         """One job for `items`; a lone channel keeps its own label and stays quiet."""
         tags = [item[0] for item in items]
+        session = getattr(self.app_context, "project_session", None)
         steps = []
-        for tag, key, run, tacho_meta, channel_meta, config, plan_scratch in items:
-            # The cache is keyed under the channel's own name; channel_meta.index
-            # (passed along inside) tells two same-named channels apart.
-            step_label = f"Order tracking — {channel_meta.name} ({os.path.basename(key.file_path)})"
+        for _tag, key, request in items:
+            finder = resolve_cache_finder(session, key.use_cache)
+            step_label = (f"Order tracking — {request.channel_meta.name} "
+                          f"({os.path.basename(key.file_path)})")
             steps.append(job_step(
-                step_label, lookup_or_compute_order_cuts,
-                self.app_context.project_session, run, tacho_meta,
-                channel_meta, channel_meta.name, config, key.use_cache,
-                plan_scratch=plan_scratch,
-            ))
+                step_label, run_live_compute, request, finder, self._tracking))
         slot = self._slot_key(tags[0])
         self._slots.add(slot)
         try:
-            self.job_manager.submit(
+            self.job_runner.submit(
                 label or steps[0][0],
                 steps=steps,
                 lane="interactive",
@@ -155,19 +161,21 @@ class LiveOrderResults(QObject):
         if any([self._memo.release(tag) for tag in tags]):
             self.channel_ready.emit()
 
-    def _on_finished(self, tag: str, payload) -> None:
-        order_blocks, result_set_label = payload
-        entry = self._memo.finish(tag, order_blocks)
+    def _on_finished(self, tag: str, result) -> None:
+        for line in result.notices:
+            self.app_context.log(line)
+        if isinstance(result, LiveFailure):
+            self._on_error(tag, result.message)
+            return
+        entry = self._memo.finish(tag, list(result.blocks))
         if entry is None:
             return
         _, channel_name = entry
-        if result_set_label is not None:
+        if result.from_cache:
             # The hit/miss verdict lands on the GUI thread here; the
             # single-dock path logs the same "no recompute" line.
-            self.app_context.log(
-                f"PROJECT: Live channel '{channel_name}' loaded from result set "
-                f"'{result_set_label}' -- FFT settings unchanged, no recompute needed."
-            )
+            self.app_context.log(build_cache_hit_line(
+                f"Live channel '{channel_name}'", result.result_set_label))
         self.channel_ready.emit()
 
     def _on_error(self, tag: str, message: str) -> None:

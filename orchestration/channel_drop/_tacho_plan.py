@@ -1,11 +1,12 @@
 """Pure planning for channel-drop tacho resolution."""
 
 from dataclasses import dataclass
-from typing import Iterable, Mapping
+from typing import Callable, Iterable, Mapping
 
 from core.channel_drop import read_drop_descriptor
 from core.models import ChannelMetadata, MeasurementRunIndex
 from selection.tacho import find_tacho_channel
+from session.data_pool import DeadLink
 
 
 @dataclass(frozen=True)
@@ -26,7 +27,7 @@ class TachoDropPlan:
 
 def plan_tacho_per_file(
     descriptors: Iterable[Mapping],
-    runs_by_path: Mapping[str, MeasurementRunIndex],
+    run_lookup: Callable[[str], MeasurementRunIndex | DeadLink],
     dock_tacho_path: str | None,
     *,
     against_time: bool,
@@ -34,7 +35,8 @@ def plan_tacho_per_file(
     """Prepare dropped channels and resolve each source file's tacho once.
 
     A dock tacho is already a resolved block, so its source file is never
-    looked up in ``runs_by_path``. In time mode no tacho lookup is performed.
+    looked up through ``run_lookup`` (``DataPool.run_lookup``);
+    a file it reports as a ``DeadLink`` is refused like one without a tacho. In time mode no tacho lookup is performed.
     The first descriptor from a file determines the order of refusal messages;
     later descriptors from the same refused file are skipped.
     """
@@ -56,7 +58,7 @@ def plan_tacho_per_file(
                 continue
             tacho_meta = tacho_meta_by_path.get(path)
             if tacho_meta is None:
-                tacho_meta = find_tacho_channel(runs_by_path.get(path))
+                tacho_meta = find_tacho_channel(_pooled_run(run_lookup, path))
                 if tacho_meta is None:
                     refused_paths.add(path)
                     refusals.append(TachoRefusal(descriptor["file_name"], path))
@@ -66,3 +68,8 @@ def plan_tacho_per_file(
         prepared.append((descriptor, channel_name, mock_run, mock_meta, tacho_meta))
 
     return TachoDropPlan(tuple(prepared), tuple(refusals))
+
+
+def _pooled_run(run_lookup, path):
+    run = run_lookup(path)
+    return None if isinstance(run, DeadLink) else run

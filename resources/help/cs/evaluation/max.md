@@ -4,7 +4,7 @@ Evaluation vytáhne z křivek fokusovaného grafu <b>Single values</b> -- jedno 
 
 <b>Max</b> je nejjednodušší vyhodnocení: nejvyšší platná hodnota každé viditelné křivky a její poloha, bez jakéhokoli nastavení. Vždy vrátí přesně jeden řádek na křivku -- nikdy žádný, nikdy víc než jeden.
 
-- <b>Amplituda (RMS vs. Peak):</b> Hodnoty se počítají v nativní [jednotce](topic:units/intro) kanálu. Přepínání mezi zobrazením RMS a Peak probíhá bez přepočtu vyhodnocení. <b>Peak = &radic;2 &times; RMS</b> představuje amplitudu sínusu se stejnou energií, nikoli skutečné maximum raw časového signálu. Hlavička sloupce Value vždy nese aktivní jednotku a režim.
+- <b>Amplituda (RMS vs. Peak):</b> Hodnoty se počítají v nativní [jednotce](topic:units/intro) kanálu. Přepínání mezi zobrazením RMS a Peak probíhá bez přepočtu vyhodnocení. <b>Peak = &radic;2 &times; RMS</b> představuje amplitudu sínusu se stejnou energií, nikoli skutečné maximum raw časového signálu. U spektra zůstávají biny 0 Hz a Nyquist v Peak beze změny, takže Max v Peak může ležet na jiné frekvenci než Max v RMS -- vždy je to nejvyšší bod Peak spektra. Hlavička sloupce Value vždy nese aktivní jednotku a režim.
 - <b>Formát (Linear / Power / PSD):</b> Pro spektrální křivky přepíná formát zobrazení pomocí sdílené tabulky škálování ([Formát amplitudy](topic:shared/amplitude_format)) bez přepočtu vyhodnocení. Vypnuto, pokud nejsou přítomna spektra.
 - <b>Jednotky:</b> Tabulka respektuje globální nastavení jednotek (např. g &harr; m/s²). Poloha maxima (at X) se při žádném přepnutí nemění.
 - <b>Třídění:</b> Kliknutím na záhlaví libovolného sloupce lze řadit. Čísla se řadí číselně; prázdné řádky „&mdash;" zůstávají vždy na konci při vzestupném i sestupném řazení.

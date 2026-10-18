@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from gui.dialogs.dialog_state import remember_dialog_geometry
-from session.data_pool import ACKNOWLEDGED_KEY, unacknowledged
+from session.data_pool import unacknowledged
 from view_models.data_pool import describe_schema_conflict
 from gui.appearance import APP_TOKENS
 
@@ -121,12 +121,11 @@ class SchemaConflictDialog(QDialog):
             schema[conflict.key] = definition
             excluded += 1
 
+        # Excluding a column changes the schema, a Work change of its own; having
+        # seen the conflict is only a View change.
         if excluded:
             self.app_context.pool.update_project_schema(schema)
 
-        seen = set(session.project.ui_state.get(ACKNOWLEDGED_KEY) or [])
-        seen.update(conflict.key for conflict in self.conflicts)
-        session.project.ui_state[ACKNOWLEDGED_KEY] = sorted(seen)
-        session.mark_dirty()
+        session.acknowledge_schema_conflicts(conflict.key for conflict in self.conflicts)
 
         self.accept()

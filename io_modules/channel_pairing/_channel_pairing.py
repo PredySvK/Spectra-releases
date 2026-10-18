@@ -61,8 +61,11 @@ def write_channel_pairing(path: str, pairs) -> None:
     sheet = workbook.active
     sheet.title = _SHEET
     sheet.append(_HEADER)
-    for left, right in pairs:
-        sheet.append((_cell_name(left), _cell_name(right)))
+    for row, (left, right) in enumerate(pairs, start=2):
+        for column, identity in enumerate((left, right), start=1):
+            # Typed as text: openpyxl would store a name starting with "=" as a formula.
+            cell = sheet.cell(row=row, column=column, value=_cell_name(identity))
+            cell.data_type = "s"
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     temp_path = path + ".tmp"
     try:

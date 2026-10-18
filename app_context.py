@@ -17,10 +17,9 @@ from PySide6.QtCore import QObject, QSettings, Signal
 from session.project import ProjectSession
 from io_modules.project_store import DirectoryIndex, prune_untitled_scan_cache
 from session.data_pool import DataPool, IntegrateResult
+from session.settings import SettingsStore
 from core.app_metadata import SETTINGS_ORGANIZATION, SETTINGS_ROOT, SETTINGS_SHARED
 from core.cursor_config import CursorConfig
-from core.theme import resolve_graph_theme, resolve_theme
-from core.graphic_configs import GRAPHIC_SYSTEM_DEFAULTS
 from core.units import UnitPreferences
 from core.dsp_configs import SpectrumConfig, SpectrogramConfig, OrderTrackingConfig, OverallLevelConfig
 from core.recent_projects import (
@@ -28,8 +27,56 @@ from core.recent_projects import (
 )
 
 
+# QSettings key (shared_settings) for how many curves "Load Result Sets…" reads
+# without asking first -- an application-wide tuning knob, not a per-window one.
+# 500 is a starting point to revisit once a real project's limits are known.
+_RESULT_CONTENT_CURVE_LIMIT_KEY = "result_content_curve_limit"
+_DEFAULT_RESULT_CONTENT_CURVE_LIMIT = 500
+
+
+class _QSettingsStorage:
+    """The Settings store's storage: the shared QSettings group."""
+
+    def __init__(self, settings: QSettings):
+        self._settings = settings
+
+    def read(self, key: str):
+        return self._settings.value(key)
+
+    def write(self, key: str, value) -> None:
+        self._settings.setValue(key, value)
+
+    def remove(self, key: str) -> None:
+        self._settings.remove(key)
+
+
+def build_settings_store() -> SettingsStore:
+    """A Settings store over the shared QSettings group, for main.py to read Theme before the window exists."""
+    return SettingsStore(_QSettingsStorage(QSettings(SETTINGS_ORGANIZATION, SETTINGS_SHARED)))
+
+
+def _setting(key: str) -> property:
+    return property(lambda self: self.settings_store.value(key),
+                    doc=f"The applied '{key}' setting; written only through settings_store.")
+
+
 class AppContext(QObject):
+    # Every Settings store change, as {key: new value}.
     settings_changed = Signal(dict)
+
+    use_result_cache_lookup = _setting("use_result_cache_lookup")
+    result_cache_compression = _setting("result_cache_compression")
+    perf_downsample_enabled = _setting("perf_downsample_enabled")
+    perf_auto_mode_active = _setting("perf_auto_mode_active")
+    perf_manual_factor = _setting("perf_manual_factor")
+    perf_render_screen_only = _setting("perf_render_screen_only")
+    global_unit_acceleration = _setting("global_unit_acceleration")
+    global_unit_pressure = _setting("global_unit_pressure")
+    global_unit_voltage = _setting("global_unit_voltage")
+    global_unit_speed = _setting("global_unit_speed")
+    highlight_other_opacity = _setting("highlight_other_opacity")
+    theme = _setting("theme")
+    graph_theme = _setting("graph_theme")
 
     def __init__(self):
         super().__init__()
@@ -42,6 +89,9 @@ class AppContext(QObject):
         # other application-wide preferences are conceptually distinct from
         # window geometry / layout state, even though both are QSettings today.
         self.shared_settings = QSettings(SETTINGS_ORGANIZATION, SETTINGS_SHARED)
+        # The Settings window's application values: read and written only here.
+        self.settings_store = SettingsStore(_QSettingsStorage(self.shared_settings))
+        self.settings_store.subscribe(self.settings_changed.emit)
 
         # There is always a project. Until the user saves one it is Untitled and
         # has no file, which is enough to browse data and tune an FFT against --
@@ -63,8 +113,6 @@ class AppContext(QObject):
         self.pool = DataPool(self.project_session)
 
         self.current_analysis_mode: str = "project"
-
-        self.read_shared_settings()
 
         # The ribbon writes its current DTO here whenever a control changes (see
         # each tab's _push_dsp_config); Workspace and the drop router read
@@ -95,37 +143,6 @@ class AppContext(QObject):
         # execute_channel_drop_processing).
         self.new_curve_config_from_trace: bool = False
 
-    def read_shared_settings(self) -> None:
-        """(Re)reads the Settings window values kept in shared_settings, defaults where absent."""
-        # Unit and performance preferences live in shared_settings rather than
-        # self.settings to keep them conceptually separate from window geometry
-        # and layout state.
-        self.global_unit_acceleration: str = str(self.shared_settings.value("global_unit_acceleration", "g"))
-        self.global_unit_pressure: str = str(self.shared_settings.value("global_unit_pressure", "Pa"))
-        self.global_unit_voltage: str = str(self.shared_settings.value("global_unit_voltage", "V"))
-        self.global_unit_speed: str = str(self.shared_settings.value("global_unit_speed", "rpm"))
-
-        self.theme = resolve_theme(self.shared_settings.value("theme")).value
-        self.graph_theme = resolve_graph_theme(self.shared_settings.value("graph_theme")).value
-
-        # How result-cache shards are stored: "" (none), "lzf" or "gzip".
-        # Off by default -- the fastest write, and h5py reads a compressed file
-        # transparently, so the setting only ever affects what is written next;
-        # existing result sets stay readable whatever it is set to.
-        compression = str(self.shared_settings.value("result_cache_compression", "") or "")
-        self.result_cache_compression: str = compression if compression in ("lzf", "gzip") else ""
-
-        # Global toggle for using cached results during spectrum/order lookup.
-        # True by default; stored in shared_settings so it applies application-wide.
-        self.use_result_cache_lookup: bool = bool(self.shared_settings.value(
-            "use_result_cache_lookup", True, type=bool
-        ))
-
-        for config_key, (default_value, data_type) in GRAPHIC_SYSTEM_DEFAULTS.items():
-            loaded_value = self.shared_settings.value(config_key, default_value, type=data_type)
-            setattr(self, config_key, loaded_value)
-        self.highlight_other_opacity: int = int(self.shared_settings.value("highlight_other_opacity", 25, type=int))
-
     def log(self, message: str):
         if self.logger_callback:
             self.logger_callback(message)
@@ -140,24 +157,6 @@ class AppContext(QObject):
             speed=self.global_unit_speed,
             x_axis_unit=self.project_session.x_axis_unit,
         )
-
-    def update_graph_settings(self, downsample_enabled: bool, auto_mode_active: bool, manual_factor: int,
-                              render_screen_only: bool):
-        self.perf_downsample_enabled = downsample_enabled
-        self.perf_auto_mode_active = auto_mode_active
-        self.perf_manual_factor = manual_factor
-        self.perf_render_screen_only = render_screen_only
-
-        self.shared_settings.setValue("perf_downsample_enabled", downsample_enabled)
-        self.shared_settings.setValue("perf_auto_mode_active", auto_mode_active)
-        self.shared_settings.setValue("perf_manual_factor", manual_factor)
-        self.shared_settings.setValue("perf_render_screen_only", render_screen_only)
-        self.settings_changed.emit({
-            "perf_downsample_enabled": downsample_enabled,
-            "perf_auto_mode_active": auto_mode_active,
-            "perf_manual_factor": manual_factor,
-            "perf_render_screen_only": render_screen_only,
-        })
 
     # ---- recent projects ----------------------------------------------
 
@@ -197,12 +196,6 @@ class AppContext(QObject):
         """Keeps a Tools tab switch (Cursor / Highlight / Pin) for every later start."""
         self.shared_settings.setValue(key, bool(value))
 
-    def set_highlight_other_opacity(self, percent: int) -> None:
-        """Keeps how visible the non-highlighted curves stay (0-100 %) for every later start."""
-        self.highlight_other_opacity = max(0, min(100, int(percent)))
-        self.shared_settings.setValue("highlight_other_opacity", self.highlight_other_opacity)
-        self.settings_changed.emit({"highlight_other_opacity": self.highlight_other_opacity})
-
     def _load_cursor_config(self) -> CursorConfig:
         """Cursor Box fields from shared settings; defaults if absent or unreadable."""
         try:
@@ -215,10 +208,22 @@ class AppContext(QObject):
         self.cursor_config = config
         self.shared_settings.setValue("cursor_config", json.dumps(config.to_dict()))
 
-    def update_unit_setting(self, attr_name: str, unit_value: str):
-        if hasattr(self, attr_name):
-            setattr(self, attr_name, unit_value)
-            self.shared_settings.setValue(attr_name, unit_value)
+    @property
+    def result_content_curve_limit(self) -> int:
+        """How many curves "Load Result Sets…" reads without asking first."""
+        return int(self.shared_settings.value(
+            _RESULT_CONTENT_CURVE_LIMIT_KEY, _DEFAULT_RESULT_CONTENT_CURVE_LIMIT))
+
+    def clear_stored_settings(self) -> None:
+        """Wipe both QSettings groups and return every setting to its default (Reset All Settings).
+
+        Everything in both groups is app state or user preference -- nothing
+        external -- so a full clear is the honest whitelist; the store's reset
+        then reports every setting, so nothing keeps showing a stale value.
+        """
+        self.settings.clear()
+        self.shared_settings.clear()
+        self.settings_store.reset()
 
     def initialize_session_directory(self):
         """

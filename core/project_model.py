@@ -39,7 +39,10 @@ from core.workflow_graph import Workflow
 # deliberate -- a Filter card's column configuration is now a project decision,
 # and a project saved with cards the user arranged must not be silently opened
 # and re-saved by an older build that drops the field.
-PROJECT_FORMAT_VERSION = 2
+# 3 (§1.170, ticket #654): `open_tabs` and `filter_profiles` leave `ui_state`,
+# which is renamed `view_state`. Not migrated: a format-2 project opens without
+# its tabs and custom Filter cards.
+PROJECT_FORMAT_VERSION = 3
 OLDEST_READABLE_PROJECT_FORMAT_VERSION = 1
 # On an incompatible format change, raise both limits together.
 
@@ -357,12 +360,11 @@ class FilterProfile:
     which dock's tab bar shows its tab -- see ARCHITECTURE_DECISIONS §1.37 for
     why that is not a return of the pre-T1 `dock_id` field.
 
-    Not wired into NVHProject's own to_dict/from_dict -- it is small, purely
-    UI-side state (like the rest of `ui_state`), so it round-trips through
-    `gui.filter_panel.filter_panel.FilterPanel.serialize_profile_identities`/
-    `restore_profile_identities` into `ui_state["compare_filters"]["profiles"]`
-    instead (T5) -- selections live under separate keys, see that module's
-    docstring.
+    Stored as identity dicts in `NVHProject.filter_profiles` (a Work field,
+    ADR §1.170), round-tripped through
+    `session.trace_filter.FilterProfileRegistry.serialize_profile_identities`/
+    `restore_profile_identities` -- selections live elsewhere, see that
+    module's docstring.
     """
     id: str = field(default_factory=lambda: _new_id("filter"))
     name: str = "Filter"
@@ -396,7 +398,7 @@ class NVHProject:
 
     # Named queries saying what a batch runs over. A project
     # decision like a metadata edit, not cosmetics, so it is a typed field
-    # rather than another key in ui_state -- a selection that quietly vanished
+    # rather than another key in view_state -- a selection that quietly vanished
     # would take a saved recipe's meaning with it.
     selections: List[MeasurementSelection] = field(default_factory=list)
 
@@ -404,12 +406,12 @@ class NVHProject:
     # nodes the user built once and can re-run on new data. A project decision,
     # like `selections` above and for the same reason -- a workflow that quietly
     # vanished would take a campaign's whole analysis definition with it -- so it
-    # is a typed field, not a key in ui_state.
+    # is a typed field, not a key in view_state.
     workflows: List[Workflow] = field(default_factory=list)
 
     # Per-card Filter card column configuration: which columns a
     # card shows, in what order, drawn as which widget. A typed field beside
-    # `selections` and `workflows`, not another key in `ui_state`, and for the
+    # `selections` and `workflows`, not another key in `view_state`, and for the
     # same reason -- the user invests order, widgets and defaults into it, so
     # losing it is losing a decision, not cosmetics. Keyed to a FilterProfile
     # by id. Per-dock checked *values* stay in TabSpec; this is the card's
@@ -427,9 +429,21 @@ class NVHProject:
     # cache, which is derived and may be deleted at any time.
     metadata_schema: Dict[str, Any] = field(default_factory=dict)
 
-    # Window layout, open tabs, last selected channel. Cosmetic: a project that
-    # loses this is still fully usable, so nothing here is validated.
-    ui_state: Dict[str, Any] = field(default_factory=dict)
+    # The recipe of every open graph, one `session.open_tabs.TabSpec` dict each,
+    # in tab order. Work, not view state: losing it costs the
+    # user re-finding every graph. Raw dicts here because the shape belongs to
+    # session/; `build_restore_plan` validates it on open.
+    open_tabs: List[Dict[str, Any]] = field(default_factory=list)
+
+    # The user-added Filter cards' identities (id, name, scope, owner dock),
+    # beside their configuration in `filter_cards` and for the same reason
+    #: a card list that vanished would orphan its configuration.
+    filter_profiles: List[Dict[str, Any]] = field(default_factory=list)
+
+    # How the data is being looked at: X axis unit, checked Global filter
+    # values, acknowledged schema conflicts. The one part of the project that may
+    # be lost (a View change, ADR §1.170) -- nothing here is validated.
+    view_state: Dict[str, Any] = field(default_factory=dict)
 
     # ---- lookup -------------------------------------------------------
 
@@ -617,7 +631,9 @@ class NVHProject:
             "workflows": [w.to_dict() for w in self.workflows],
             "filter_cards": [c.to_dict() for c in self.filter_cards],
             "metadata_schema": dict(self.metadata_schema),
-            "ui_state": dict(self.ui_state),
+            "open_tabs": [dict(spec) for spec in self.open_tabs],
+            "filter_profiles": [dict(profile) for profile in self.filter_profiles],
+            "view_state": dict(self.view_state),
         }
 
     @classmethod
@@ -634,7 +650,9 @@ class NVHProject:
             workflows=[Workflow.from_dict(d) for d in data.get("workflows") or []],
             filter_cards=[FilterCardConfig.from_dict(d) for d in data.get("filter_cards") or []],
             metadata_schema=dict(data.get("metadata_schema") or {}),
-            ui_state=dict(data.get("ui_state") or {}),
+            open_tabs=[dict(spec) for spec in data.get("open_tabs") or []],
+            filter_profiles=[dict(profile) for profile in data.get("filter_profiles") or []],
+            view_state=dict(data.get("view_state") or {}),
         )
 
 

@@ -179,3 +179,6 @@ class SpectrogramModel:
     title: str = ""
     block: Optional[Any] = None
     data_block: Optional[Any] = None
+    # The recipe the waterfall was computed and shown with -- what a saved tab
+    # recomputes it with, as ``Trace.compute_spec`` is for a curve.
+    compute_spec: Optional[Dict[str, Any]] = None

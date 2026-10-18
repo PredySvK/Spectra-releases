@@ -440,9 +440,11 @@ class EvaluationPanel(QWidget):
             self._recompute()
 
     def _mark_session_dirty(self) -> None:
+        # A graph's evaluation config is part of its recipe: a Work change,
+        # like opening the tab.
         session = getattr(self.app_context, "project_session", None)
-        if session is not None and getattr(session, "has_file", False):
-            session.mark_dirty()
+        if session is not None:
+            session.mark_work_changed()
 
     def _replace_evaluation_config(self, **overrides: Any) -> Optional[EvaluationConfig]:
         """Applies `overrides` on top of the focused dock's current
@@ -685,7 +687,8 @@ class EvaluationPanel(QWidget):
         self._render_table_view(table)
 
     def _render_table_view(self, table: EvaluationTable) -> None:
-        if not table.rows:
+        amp_mode = self.combo_amplitude.currentData() or "rms"
+        if not table.rows_in(amp_mode):
             if self._evaluation_name == "typed_orders":
                 self._show_message("No orders specified or found.")
             elif self._evaluation_name == "dominant_orders":
@@ -698,7 +701,6 @@ class EvaluationPanel(QWidget):
         self.combo_format.setEnabled(has_spectra(table))
         self.lbl_format.setEnabled(has_spectra(table))
 
-        amp_mode = self.combo_amplitude.currentData() or "rms"
         spec_format = self.combo_format.currentData() or "linear"
         prefs: Optional[UnitPreferences] = None
         if hasattr(self.app_context, "unit_preferences"):
@@ -720,9 +722,8 @@ class EvaluationPanel(QWidget):
         self.table.setSortingEnabled(False)
         self.table.setColumnCount(len(headers))
         self.table.setHorizontalHeaderLabels(headers)
-        self.table.setRowCount(len(table.rows))
-
         rows = rows_for_table(table, spec_format, amp_mode, prefs, active_meta_cols, schema)
+        self.table.setRowCount(len(rows))
         for row_index, row_cells in enumerate(rows):
             for col_index, (text, s_key) in enumerate(zip(row_cells.texts, row_cells.sort_keys)):
                 item = EvaluationTableItem(text, sort_key=s_key, is_dash=row_cells.is_dash)

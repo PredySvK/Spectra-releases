@@ -17,7 +17,7 @@ once the last tab is gone. Canonical left-to-right order is fixed here so a
 tab that was toggled off and back on lands where it was.
 
 Deliberately thin: it owns the QTabWidget and nothing else. The inner widgets
-are built by the window (which wires the log callback and the job manager)
+are built by the window (which wires the log callback and the job runner)
 and handed in here.
 
 All internal documentation strings and variable labels are standardly written

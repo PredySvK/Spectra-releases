@@ -54,6 +54,33 @@ def cut_frames(time_data: np.ndarray, fft_size: int, hop_size: int,
         yield frame_samples * window
 
 
+def _trigger_frame_extent(trigger_indices: np.ndarray, fft_size: int) -> Tuple[np.ndarray, int]:
+    """First sample of every trigger's frame (may lie outside the record) and the frame span."""
+    half_fft = fft_size // 2
+    starts = np.rint(np.asarray(trigger_indices, dtype=np.float64)).astype(np.int64) - half_fft
+    # A block spans centre +/- fft_size//2, which is one sample short of
+    # fft_size when fft_size is odd -- the trailing column then stays zero, and
+    # the energy correction has to account for that rather than assume a block
+    # fills the window.
+    return starts, 2 * half_fft
+
+
+def resolve_invalid_tracking_steps(invalid: np.ndarray, trigger_indices: np.ndarray,
+                                   fft_size: int) -> np.ndarray:
+    """
+    Which tracking steps `cut_trigger_blocks` would cut a frame for over at
+    least one `invalid` sample (a boolean mask over the record) -- the steps an
+    invalid (NaN) sample leaves empty (#673). Same extent as the cut, so the
+    two cannot disagree about which frame a sample falls in.
+    """
+    invalid = np.asarray(invalid, dtype=bool)
+    starts, span = _trigger_frame_extent(trigger_indices, fft_size)
+    seen = np.concatenate(([0], np.cumsum(invalid, dtype=np.int64)))
+    lo = np.clip(starts, 0, invalid.size)
+    hi = np.clip(starts + span, 0, invalid.size)
+    return seen[hi] > seen[lo]
+
+
 def cut_trigger_blocks(time_data: np.ndarray, trigger_indices: np.ndarray,
                         window: np.ndarray) -> Tuple[Callable[[int, int], np.ndarray], np.ndarray]:
     """
@@ -86,7 +113,6 @@ def cut_trigger_blocks(time_data: np.ndarray, trigger_indices: np.ndarray,
     halfway and the correction never exceeds sqrt(2) in amplitude.
     """
     fft_size = len(window)
-    half_fft = fft_size // 2
     n_triggers = len(trigger_indices)
     n_samples = len(time_data)
 
@@ -99,12 +125,7 @@ def cut_trigger_blocks(time_data: np.ndarray, trigger_indices: np.ndarray,
     covered_w2 = np.zeros(n_triggers, dtype=np.float64)
     sum_w2 = np.sum(window ** 2)
 
-    starts = np.rint(np.asarray(trigger_indices, dtype=np.float64)).astype(np.int64) - half_fft
-    # A block spans centre +/- fft_size//2, which is one sample short of
-    # fft_size when fft_size is odd -- the trailing column then stays zero, and
-    # the energy correction has to account for that rather than assume a block
-    # fills the window.
-    span = 2 * half_fft
+    starts, span = _trigger_frame_extent(trigger_indices, fft_size)
 
     # Whole blocks are cut in one gather per batch rather than one Python
     # iteration each. sliding_window_view is a view, so this costs exactly one

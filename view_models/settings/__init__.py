@@ -6,7 +6,7 @@ page and the draft: edits stay unapplied until Apply returns the changed values,
 Revert returns to the last applied ones.
 
 What does NOT belong here: the window and its widgets (gui/settings), writing the
-values to AppContext/QSettings (gui/handlers/window_settings.py).
+values (session/settings), what a change sets off (gui/handlers/window_settings.py).
 """
 
 from ._draft import SettingsDraft

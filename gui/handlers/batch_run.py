@@ -265,7 +265,7 @@ class BatchRunHandler:
         context = self.app_context
         session = context.project_session
 
-        loaded_runs = list(getattr(context.pool, "loaded_runs", []))
+        loaded_runs = list(context.pool.loaded_runs)
         channel_types = save_section.get_save_channel_types()
         all_channels_mode = save_section.is_save_mode_all_channels()
         picked_identities = save_section.selected_channel_identities()
@@ -326,7 +326,7 @@ class BatchRunHandler:
         from gui.dialogs.compute_result_set_dialog import ComputeResultSetDialog
 
         context = self.app_context
-        loaded_runs = list(getattr(context.pool, "loaded_runs", []))
+        loaded_runs = list(context.pool.loaded_runs)
 
         dialog = ComputeResultSetDialog(
             settings_prefix=section._settings_prefix, app_context=context,

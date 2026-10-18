@@ -53,9 +53,9 @@ CELL_PADDING = 24   # px, room for the cell margins and header sort arrow
 class JobsDockWidget(QWidget):
     """Every job the runner remembers, newest on top."""
 
-    def __init__(self, job_manager, parent=None):
+    def __init__(self, job_runner, parent=None):
         super().__init__(parent)
-        self.job_manager = job_manager
+        self.job_runner = job_runner
         self._rows = {}      # job_id -> row index
 
         layout = QVBoxLayout(self)
@@ -95,16 +95,16 @@ class JobsDockWidget(QWidget):
         layout.addLayout(buttons)
 
         self.btn_cancel.clicked.connect(self._cancel_selected)
-        self.btn_cancel_all.clicked.connect(job_manager.cancel_all)
+        self.btn_cancel_all.clicked.connect(job_runner.cancel_all)
         self.btn_clear.clicked.connect(self._clear_history)
 
-        job_manager.job_added.connect(self._on_job_added)
-        job_manager.job_changed.connect(self._on_job_changed)
+        job_runner.job_added.connect(self._on_job_added)
+        job_runner.job_changed.connect(self._on_job_changed)
 
         # A dock created after jobs have already run (restored layout, or a
         # dock the user opens for the first time mid-session) starts from
         # whatever the manager remembers rather than from empty.
-        for record in job_manager.all_records():
+        for record in job_runner.all_records():
             self._on_job_added(record.job_id)
 
     # ---- table maintenance --------------------------------------------
@@ -129,7 +129,7 @@ class JobsDockWidget(QWidget):
 
     def _on_job_changed(self, job_id: int):
         row = self._rows.get(job_id)
-        record = self.job_manager.record(job_id)
+        record = self.job_runner.record(job_id)
         if row is None or record is None:
             return
 
@@ -157,7 +157,7 @@ class JobsDockWidget(QWidget):
 
     def _drop_trimmed_rows(self):
         """Keeps the table in step with the manager's bounded history."""
-        known = {record.job_id for record in self.job_manager.all_records()}
+        known = {record.job_id for record in self.job_runner.all_records()}
         for job_id in [j for j in self._rows if j not in known]:
             row = self._rows.pop(job_id)
             self.table.removeRow(row)
@@ -168,7 +168,7 @@ class JobsDockWidget(QWidget):
     # ---- actions -------------------------------------------------------
 
     def _clear_history(self):
-        self.job_manager.clear_history()
+        self.job_runner.clear_history()
         self._drop_trimmed_rows()
 
     def _cancel_selected(self):
@@ -178,4 +178,4 @@ class JobsDockWidget(QWidget):
         item = self.table.item(row, 0)
         job_id = item.data(Qt.UserRole) if item is not None else None
         if job_id is not None:
-            self.job_manager.cancel(int(job_id))
+            self.job_runner.cancel(int(job_id))

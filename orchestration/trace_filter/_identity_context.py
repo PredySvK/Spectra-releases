@@ -31,7 +31,7 @@ def build_identity_context(session: Optional[Any]) -> IdentityContext:
         return IdentityContext()
     project = session.project
     return IdentityContext(
-        sources_by_path=session.sources_by_path(),
+        sources_by_path=session.source_location.entries_by_path,
         result_set_labels={ref.id: ref.label for ref in project.result_sets},
         schema=project.metadata_schema,
     )

@@ -22,16 +22,17 @@ def read_two_channels(run_index, vib_meta, tacho_meta):
     return vib_block, tacho_block
 
 
-def read_spectrogram_channels(run_index, channel_meta, tacho_candidates):
+def read_spectrogram_channels(run_index, channel_meta, tacho_candidates, *, vib_block=None):
     """
-    Reads the vibration channel and, if the caller supplied auto-link
-    candidates (RPM tracking requested with no tacho bound yet), the first
-    "tacho"-typed one of them that actually reads -- mirrors the original
-    inline try-each-candidate loop this replaces.
+    Reads the vibration channel (unless `vib_block` is it, already read) and,
+    if the caller supplied auto-link candidates (RPM tracking requested with
+    no tacho bound yet), the first "tacho"-typed one of them that actually
+    reads -- mirrors the original inline try-each-candidate loop this replaces.
 
     Returns (vib_block, tacho_block_or_None, tacho_meta_used_or_None).
     """
-    vib_block = DataAccessor.fetch_channel_data(run_index, channel_meta)
+    if vib_block is None:
+        vib_block = DataAccessor.fetch_channel_data(run_index, channel_meta)
 
     tacho_block = None
     tacho_meta_used = None

@@ -341,7 +341,7 @@ def channel_identities_by_type(runs: Iterable[MeasurementRunIndex],
     the given channel types (None: any type a channel has at all), grouped as
     base_name -> sorted directions.
 
-    `entries_by_path` is ProjectSession.sources_by_path(): a channel is judged
+    `entries_by_path` is SourceLocation.entries_by_path: a channel is judged
     by `resolve_run_channel_type`, so what is offered here is what the plan's
     typed SaveSpec goes on to keep.
     """

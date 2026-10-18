@@ -4,6 +4,13 @@ What changed in Spectra, written for users. Rules for writing it: [docs/agents/r
 
 ## Unreleased
 
+## 0.2.1 - 2026-10-18
+
+- Simcenter Testlab `.ldsf` data format as input is supported.
+- The project keeps its computed graph tabs on Save and when Spectra closes, so reopening it shows them without recomputing.
+- Minor bug fixes.
+
+
 ## 0.2.0 - 2026-10-14
 
 - Workflow tab is now a block canvas: drag, wire and arrange blocks, undo / redo, and run all chains or one with Run Chain.

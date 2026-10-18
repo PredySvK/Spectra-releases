@@ -44,6 +44,13 @@ def read_benchmark_plan(path: str) -> BenchmarkPlan:
     return BenchmarkPlan(**raw)
 
 
+def _toml_value(value: Any) -> str:
+    # JSON literals are valid TOML here, except that the default ASCII escaping
+    # writes a character outside the basic plane as a surrogate pair, which
+    # TOML rejects (#685). The file is UTF-8, so characters go in as they are.
+    return json.dumps(value, ensure_ascii=False)
+
+
 
 def write_benchmark_plan(plan: BenchmarkPlan, path: str) -> None:
     """Write `plan` as TOML that `read_benchmark_plan` reads back."""
@@ -52,8 +59,8 @@ def write_benchmark_plan(plan: BenchmarkPlan, path: str) -> None:
         value = getattr(plan, item.name)
         if isinstance(value, dict):
             if value:
-                tables.append(f"[{item.name}]\n" + "".join(f"{k} = {json.dumps(v)}\n" for k, v in value.items()))
+                tables.append(f"[{item.name}]\n" + "".join(f"{k} = {_toml_value(v)}\n" for k, v in value.items()))
         else:
-            scalars.append(f"{item.name} = {json.dumps(value)}\n")  # JSON literals are valid TOML here
+            scalars.append(f"{item.name} = {_toml_value(value)}\n")
     with open(path, "w", encoding="utf-8") as handle:
         handle.write("".join(scalars) + "\n" + "\n".join(tables))

@@ -37,7 +37,7 @@ Křivka bez platného vzorku (řád pod frekvenčním rozlišením nebo nad Nyqu
 ## Lišta nástrojů
 
 - **Evaluation:** výběr výše. Jeho parametry se zobrazí vedle.
-- **Amplitude (RMS / Peak):** ([Formát amplitudy](topic:shared/amplitude_format)) Peak = &radic;2 &times; RMS. Jde jen o zobrazení; nic se nepřepočítává a poloha se nemění.
+- **Amplitude (RMS / Peak):** ([Formát amplitudy](topic:shared/amplitude_format)) Peak = &radic;2 &times; RMS. Jde jen o zobrazení; nic se nepřepočítává. U spektra se maximum posunout může: bin 0 Hz a Nyquist se &radic;2 nenásobí, takže je v Peak může předběhnout vnitřní bin. Tabulka vždy ukazuje maxima toho režimu, který vidíte.
 - **Format (Linear / Power / PSD):** jak se zobrazí řádky se spektry; aktivní jen, obsahuje-li tabulka spektra. Order cuts a Overall Level tuto volbu nemají.
 - **Units:** řídí se globálním nastavením jednotek ([Jednotky](topic:units/intro)); tabulka se při změně aktualizuje.
 - **Copy** nebo Ctrl+C zkopíruje vybrané řádky, nebo celou tabulku, když nic vybráno není, odděleně tabulátory a s hlavičkami pro Excel. Totéž nabízí nabídka na pravé tlačítko.

@@ -17,11 +17,9 @@ All internal documentation strings and variable labels are standardly written
 in English.
 """
 
-import traceback
-
 from PySide6.QtCore import QObject, QRunnable, Signal
 
-from core.jobs import JobCancelled
+from orchestration.jobs import StepOutcomeKind, run_job_step
 
 
 class JobStepSignals(QObject):
@@ -62,36 +60,28 @@ class JobStepRunner(QRunnable):
         self.signals = JobStepSignals()
 
     def run(self):
-        if self.cancel_token.is_cancelled:
-            self.signals.cancelled.emit(self.job_id, self.step_index)
-            return
-
-        self.signals.started.emit(self.job_id, self.step_index)
-
-        kwargs = dict(self.kwargs)
-        if self.token_keyword:
-            kwargs[self.token_keyword] = self.cancel_token
-        if self.progress_keyword:
+        outcome = run_job_step(
+            self.step_label, self.fn, self.args, self.kwargs, self.cancel_token,
+            token_keyword=self.token_keyword,
+            progress_keyword=self.progress_keyword,
             # Fired from the worker thread; the connection lands queued on the
             # GUI thread like every other signal here.
-            kwargs[self.progress_keyword] = lambda done, total: self.signals.progress.emit(
+            report_progress=lambda done, total: self.signals.progress.emit(
                 self.job_id, self.step_index, done, total
-            )
+            ),
+            on_start=lambda: self.signals.started.emit(
+                self.job_id, self.step_index),
+        )
 
-        try:
-            payload = self.fn(*self.args, **kwargs)
-        except JobCancelled:
-            # The step noticed the token mid-flight and unwound. Not a failure:
-            # nothing went wrong, the user asked for it to stop.
+        if outcome.kind is StepOutcomeKind.CANCELLED:
             self.signals.cancelled.emit(self.job_id, self.step_index)
-        except Exception as error:
-            self.signals.failed.emit(
-                self.job_id, self.step_index,
-                f"{self.step_label or 'step'}: {error}\n{traceback.format_exc()}",
-            )
+        elif outcome.kind is StepOutcomeKind.FAILED:
+            self.signals.failed.emit(self.job_id, self.step_index,
+                                     outcome.message)
         else:
             try:
-                self.signals.finished.emit(self.job_id, self.step_index, payload)
+                self.signals.finished.emit(self.job_id, self.step_index,
+                                           outcome.payload)
             except RuntimeError as error:
                 # If the window or application was torn down while this worker
                 # step was finishing, emitting to a deleted Qt object raises

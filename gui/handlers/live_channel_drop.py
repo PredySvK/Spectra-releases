@@ -52,10 +52,8 @@ def _append_live_curves(dock, blocks, *, file_path, file_name, channel_index, ch
         for block in blocks:
             order_value = float(block.provenance.params[PARAM_ORDER])
             _append_curve_to_dock(dock, {
-                "x": block.primary_axis.values, "y": block.values,
                 "label": f"[live] {file_name} · {channel_name} · Order {order_value:g}",
-                "unit": block.value_unit, "meta": meta,
-                "x_quantity": "rpm", "compute_spec": {PARAM_ORDER: order_value},
+                "meta": meta, "block": block,
             })
 
 
@@ -141,10 +139,9 @@ class LiveChannelDropHandler:
 
         config, _ = self._resolve_drop_config(dock)
         use_cache = getattr(context, "use_result_cache_lookup", True)
-        pool_runs = getattr(getattr(context, "pool", None), "loaded_runs", []) or []
         decision = plan_result_content_drop(
             desc,
-            {run.file_path: run for run in pool_runs},
+            context.pool.run_lookup,
             drops.claimed,
             config,
             file_stamp(file_path),

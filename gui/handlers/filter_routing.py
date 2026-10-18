@@ -56,14 +56,6 @@ from gui.workspace.graph_dock import GraphDock
 from view_models.trace_filter import identity_for_trace
 from selection.source_facets import all_pool_sources
 
-# Key the Filter panel's profile list + Global content is saved under in the
-# project's ui_state -- restored once when a project is opened (see
-# FilterRoutingHandler.restore_filter_state), never during an ordinary refresh,
-# which would otherwise keep overwriting whatever the user has picked live this
-# session.
-FILTER_STATE_KEY = "compare_filters"
-
-
 def _identities_for(traces, session) -> list:
     """Every one of `traces` resolved to its own `TraceIdentity`, once, via
     `build_identity_context` (ticket #166)."""
@@ -166,8 +158,8 @@ class FilterRoutingHandler:
     def restore_filter_state(self) -> None:
         """
         Makes the Filter panel show the current project's saved state: first
-        back to clean builtins, then the profile list + Global content saved in
-        the project's ui_state, if any (T5). The reset comes first so a project
+        back to clean builtins, then the saved card list and Global content,
+        if any (T5). The reset comes first so a project
         that never saved a filter state does not inherit the previous project's
         cards, picks or switches (issue #372). Call exactly once per project
         switch, right after the session holds the new project
@@ -188,12 +180,12 @@ class FilterRoutingHandler:
         panel.reset_to_builtins()
 
         session = self.app_context.project_session
-        saved = session.project.ui_state.get(FILTER_STATE_KEY)
+        panel.restore_profile_identities(session.filter_profiles)
+        saved = session.filter_state
         if not saved:
             return
         state = read_filter_state_snapshot(saved)
 
-        panel.restore_profile_identities(state.profiles)
         panel.selection_store.import_global_selections(state.global_selections)
         panel.set_active_profile_id_from_restore(state.active_profile_id)
 
@@ -210,30 +202,20 @@ class FilterRoutingHandler:
         # checkbox for the whole panel, restored without emitting.
         panel.set_show_all(state.show_all)
 
-    def _persist_filter_state(self, *, mark_dirty: bool = True) -> None:
+    def _persist_filter_state(self, *, is_change: bool = True) -> None:
+        """Hands the panel's card list (Work) and its switches, Global values
+        and active card (View) to the session, which decides what is unsaved
+       . An unchanged state is no change at all."""
         panel = self.filter_panel
         session = self.app_context.project_session
 
-        snapshot = build_filter_state_snapshot(
+        session.set_filter_profiles(panel.serialize_profile_identities())
+        session.set_filter_state(build_filter_state_snapshot(
             filter_data_pool=panel.filters_data_pool(),
             show_all=panel.showing_all(),
-            profiles=panel.serialize_profile_identities(),
             global_selections=panel.selection_store.export_global_selections(),
             active_profile_id=panel.active_profile_id(),
-        )
-
-        if session.project.ui_state.get(FILTER_STATE_KEY) == snapshot:
-            return  # nothing actually changed -- do not spuriously mark the project dirty
-        session.project.ui_state[FILTER_STATE_KEY] = snapshot
-
-        # ui_state is cosmetic (core.project_model.NVHProject.ui_state) and worth
-        # saving only alongside a project that has a file. On an Untitled one,
-        # mark_dirty() has no has_file guard, so ticking the Data Pool filter
-        # checkbox alone turned "open the app, look at a folder, leave" into an
-        # unsaved-changes prompt -- exactly what ProjectSession promises it will
-        # not do.
-        if mark_dirty and session.has_file:
-            session.mark_dirty()
+        ), is_change=is_change)
 
     # =========================================================================
     # WORKSPACE STATE
@@ -406,33 +388,30 @@ class FilterRoutingHandler:
 
     def profiles_changed(self) -> None:
         """Wired to FilterPanel.profiles_changed (issue #400) -- a rename,
-        delete, scope flip or "+". Writes the card list and the active card
-        into the project's ui_state so the edit survives a reopen, and marks a
-        titled project dirty (both inside _persist_filter_state, which is a
-        no-op when the snapshot did not actually change). Any redraw the edit
-        needs already came through active_profile_focus_changed."""
+        delete, scope flip or "+". Hands the card list to the session, where
+        it is a Work change so the edit survives a reopen. Any
+        redraw the edit needs already came through active_profile_focus_changed."""
         self._persist_filter_state()
 
     def active_profile_chosen(self) -> None:
         """Wired to FilterPanel.active_profile_chosen -- a tab click. The
-        chosen card is written into ui_state so the next save keeps it, but
-        switching tabs is a view choice, not an edit: the project is not
-        marked dirty."""
-        self._persist_filter_state(mark_dirty=False)
+        chosen card is stored so the next save keeps it, but switching tabs is
+        a view choice, not an edit: the project is not marked unsaved."""
+        self._persist_filter_state(is_change=False)
 
     def profile_duplicated(self, source_profile_id: str, new_profile_id: str) -> None:
         """Wired to FilterPanel.profile_duplicated (ticket #47). The panel has
         already cloned the checked state onto the new profile; this carries the
         other half -- the stored column configuration -- across as a fresh
         FilterCardConfig sharing the new profile's id, and persists the new
-        profile into the project's ui_state so it survives a reopen.
+        profile into the project so it survives a reopen.
 
         A never-configured source has no stored card: the copy re-derives the same
         default from its scope and dock, so there is nothing to write."""
         session = self.app_context.project_session
         stored = session.project.filter_card_by_id(source_profile_id)
         if stored is not None:
-            session.project.put_filter_card(duplicate_card(stored, new_id=new_profile_id))
+            session.put_filter_card(duplicate_card(stored, new_id=new_profile_id))
         self._persist_filter_state()
 
     def selection_changed(self) -> None:
@@ -442,20 +421,19 @@ class FilterRoutingHandler:
         dock_focus_changed catches up any other open dock once it regains
         focus.
 
-        Checking a value is an unsaved change now (ARCHITECTURE_DECISIONS §1.32
-        supersedes §1.27's "the selection is cosmetic"). _persist_filter_state
-        writes the Global selection through; the mark_dirty below also covers a
-        Local tick, whose content never reaches that snapshot. Safe against a
-        refresh masquerading as an edit: populate_facets sets every checkbox
-        before wiring its signal, so a rebuild never emits selection_changed.
+        Checking a value is a View change: unsaved once the
+        project has a file, never a prompt on an Untitled one.
+        _persist_filter_state writes the Global selection through; the
+        mark_view_changed below also covers a Local tick, whose content never
+        reaches that snapshot. Safe against a refresh masquerading as an edit:
+        populate_facets sets every checkbox before wiring its signal, so a
+        rebuild never emits selection_changed.
         """
         dock = self._focused_dock()
         if dock is not None:
             self.apply_active_filter_to_dock(dock)
         self._persist_filter_state()
-        session = self.app_context.project_session
-        if session.has_file:
-            session.mark_dirty()
+        self.app_context.project_session.mark_view_changed()
 
     def toggle_data_pool_filter(self, enabled: bool) -> None:
         """Switches the Data Pool tree's own filter on or off (DataPoolPanel

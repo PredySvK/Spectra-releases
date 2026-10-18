@@ -1,11 +1,12 @@
 # Supported formats
 
-A file is picked up by its suffix: `.unv`, `.uff`, `.asc`, `.xlsx`, `.txt`, `.csv` (case does not matter). `.xlsx`, `.txt` and `.csv` are too common to trust, so they count as measurements only when their header is recognised. [`metadata.xlsx`](topic:import/metadata), a README or your notes are ignored.
+A file is picked up by its suffix: `.unv`, `.uff`, `.asc`, `.ldsf`, `.xlsx`, `.txt`, `.csv` (case does not matter). `.xlsx`, `.txt` and `.csv` are too common to trust, so they count as measurements only when their header is recognised. [`metadata.xlsx`](topic:import/metadata), a README or your notes are ignored.
 
 | Suffix | Format | What it holds | Kind |
 |---|---|---|---|
 | `.unv`, `.uff` | Universal File Format, dataset 58 | [time waveforms](topic:raw_data/intro) | measured |
 | `.asc` | Siemens Testlab ASCII | [time waveforms](topic:raw_data/intro) | measured |
+| `.ldsf` | Simcenter Testlab recording | [time waveforms](topic:raw_data/intro) | measured |
 | `.txt` | tab-separated processed measurement | [order curves](topic:order_tracking/intro) against speed | measured |
 | `.xlsx` | MASTA result workbook | [order curves](topic:order_tracking/intro) against speed | simulated (paired via [Channel pairing](topic:import/channel_pairing)) |
 | `.csv` | ANSYS harmonic response | a first [order curve](topic:order_tracking/intro) against speed | simulated (paired via [Channel pairing](topic:import/channel_pairing)) |
@@ -40,6 +41,19 @@ A header block between `BEGIN` and `END` lines, then one row per sample with val
 
 The first column is a time vector when its name is `time`, `elap_time`, `time1`, `sec` or `s`, or its unit is `s` or `sec`; it is then not a channel. Otherwise time is built from `START` and `DELTA`. The number of samples is the number of non-empty data rows. A row whose column count differs from the header is an error.
 
+## .ldsf
+
+A raw time recording saved by Simcenter Testlab, read without Testlab. One stream of channels sharing one sampling rate.
+
+| Field | Read from |
+|---|---|
+| Channel name | the channel's name in Testlab, without the `Time for ` that a UNV export puts in front |
+| Unit | the channel's unit |
+| Sampling rate, number of points | the file's header and index |
+| Time start | always 0 s |
+
+Only what has been checked against Testlab's own UNV export is read: format version 13 with samples stored as 32-bit floats in engineering units. Any other file (another version, a different sample type or more than one stream) is skipped and does not appear in the Data Pool. Node and direction are not read yet.
+
 ## .txt (processed measurement)
 
 First line: `(rev/s)`, then one `name (unit)` cell per channel, separated by tabs. Every following line is a speed in rev/s and one value per channel. Speed is converted to rpm (× 60). A `_H<n>` ending of the file name (for example `Run_H3.txt`) sets the [order](topic:order_tracking/orders) of the curves.
@@ -56,6 +70,8 @@ Every sheet named `H<n>` (for example `H1`, `H4.79`, `H22`) is read; other sheet
 | 4 | `Speed (rev/min)` and `Amplitude (<unit>)` |
 | 5… | rpm and amplitude (numbers or text, decimal comma accepted) |
 
+A row of a channel that is not two numbers (text, half of the pair missing, a blank row with numbers below it) is left out of that channel, and the file is marked ◐ in the Data Pool. A channel may end sooner than the others; the blank cells below its end are not missing data.
+
 Design, scenario, damping and the remaining comma-separated parts of row 2 become [raw metadata](topic:import/metadata) (*Design*, *Scenario*, *Damping*, *Description 1…*). The order belongs to the [curve](topic:order_tracking/orders).
 
 ## .csv (ANSYS harmonic response)
@@ -67,7 +83,7 @@ One file per Design point and node, named `DP<n>_Freq_Resp_<channel>.csv` (for e
 | 1 | `Frequency [Hz],Amplitude [<unit>]` |
 | 2… | frequency and amplitude |
 
-Every line may be wrapped in double quotes. A `˛` in the unit is read as `²` (`mm/s˛` → `mm/s²`). A row that is not two numbers is dropped; the frequency steps may be uneven.
+Every line may be wrapped in double quotes. A `˛` in the unit is read as `²` (`mm/s˛` → `mm/s²`). A row that is not two numbers is left out, and so is a blank line with data below it; the file is then marked ◐ in the Data Pool and the System Log says how many rows were left out. The frequency steps may be uneven.
 
 - The channel is named `<channel>`, unchanged, so it pairs by the same name in [`channel_pairing.xlsx`](topic:import/channel_pairing). A trailing `_X`, `_Y` or `_Z` gives the direction.
 - The curve is [order](topic:order_tracking/orders) 1 against rpm = 60 · frequency: an unbalance load acts at the rotation frequency.
@@ -88,7 +104,7 @@ MASTA, processed measurement and ANSYS files carry a ready-made amplitude, and t
 
 - The answer is stored with each file in the project and is not asked again on Refresh or when the project is opened. New files that appear in a watched folder ask again.
 - Cancel adds nothing to the pool. To correct a wrong answer, remove the file from the pool and add it again.
-- Time signals (`.unv`, `.uff`, `.asc`) are never asked about: the program computes their amplitude itself.
+- Time signals (`.unv`, `.uff`, `.asc`, `.ldsf`) are never asked about: the program computes their amplitude itself.
 - A project saved before the question existed keeps its curves unchanged (ANSYS Peak, others RMS).
 
 ## Channel type

@@ -48,10 +48,6 @@ METADATA_FILE_NAMES = {"metadata.xlsx"}
 # whether a folder has one before deciding to add it.
 BROWSER_NAME_FILTERS = list(SUPPORTED_EXTENSIONS) + ["*.xlsx", "*.xls"]
 
-IN_POOL_COLOR = QColor(APP_TOKENS.pool_in)
-PROJECT_FOLDER_COLOR = QColor(APP_TOKENS.pool_project_folder)
-METADATA_COLOR = QColor(APP_TOKENS.pool_metadata)
-
 
 class BrowserFileSystemModel(QFileSystemModel):
     """
@@ -77,9 +73,7 @@ class BrowserFileSystemModel(QFileSystemModel):
         row on every repaint, and resolving the project's sources each time
         would make scrolling a large folder crawl.
         """
-        self._pool_paths = {
-            canonical_path(run.file_path) for run in self.app_context.pool.loaded_runs
-        }
+        self._pool_paths = set(self.app_context.pool.source_lookup())
 
         session = self.app_context.project_session
         self._project_folder = canonical_path(os.path.dirname(session.path)) if session.path else ""
@@ -95,11 +89,11 @@ class BrowserFileSystemModel(QFileSystemModel):
             path = canonical_path(self.filePath(index))
 
             if path in self._pool_paths:
-                return QBrush(IN_POOL_COLOR)
+                return QBrush(QColor(APP_TOKENS.pool_in))
             if self._project_folder and path == self._project_folder:
-                return QBrush(PROJECT_FOLDER_COLOR)
+                return QBrush(QColor(APP_TOKENS.pool_project_folder))
             if os.path.basename(path).lower() in METADATA_FILE_NAMES:
-                return QBrush(METADATA_COLOR)
+                return QBrush(QColor(APP_TOKENS.pool_metadata))
 
         if role == Qt.ItemDataRole.ToolTipRole and index.isValid():
             path = canonical_path(self.filePath(index))

@@ -11,7 +11,7 @@ FilterSelection into a single PanelRender.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from core.filter_card_config import (
@@ -31,7 +31,8 @@ from ._filter_card import (
 from ._trace_filter import (
     OfferedFacets, TraceIdentity, facet_value_availability, facets_from_traces,
     global_calculated_facets, identity_facets_from_traces, offering_from_facets,
-    resolve_default_checks, selection_from_defaulted, traces_without_parameter_set,
+    resolve_default_checks, resolve_drawn_checks, selection_from_defaulted,
+    traces_without_parameter_set,
 )
 
 @dataclass(frozen=True)
@@ -116,6 +117,33 @@ class ResolvedFacets:
         available = self._available_columns()
         return [column.key for column in self.card.ordered_columns
                 if column.key in available]
+
+    def drawn(self) -> "ResolvedFacets":
+        """
+        These facets narrowed to the columns `ordered_columns` draws this round
+        -- the only ones that may gate a curve: a column off the
+        card, or on it with no value this round, offers nothing. `card=None`
+        (tests only) -> unchanged.
+        """
+        if self.card is None:
+            return self
+        drawn = set(self.ordered_columns())
+
+        def keep(values: List[Any], column_key: str) -> List[Any]:
+            return values if column_key in drawn else []
+
+        return replace(
+            self,
+            channel=keep(self.channel, COLUMN_CHANNEL),
+            orders=keep(self.orders, COLUMN_ORDER),
+            result_kinds=keep(self.result_kinds, COLUMN_ANALYSIS_TYPE),
+            parameter_sets=keep(self.parameter_sets, COLUMN_PARAMETER_SET),
+            parameter_set_has_empty=(self.parameter_set_has_empty
+                                     and COLUMN_PARAMETER_SET in drawn),
+            identity={k: v for k, v in (self.identity or {}).items() if k in drawn},
+            metadata={k: v for k, v in (self.metadata or {}).items() if k in drawn},
+            ranges={k: v for k, v in (self.ranges or {}).items() if k in drawn},
+        )
 
 
 def resolve_panel_facets(scope: str, card: FilterCardConfig, schema: Dict[str, dict],
@@ -212,6 +240,10 @@ class PanelRender:
     checked_metadata_values: Dict[str, Set[str]]
     checked_empty_buckets: Set[str]
     range_bounds: Dict[str, Tuple[Any, Any]]
+    # The touched ranges that survive this round: every one whose widget is
+    # not drawn is forgotten, except on a replay or an empty
+    # round. write_ranges lands it on the live FilterSelection.
+    checked_ranges: Dict[str, Tuple[Any, Any]]
     offering: OfferedFacets
     record_offering: bool
     nothing_to_filter: bool
@@ -234,6 +266,12 @@ def resolve_panel_render(facets: ResolvedFacets, selection: FilterSelection,
     populated this combo at all. A replay (`is_replay`) of a combo already seen
     for real must not re-tick a box the user just unchecked, so defaulting is off
     unless this is the combo's first sight.
+
+    A column the round does not draw is forgotten: its checks and
+    its touched range are dropped, so re-adding it behaves like its first
+    sight. Not on a replay (the last facets may be another card's) and not on
+    an empty round -- no column drawn and no curve carried, e.g. a project
+    still opening -- which must not wipe a restored selection.
     """
     offering = offering_from_facets(facets)
 
@@ -242,17 +280,23 @@ def resolve_panel_render(facets: ResolvedFacets, selection: FilterSelection,
         offering, previously_offered, selection, allow_default=allow_default,
     )
 
-    range_bounds = {
-        key: selection.checked_ranges.get(key, span)
-        for key, span in (facets.ranges or {}).items()
-    }
-
     ordered_columns = facets.ordered_columns()
     nothing_to_filter = not ordered_columns
 
+    checked_ranges = dict(selection.checked_ranges)
+    if not is_replay and not (nothing_to_filter and not facets.identities):
+        defaulted = resolve_drawn_checks(defaulted, offering)
+        checked_ranges = {key: bounds for key, bounds in checked_ranges.items()
+                          if key in offering.range_fields}
+
+    range_bounds = {
+        key: checked_ranges.get(key, span)
+        for key, span in (facets.ranges or {}).items()
+    }
+
     dead_values: Dict[str, Set[Any]] = {}
     if facets.identities is not None:
-        checked_selection = selection_from_defaulted(defaulted, selection.checked_ranges)
+        checked_selection = selection_from_defaulted(defaulted, checked_ranges)
         dead_values = facet_value_availability(facets.identities, checked_selection, facets.schema, offering)
 
     return PanelRender(
@@ -266,6 +310,7 @@ def resolve_panel_render(facets: ResolvedFacets, selection: FilterSelection,
         checked_metadata_values=defaulted.checked_metadata_values,
         checked_empty_buckets=defaulted.checked_empty_buckets,
         range_bounds=range_bounds,
+        checked_ranges=checked_ranges,
         offering=offering,
         record_offering=not is_replay,
         nothing_to_filter=nothing_to_filter,

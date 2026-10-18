@@ -17,14 +17,14 @@ from PySide6.QtGui import QSurfaceFormat, QIcon
 from PySide6.QtCore import Qt, QTimer, QByteArray, QEventLoop
 import pyqtgraph as pg
 
-from core.theme import Theme
 from gui.shell import FramelessWindow
 
 
-def apply_theme(style_hints, theme) -> None:
-    """Apply the saved Theme, keeping Spectra independent of the operating-system theme."""
-    scheme = Qt.ColorScheme.Light if theme is Theme.LIGHT else Qt.ColorScheme.Dark
-    style_hints.setColorScheme(scheme)
+def apply_saved_appearance(style_hints, settings_store) -> None:
+    """Draw this process with the stored Theme and Graph theme; set once, before any window."""
+    from gui import appearance
+    appearance.set_appearance(settings_store.value("theme"), settings_store.value("graph_theme"))
+    appearance.apply_theme(style_hints, appearance.THEME)
 
 
 def run_keeping_gui_alive(func, *args) -> None:
@@ -132,7 +132,7 @@ class MainApplicationShell(FramelessWindow):
             # discards every result set it already computed (#411). A batch
             # that finishes while this question is open marks the project
             # dirty, so the unsaved-changes question below still covers it.
-            if not _confirm_cancelling_running_jobs(self.workspace_frame.job_manager, self):
+            if not _confirm_cancelling_running_jobs(self.workspace_frame.job_runner, self):
                 event.ignore()
                 return
 
@@ -333,8 +333,8 @@ if __name__ == "__main__":
     else:
         app = QApplication(sys.argv)
 
-    from gui.appearance import THEME
-    apply_theme(app.styleHints(), THEME)
+    from app_context import build_settings_store
+    apply_saved_appearance(app.styleHints(), build_settings_store())
 
     from core.app_metadata import APP_NAME, APP_USER_MODEL_ID, APP_VERSION
     from core.asset_paths import resource_path

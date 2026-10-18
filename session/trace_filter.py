@@ -21,7 +21,7 @@ and session/ may import core/ and selection/ but not gui/. Glossary term: **Filt
 selection** (CONTEXT.md).
 
 This completes the expand--contract move in ADR §1.39: the two dicts and the
-scope map (T1), the JSON (de)serialization and the ui_state export/import (T2),
+scope map (T1), the JSON (de)serialization and the view_state export/import (T2),
 the atomic migrate_scope (T3), and the contract step (T4) that dropped the
 panel's 9 _checked_* property pairs for one self._sel window onto
 active_selection().
@@ -41,7 +41,10 @@ from dataclasses import dataclass, replace
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from core.project_model import FilterProfile, FilterSelection
-from selection.trace_filter import OfferedFacets
+from selection.trace_filter import (
+    OfferedFacets, PanelRender, ResolvedFacets, resolve_panel_render, write_checks,
+    write_ranges,
+)
 from selection.source_facets import channel_identity_sort_key
 
 SelectionKey = Tuple[str, Optional[str]]
@@ -76,7 +79,7 @@ def _signature_from_json(raw: list) -> Tuple:
 
 def serialize_selection(selection: FilterSelection) -> dict:
     """One FilterSelection as a JSON-safe dict -- the shape export_global_selections
-    / export_local_selections_for_dock persist into a project's ui_state. Sets are
+    / export_local_selections_for_dock persist into a project. Sets are
     sorted so the saved file is stable across runs."""
     return {
         "checked_metadata_values": {
@@ -195,6 +198,27 @@ class FilterSelectionStore:
     def has_seen(self, card_id: str, dock_id: Optional[str]) -> bool:
         return self.selection_key(card_id, dock_id) in self._seen
 
+    def resolve_render(self, card_id: str, dock_id: Optional[str], facets: ResolvedFacets,
+                       *, is_replay: bool = False) -> PanelRender:
+        """One render round for a (card, dock): decide the round
+        (resolve_panel_render, with this store's offering and seen mark), mark
+        the combo seen, record the offering unless it is a replay, and lay the
+        round's checks onto the live FilterSelection in place. The caller only
+        draws the returned PanelRender."""
+        selection = self.active_selection(card_id, dock_id)
+        render = resolve_panel_render(
+            facets, selection,
+            previously_offered=self.offered_facets(card_id, dock_id),
+            already_seen=self.has_seen(card_id, dock_id),
+            is_replay=is_replay,
+        )
+        self.mark_seen(card_id, dock_id)
+        if render.record_offering:
+            self.record_offering(card_id, dock_id, render.offering)
+        write_checks(selection, render)
+        write_ranges(selection, render)
+        return render
+
     def _migrate_bookkeeping(self, old_key: SelectionKey, new_key: SelectionKey) -> None:
         """Carry the offering and seen mark for `old_key` over to `new_key` --
         the offering belongs with the checked state it was measured against, or
@@ -267,7 +291,7 @@ class FilterSelectionStore:
         self._offered.clear()
         self._seen.clear()
 
-    # ---- serialization: a project's ui_state round-trip ----
+    # ---- serialization: a project's saved state round-trip ----
     #
     # import_* rejects an entry whose card is gone by testing `card_id in
     # self._scope` -- the panel syncs that map on every add/delete, so this
@@ -609,13 +633,13 @@ class FilterProfileRegistry:
 
 @dataclass(frozen=True)
 class FilterStateSnapshot:
-    """The Filter panel's whole profile list + Global content, as read back
-    from a project's ui_state (ticket #178) -- what
+    """The Filter panel's Global content and switches, as read back from a
+    project's view_state (ticket #178) -- the card list itself is Work and
+    saved apart, in NVHProject.filter_profiles. What
     gui.handlers.filter_routing.restore_filter_state hands to the
     panel's own restore calls, and what its two checkbox writes (Data Pool
     filtering, Show all) read directly rather than through this class, since
     writing a checkbox without emitting is Qt glue that stays in gui/."""
-    profiles: List[dict]
     global_selections: Dict[str, dict]
     active_profile_id: Optional[str]
     filter_data_pool: bool
@@ -623,16 +647,15 @@ class FilterStateSnapshot:
 
 
 def build_filter_state_snapshot(*, filter_data_pool: bool, show_all: bool,
-                                 profiles: List[dict], global_selections: Dict[str, dict],
+                                 global_selections: Dict[str, dict],
                                  active_profile_id: Optional[str]) -> dict:
     """The JSON-safe dict gui.handlers.filter_routing._persist_filter_state
-    writes into a project's ui_state under FILTER_STATE_KEY (ticket #178) --
+    hands to ProjectSession.set_filter_state (ticket #178) --
     the panel's Local content is not in here at all, it travels on each
     dock's own TabSpec instead (see FilterStateSnapshot)."""
     return {
         "filter_data_pool": filter_data_pool,
         "show_all": show_all,
-        "profiles": profiles,
         "global_selections": global_selections,
         "active_profile_id": active_profile_id,
     }
@@ -643,7 +666,6 @@ def read_filter_state_snapshot(saved: dict) -> FilterStateSnapshot:
     empty/False, so a partial save still loads onto clean builtins instead of
     crashing (ticket #178)."""
     return FilterStateSnapshot(
-        profiles=saved.get("profiles", []),
         global_selections=saved.get("global_selections", {}),
         active_profile_id=saved.get("active_profile_id"),
         filter_data_pool=bool(saved.get("filter_data_pool", False)),

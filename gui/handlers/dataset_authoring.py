@@ -52,7 +52,7 @@ class DatasetAuthoringHandler:
 
     Explicit dependencies injected via constructor:
     - app_context: application settings, active directory, and logging.
-    - job_manager: background worker runner.
+    - job_runner: background worker runner.
     - parent_widget: parent QWidget for modal dialogs and file dialogs.
     - log_panel and data_pool: refresh the workspace after an export finishes.
     """
@@ -60,14 +60,14 @@ class DatasetAuthoringHandler:
     def __init__(
         self,
         app_context,
-        job_manager,
+        job_runner,
         parent_widget: Optional[QWidget] = None,
         *,
         log_panel,
         data_pool,
     ) -> None:
         self.app_context = app_context
-        self.job_manager = job_manager
+        self.job_runner = job_runner
         self.parent_widget = parent_widget
         self.log_panel = log_panel
         self.data_pool = data_pool
@@ -88,7 +88,7 @@ class DatasetAuthoringHandler:
         )
         # Batch lane: a long write the user leaves running, not something they
         # are staring at waiting for like a Compare plot refresh.
-        self.job_manager.submit(
+        self.job_runner.submit(
             "Synthetic signal export",
             fn=generate_and_export_synthetic,
             args=(params, export_path),
@@ -132,7 +132,7 @@ class DatasetAuthoringHandler:
         # preview QTimer with it, which is why the preview plots stayed blank.
         dialog._preview_handler = SignalPreviewHandler(
             dialog,
-            self.job_manager,
+            self.job_runner,
         )
 
         try:
@@ -253,7 +253,7 @@ class DatasetAuthoringHandler:
             job_step(measurement.rel_path, realize_measurement, measurement, out_root)
             for measurement in spec.measurements
         ] + [job_step("metadata.xlsx", write_dataset_sheets, spec, out_root)]
-        self.job_manager.submit(
+        self.job_runner.submit(
             f"Realize dataset '{key}' - {count} file(s)",
             steps,
             lane="batch",

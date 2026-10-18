@@ -102,11 +102,15 @@ def _with_empty(values: Iterable[str], key: str, checks: FilterSelection) -> Set
 
 
 def build_selection_from_checks(name: str, checks: FilterSelection,
-                                facets: ResolvedFacets) -> MeasurementSelection:
+                                facets: ResolvedFacets, *,
+                                original_column_values: Optional[Mapping[str, Iterable[str]]] = None
+                                ) -> MeasurementSelection:
     """The query selection the editor's checkmarks describe.
 
     `facets` is resolve_selection_facets' output the editor drew. A fully
     checked column is left open; an "(Empty)" row is a value like any other.
+    An Edit passes the rule it opened as `original_column_values`, so a column
+    whose checkmarks it left unchanged keeps its saved restriction.
     """
     offered: Dict[str, Iterable[str]] = {**facets.metadata, **facets.identity}
     checked: Dict[str, Set[str]] = {
@@ -121,7 +125,9 @@ def build_selection_from_checks(name: str, checks: FilterSelection,
         offered[COLUMN_CHANNEL] = [base for base, _direction in facets.channel]
         checked[COLUMN_CHANNEL] = {base for base, _direction in checks.checked_channel_identities}
     return MeasurementSelection(
-        name=name, mode=MODE_QUERY, column_values=build_column_values(checked, offered))
+        name=name, mode=MODE_QUERY,
+        column_values=build_column_values(checked, offered,
+                                          original_column_values=original_column_values))
 
 
 def build_checks_from_selection(selection: MeasurementSelection,

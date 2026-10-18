@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
 
-from core.models import ChannelMetadata, MeasurementRunIndex
+from core.models import ChannelMetadata, LostPart, MeasurementRunIndex, UnreadableFile
 from io_modules.measurement_files import (
     canonical_path,
     discover_measurement_files,
@@ -25,7 +25,7 @@ from io_modules.metadata_parser import AccMetadataParser, build_normalized_looku
 from io_modules.metadata_schema import generate_baseline_schema_master, resolve_excel_metadata_for_files
 
 
-# Cap on parallel header parses in quick_scan_directory. Measured 2026-09-03 on a
+# Cap on parallel header parses in scan_directory. Measured 2026-09-03 on a
 # real 131 MB / 17-channel UNV: 1/2/5 workers = 156/305/749 MB peak and
 # 0.84/1.66/4.11 s -- memory grows ~150 MB/worker and time grows linearly too
 # (the GIL keeps pyuff serialised, so there is no throughput gain). The unbounded
@@ -45,7 +45,10 @@ _SCAN_PARSE_MAX_WORKERS = 4
 # 4: Imported channels carry their readable block kind for navigation (#496).
 # 5: MASTA channels carry their header as Raw metadata (#520).
 # 6: MASTA workbooks read every H<order> sheet, not only the first (#639).
-WORKSPACE_CACHE_FORMAT_VERSION = 6
+# 7: A run remembers the datasets it could not read (#722).
+# 8: An ANSYS CSV remembers the rows it dropped (#723).
+# 9: A MASTA channel remembers its lost rows; a gap inside a column is one (§1.177).
+WORKSPACE_CACHE_FORMAT_VERSION = 9
 
 
 def scan_cache_basename(directory_path: str) -> str:
@@ -95,6 +98,24 @@ class CacheLoadResult:
     schema_master: dict = field(default_factory=dict)
     metadata_is_stale: bool = False
     parent_source: Optional[str] = None
+    # Why the cache was not usable as a whole, when that is worth telling the user.
+    problem: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class FolderScan:
+    """
+    What one scan of a folder found.
+
+    `unreadable` are the files on disk that could not be read; they are never
+    cached, so the next scan tries them again. `messages` is everything the scan
+    has to say, carried back as data because the scan runs on a worker thread
+    and must not write to the log itself.
+    """
+    runs: List[MeasurementRunIndex] = field(default_factory=list)
+    schema_master: dict = field(default_factory=dict)
+    unreadable: Tuple[UnreadableFile, ...] = ()
+    messages: Tuple[str, ...] = ()
 
 
 class MeasurementScanner:
@@ -126,13 +147,12 @@ class MeasurementScanner:
         """Lists every supported measurement file in a directory, case-insensitively."""
         return discover_measurement_files(directory_path)
 
-    def quick_scan_directory(self, directory_path: str, primary_excel_path: Optional[str] = None,
-                             log_fn: Optional[Callable[[str], None]] = None,
-                             cache_dir: Optional[str] = None,
-                             progress_fn: Optional[Callable[[int, int], None]] = None,
-                             parent_excel_path: Optional[str] = None,
-                             file_listing: Optional[dict] = None,
-                             ) -> Tuple[List[MeasurementRunIndex], dict]:
+    def scan_directory(self, directory_path: str, primary_excel_path: Optional[str] = None,
+                       cache_dir: Optional[str] = None,
+                       progress_fn: Optional[Callable[[int, int], None]] = None,
+                       parent_excel_path: Optional[str] = None,
+                       file_listing: Optional[dict] = None,
+                       ) -> FolderScan:
         """
         `progress_fn(done, total)` is invoked as stale files are re-parsed, so a
         caller driving a progress bar over one folder of large files sees it
@@ -147,17 +167,20 @@ class MeasurementScanner:
        . None keeps the legacy behaviour of writing beside the data;
         production always passes a directory, the None branch only carries the
         invalidation tests.
+
+        A file that fails to parse is reported in the result's `unreadable`
+        rather than dropped. It is never cached, so every scan tries it again.
         """
-        log_fn = log_fn or print
+        messages: List[str] = []
 
         if not os.path.exists(directory_path):
-            return [], {}
+            return FolderScan()
 
         discovered_files = self.discover_measurement_files(directory_path)
         if file_listing is not None:
             file_listing.update({path: file_stamp(path) for path in discovered_files})
         if not discovered_files:
-            return [], {}
+            return FolderScan()
 
         if cache_dir is None:
             cache_path = os.path.join(directory_path, self.cache_file_name)
@@ -169,6 +192,8 @@ class MeasurementScanner:
         cached = self.load_workspace_cache(
             cache_path, discovered_files, primary_source, fallback_source, parent_source)
         cached_runs = cached.runs
+        if cached.problem:
+            messages.append(cached.problem)
         # A folder refresh does not know which dataset root the folder was
         # reached from; the cache does (issue #324).
         parent_source = cached.parent_source
@@ -179,23 +204,25 @@ class MeasurementScanner:
         stale_files = [path for path in discovered_files if path not in cached_runs]
 
         if cached_runs and not stale_files and not cached.metadata_is_stale:
-            return [cached_runs[path] for path in discovered_files], cached.schema_master
+            return FolderScan([cached_runs[path] for path in discovered_files],
+                              cached.schema_master, (), tuple(messages))
 
         metadata_lookup = self._build_excel_metadata_lookup(
-            discovered_files, primary_source, parent_source, fallback_source, log_fn)
+            discovered_files, primary_source, parent_source, fallback_source, messages.append)
 
         parsed_runs = {}
+        unreadable: List[UnreadableFile] = []
         if stale_files:
-            print(f"CACHE_IO: Re-parsing {len(stale_files)} of {len(discovered_files)} files "
-                  f"({len(cached_runs)} still valid).")
             total = len(stale_files)
             if progress_fn is not None:
                 progress_fn(0, total)
             with ThreadPoolExecutor(max_workers=_SCAN_PARSE_MAX_WORKERS) as executor:
-                for done, run_index in enumerate(
-                        executor.map(self._parse_single_file_worker, stale_files), start=1):
+                for done, (path, run_index, reason) in enumerate(
+                        executor.map(self._parse_outcome, stale_files), start=1):
                     if run_index:
                         parsed_runs[run_index.file_path] = run_index
+                    else:
+                        unreadable.append(UnreadableFile(path, reason))
                     if progress_fn is not None:
                         progress_fn(done, total)
 
@@ -218,9 +245,9 @@ class MeasurementScanner:
             # on-disk cache is stale. Saying so matters because the next start
             # will silently re-parse the whole folder -- a confusing slowdown
             # with no other trace if the write failure is swallowed here.
-            log_fn(f"CACHE_IO: Folder index could not be written to {cache_path}; "
-                   f"this folder will be re-parsed in full on the next open.")
-        return indexed_runs, schema_master
+            messages.append(f"CACHE_IO: Folder index could not be written to {cache_path}; "
+                            f"this folder will be re-parsed in full on the next open.")
+        return FolderScan(indexed_runs, schema_master, tuple(unreadable), tuple(messages))
 
     @staticmethod
     def _link_run_metadata(run_index: MeasurementRunIndex, metadata_lookup: dict) -> dict:
@@ -274,19 +301,26 @@ class MeasurementScanner:
             indexed_runs.append(run_index)
         return indexed_runs
 
+    def _parse_outcome(self, file_path: str):
+        """`(path, run, reason)`: the parsed run, or None and why the file could not be read."""
+        try:
+            run_index = self._parse_single_file_worker(file_path)
+        except Exception as e:
+            return file_path, None, str(e) or type(e).__name__
+        if run_index is None:
+            return file_path, None, "The file could not be read."
+        return file_path, run_index, ""
+
     def _parse_single_file_worker(self, file_path: str) -> MeasurementRunIndex:
         """
         Isolated multi-threaded worker routing to the correct parsing engine dynamically.
+        Raises when the file cannot be read; `_parse_outcome` turns that into a reason.
         """
-        try:
-            reader = open_measurement_reader(file_path)
+        reader = open_measurement_reader(file_path)
 
-            run_index = reader.scan_file_structure()
-            reader.load_channels_on_demand(run_index)
-            return run_index
-        except Exception as e:
-            print(f"PARALLEL_IO_ERROR: Failed processing file thread {os.path.basename(file_path)}. Trace: {str(e)}")
-            return None
+        run_index = reader.scan_file_structure()
+        reader.load_channels_on_demand(run_index)
+        return run_index
 
     def save_workspace_cache(self, cache_path: str, indexed_runs: List[MeasurementRunIndex],
                              schema_master: dict, primary_source: Optional[str] = None,
@@ -336,6 +370,8 @@ class MeasurementScanner:
                     "id5": getattr(run, 'id5', None),
                     "metadata": clean_metadata,
                     "channels": channels_map,
+                    "lost_parts": [{"dataset": part.dataset, "reason": part.reason}
+                                   for part in run.lost_parts],
                     # What this entry was built from. Without it the cache had no
                     # way to notice a file had been re-measured and kept serving
                     # the old channel list until it was deleted by hand.
@@ -370,8 +406,7 @@ class MeasurementScanner:
                     os.remove(tmp_path)
                 raise
             return True
-        except Exception as e:
-            print(f"CACHE_WRITE_ERROR: Could not save structure cache to disk. Trace: {str(e)}")
+        except Exception:
             return False
 
     def load_workspace_cache(self, cache_path: str, active_files: List[str],
@@ -477,6 +512,9 @@ class MeasurementScanner:
                 for unique_label, ch_dict in cached_run.get("channels", {}).items():
                     run_index.add_channel_metadata(unique_label, ChannelMetadata.from_dict(ch_dict))
 
+                run_index.lost_parts = [LostPart(part["dataset"], part["reason"])
+                                        for part in cached_run.get("lost_parts", [])]
+
                 loaded_runs[file_path] = run_index
 
             return CacheLoadResult(
@@ -486,5 +524,6 @@ class MeasurementScanner:
                 parent_source=parent_source,
             )
         except Exception as e:
-            print(f"CACHE_READ_ERROR: Local JSON index parsing fault. Trace: {str(e)}")
-            return CacheLoadResult(metadata_is_stale=True, parent_source=parent_source)
+            return CacheLoadResult(
+                metadata_is_stale=True, parent_source=parent_source,
+                problem=f"CACHE_IO: Folder index could not be read ({e}); this folder is re-parsed in full.")

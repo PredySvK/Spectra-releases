@@ -20,6 +20,16 @@ from typing import Any, Dict, Tuple
 
 from core.models import ChannelMetadata, MeasurementRunIndex, resolve_channel_block_kind
 
+RECIPE_KEY = "compute_spec"
+"""The key a restored overlay's descriptor carries its saved recipe under
+(`TraceSpec.compute_spec`): a drop that carries one is computed with it laid
+over the ribbon, not with the ribbon alone."""
+
+TAB_CACHE_KEY = "tab_cache_file"
+"""The key a restored overlay's descriptor carries its saved Tab cache file
+name under (`TraceSpec.tab_cache_file`): the drop reads that file before it
+computes anything."""
+
 
 def build_drop_descriptor(run: MeasurementRunIndex, channel: ChannelMetadata) -> Dict[str, Any]:
     """The drop descriptor of one channel of `run`, with this session's channel index."""

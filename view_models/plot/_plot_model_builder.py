@@ -28,6 +28,7 @@ from core.block_kinds import (
     KIND_SPECTRUM,
     META_EFFECTIVE_F_START,
     META_EFFECTIVE_F_STOP,
+    PARAM_COMPUTATION,
     PARAM_F_START,
     PARAM_F_STOP,
     PARAM_ORDER,
@@ -96,9 +97,18 @@ def to_decibels(values: np.ndarray, is_squared: bool) -> np.ndarray:
     (amplitude) format needs 20*log10 to land on the same dB scale. Callers
     work out ``is_squared`` themselves -- a canonical block asks the requested
     display format, a legacy pre-scaled one asks what it was already computed as.
+
+    The zero guard is one floor in dB (#695): clipping the raw values at one
+    number would floor an amplitude at -240 dB but its energy at -120 dB, so
+    a quiet bin jumped 120 dB when only the format was switched.
     """
-    safe = np.clip(values, 1e-12, None)
+    floor = _DB_FLOOR_ENERGY if is_squared else _DB_FLOOR_AMPLITUDE
+    safe = np.clip(values, floor, None)
     return 10.0 * np.log10(safe) if is_squared else 20.0 * np.log10(safe)
+
+
+_DB_FLOOR_AMPLITUDE = 1e-12  # -240 dB
+_DB_FLOOR_ENERGY = _DB_FLOOR_AMPLITUDE ** 2
 
 
 def _channel_identity_source(block_name: str) -> str:
@@ -127,24 +137,22 @@ def _y_axis_label(channel_type: str) -> str:
 
 def build_compute_spec(block) -> Dict[str, Any]:
     """
-    ``Trace.compute_spec`` for a curve computed from ``block`` -- everything
-    ``block.processing`` (SpectralProcessing) carries, plus the order number
-    for an order cut or band parameters for an overall level, whose defining
-    parameters live on provenance instead.
+    ``Trace.compute_spec`` for a curve computed from ``block`` -- the one recipe
+    a live and a stored curve share (#665 C19): everything ``block.processing``
+    (SpectralProcessing) carries, plus every identity param the block's
+    provenance holds (the order of an order cut, an overall level's band, ...)
+    except ``computation``, which only tells two curves apart on adoption and is
+    no part of the Parameter Set signature (#428).
 
     Public (not `_compute_spec_for`) because `GraphDock.add_curve`
     needs the same derivation for a caller that hands over `block`/`data_block`
     without a `compute_spec` of its own (issue: Local Filter's Order/Analysis
     type/Parameter set facets going empty for an order-tracking curve added by
-    drag-and-drop onto a dock that already has a base curve) -- the only other
-    caller of this was already using the private name from the same module, so
-    the rename costs nothing there.
+    drag-and-drop onto a dock that already has a base curve).
     """
     spec = dataclasses.asdict(block.processing) if block.processing else {}
-    params = block.provenance.params if block.provenance else {}
-    for key in (PARAM_ORDER, PARAM_F_START, PARAM_F_STOP):
-        if key in params:
-            spec[key] = params[key]
+    spec.update(block.provenance.params if block.provenance else {})
+    spec.pop(PARAM_COMPUTATION, None)
     return spec
 
 
@@ -200,7 +208,7 @@ def resolve_overlay_display_scaling(
             compute_spec["amplitude_mode"] = spectrum_amplitude_mode
     elif block is not None and block.kind == KIND_ORDER_CUT:
         if order_cut_amplitude_mode == "peak":
-            y_data, incoming_unit = _linear_amplitude_display(block.values, block.value_unit, "peak", block=block)
+            y_data, incoming_unit = _linear_amplitude_display(block.values, block.value_unit, "peak")
     return y_data, incoming_unit, compute_spec, x_quantity
 
 
@@ -408,7 +416,7 @@ def build_order_cuts_model(
     base_curve_color: str,
 ) -> PlotModel:
     """
-    The model behind ``Workspace.plot_order_cuts``: the first cut is the
+    The model behind an order dock's landed cuts: the first cut is the
     base curve, every further cut is an overlay added by the same rule
     ``add_curve`` uses (carousel pen, secondary axis when the
     unit will not reconcile with the base).
@@ -422,7 +430,7 @@ def build_order_cuts_model(
     x = first.primary_axis.values if x is None else x
     x_quantity = x_quantity or first.primary_axis.quantity
     base_y, base_unit = _linear_amplitude_display(
-        first.values if y is None else y, incoming_unit or first.value_unit, amplitude_mode, block=first)
+        first.values if y is None else y, incoming_unit or first.value_unit, amplitude_mode)
     model = build_time_model(
         x=x, y=base_y, sensor_name=source_label or first.name, y_unit=base_unit,
         source_meta=source_meta or first.display_meta(), prefs=prefs, block=first,
@@ -439,7 +447,7 @@ def build_order_cuts_model(
     model.x_domain = x_quantity
 
     for overlay_index, block in enumerate(blocks[1:]):
-        overlay_y, overlay_unit = _linear_amplitude_display(block.values, block.value_unit, amplitude_mode, block=block)
+        overlay_y, overlay_unit = _linear_amplitude_display(block.values, block.value_unit, amplitude_mode)
         model.traces.append(
             build_overlay_trace(
                 model,
@@ -508,7 +516,7 @@ def overall_level_band_differs_from_dock(model: PlotModel, block) -> bool:
     return False
 
 
-def _linear_amplitude_display(values: np.ndarray, value_unit: str, amplitude_mode: str, *, block=None):
+def _linear_amplitude_display(values: np.ndarray, value_unit: str, amplitude_mode: str):
     """
     The shared RMS<->Peak display rule for an order cut or an Overall Level
     block: Peak = sqrt(2) * RMS, unit suffixed via
@@ -516,10 +524,8 @@ def _linear_amplitude_display(values: np.ndarray, value_unit: str, amplitude_mod
     untouched -- the unit is whatever the block/trace already carries, not
     forced into a canonical \"unit RMS\" spelling, so a caller comparing against
     an un-suffixed stored unit (e.g. a legacy \"g\") does not see it change.
-    An Imported result has no known RMS basis, so its amplitude stays as read.
+    An Imported result takes the same rule: it is RMS once read.
     """
-    if block is not None and block.processing is None and block.provenance.step == STEP_READ:
-        return values, value_unit
     if amplitude_mode == "peak":
         return values * np.sqrt(2.0), format_order_unit(value_unit, "linear", amplitude_mode)
     return values, value_unit
@@ -546,6 +552,56 @@ def resolve_overlay_axis(
     return "secondary"
 
 
+@dataclasses.dataclass(frozen=True)
+class _LevelDisplay:
+    """One Overall Level / Residual block as the graph shows it, before it is
+    placed: the single preparation behind the base curve and every overlay."""
+
+    axis: Any
+    source_meta: Dict[str, Any]
+    channel_type: str
+    file_name: str
+    channel_name: str
+    display_y: np.ndarray        # RMS/Peak applied, still in the block's unit
+    display_value_unit: str
+    render_y: np.ndarray         # ... then in the global unit of ``unit``
+    unit: str
+    legend: str
+    compute_spec: Dict[str, Any]
+
+
+def _prepare_level_display(block, prefs: Optional[UnitPreferences], amplitude_mode: str) -> _LevelDisplay:
+    """
+    Block metadata, identity, RMS/Peak, global unit, legend and
+    compute_spec of an Overall Level or Residual block -- the one rule the dock's
+    base curve (``build_overall_level_model``) and an overlay
+    (``build_overall_level_overlay_trace``) share, so the same data can never
+    get two units, two Peak scalings or two legends. Placement (pen, axis
+    routing, ViewSpec) stays with the two builders.
+    """
+    axis = block.primary_axis
+    source_meta = block.display_meta()
+    channel_type = _channel_type(source_meta)
+    f_name = _file_name(source_meta)
+    clean_name = strip_channel_name_prefix(_channel_identity_source(block.name))
+
+    display_y, display_value_unit = _linear_amplitude_display(block.values, block.value_unit, amplitude_mode)
+    render_y, target_unit = convert_signal_to_global_unit(
+        display_y, display_value_unit, channel_type, prefs or UnitPreferences()
+    )
+    unit = sanitize_unit_string(target_unit)
+    legend = _level_legend_text(block, build_legend_text(f_name, clean_name, unit, source_meta))
+
+    compute_spec = build_compute_spec(block)
+    compute_spec["amplitude_mode"] = amplitude_mode
+    compute_spec["tracking_mode"] = axis.quantity
+    return _LevelDisplay(
+        axis=axis, source_meta=source_meta, channel_type=channel_type, file_name=f_name,
+        channel_name=clean_name, display_y=display_y, display_value_unit=display_value_unit,
+        render_y=render_y, unit=unit, legend=legend, compute_spec=compute_spec,
+    )
+
+
 def build_overall_level_overlay_trace(
     model: PlotModel, *, overlay_index: int, block, prefs: Optional[UnitPreferences] = None,
     amplitude_mode: str = "rms", result_set_id: str = "",
@@ -562,28 +618,15 @@ def build_overall_level_overlay_trace(
     same sqrt(2) rule and unit convention (``core.units.format_order_unit``,
     applied only for Peak) as an order cut.
     """
-    prefs = prefs or UnitPreferences()
-    axis = block.primary_axis
-    source_meta = block.display_meta()
-    channel_type = _channel_type(source_meta)
-    f_name = _file_name(source_meta)
-    clean_name = strip_channel_name_prefix(_channel_identity_source(block.name))
-
-    display_y, display_value_unit = _linear_amplitude_display(block.values, block.value_unit, amplitude_mode)
-    render_y, target_unit = convert_signal_to_global_unit(
-        display_y, display_value_unit, channel_type, prefs
-    )
-    incoming_unit = sanitize_unit_string(target_unit)
-    base_legend = build_legend_text(
-        f_name, clean_name, incoming_unit, source_meta
-    )
-    legend_text = _level_legend_text(block, base_legend)
+    level = _prepare_level_display(block, prefs, amplitude_mode)
+    axis, source_meta, channel_type = level.axis, level.source_meta, level.channel_type
+    f_name, clean_name = level.file_name, level.channel_name
+    display_y, display_value_unit = level.display_y, level.display_value_unit
+    render_y, incoming_unit, legend_text = level.render_y, level.unit, level.legend
 
     base_unit = model.traces[0].unit if model.traces else incoming_unit
     pen = Pen(color="", width=1.0, slot=overlay_index)
-    compute_spec = build_compute_spec(block)
-    compute_spec["amplitude_mode"] = amplitude_mode
-    compute_spec["tracking_mode"] = axis.quantity
+    compute_spec = level.compute_spec
 
     if resolve_overlay_axis(base_unit, incoming_unit) == "primary":
         final_y = convert_numeric_array(render_y, from_unit=incoming_unit, to_unit=base_unit)
@@ -611,7 +654,7 @@ def build_overall_level_model(
     amplitude_mode: str = "rms", result_set_id: str = "",
 ) -> PlotModel:
     """
-    The model behind ``Workspace.plot_overall_level_block``: one curve,
+    The model behind a landed Overall Level curve: one curve,
     speed (or time) on x, band RMS energy on y.
 
     The legend leads with \"OAL\", and only names the band when it differs from
@@ -625,25 +668,12 @@ def build_overall_level_model(
     (``gui.handlers.result_content``) carry the same membership tag a
     dropped/loaded order cut does.
     """
-    axis = block.primary_axis
-    source_meta = block.display_meta()
-    channel_type = _channel_type(source_meta)
-    f_name = _file_name(source_meta)
-    clean_name = strip_channel_name_prefix(_channel_identity_source(block.name))
-
-    display_y, display_value_unit = _linear_amplitude_display(block.values, block.value_unit, amplitude_mode)
-    render_y, target_unit = convert_signal_to_global_unit(
-        display_y, display_value_unit, channel_type, prefs or UnitPreferences()
-    )
-    display_unit = sanitize_unit_string(target_unit)
-    base_legend = build_legend_text(
-        f_name, clean_name, display_unit, source_meta
-    )
-    legend_text = _level_legend_text(block, base_legend)
-
-    compute_spec = build_compute_spec(block)
-    compute_spec["amplitude_mode"] = amplitude_mode
-    compute_spec["tracking_mode"] = axis.quantity
+    level = _prepare_level_display(block, prefs, amplitude_mode)
+    axis, source_meta, channel_type = level.axis, level.source_meta, level.channel_type
+    f_name, clean_name = level.file_name, level.channel_name
+    display_y, display_value_unit = level.display_y, level.display_value_unit
+    render_y, display_unit, legend_text = level.render_y, level.unit, level.legend
+    compute_spec = level.compute_spec
 
     trace = Trace(
         x=axis.values, y=render_y, y_raw=display_y, x_raw=axis.values,
@@ -957,6 +987,12 @@ def build_spectrogram_model(
         effective_color_scale = color_scale
 
     clean_name = strip_channel_name_prefix(_channel_identity_source(block.name))
+    compute_spec = build_compute_spec(block)
+    if getattr(block, "is_canonical", False):
+        # As a spectrum curve's: the format and amplitude it is shown in (#725).
+        compute_spec["spectrum_format"] = spectrum_format
+        compute_spec["amplitude_mode"] = amplitude_mode
+    compute_spec["tracking_mode"] = z_axis.quantity
     return SpectrogramModel(
         image=matrix,
         freqs=np.asarray(frequency_axis.values, dtype=np.float64),
@@ -967,6 +1003,7 @@ def build_spectrogram_model(
         color_scale=effective_color_scale,
         title=f"Vibration Spectrogram: {clean_name}",
         block=block,
+        compute_spec=compute_spec,
     )
 
 

@@ -24,10 +24,16 @@ Architecture:
   (claimed, pending) beside its curves.
 - Questions the GUI asks about curves it holds: amplitude_mode_for_kind,
   overall_level_band_differs_from_dock, traces_kept_after_unload, build_trace_descriptor.
+- Spectrogram image geometry: resolve_image_axis_extent gives the span of one image axis
+  (half a bin past each end, +-0.5 for a single bin); the dock draws the image over it
+  and the Cursor reads the cell under the mouse from it (#665 C28).
 - Presentation styling & legend text: base_display_unit, format_display_unit, resolve_carousel_colour.
 - Rendering mode & curve look: resolve_rendering_mode picks OpenGL or raster
   from the drawn curves (LARGE_CURVE_POINTS); resolve_curve_look turns a Pen's carousel
   slot into a CurveLook (colour + one of LINE_STYLES) for that mode.
+- Clipping & downsampling: resolve_curve_decimation turns a curve's point count and the
+  Graph Rendering preferences into a CurveDecimation (clip / auto / factor); small curves
+  are never decimated, preferences can only switch it off (#665 C27).
 
 The builders behind GraphCurves and GraphSpectrogram are private: which one a
 block gets is their decision, not the caller's (#297, #301).
@@ -37,6 +43,14 @@ runs (orchestration/), what project is currently open (session/), which
 curves are relevant (selection/), or signal processing computation (signal_processing/).
 """
 
+from ._curve_decimation import (
+    CurveDecimation,
+    resolve_curve_decimation,
+)
+from ._curve_identity import (
+    resolve_curve_channel_key,
+    resolve_order_curve_identity,
+)
 from ._display_settings import (
     DisplaySettings,
 )
@@ -63,6 +77,9 @@ from ._graph_curves import (
 from ._graph_spectrogram import (
     GraphSpectrogram,
 )
+from ._image_extent import (
+    resolve_image_axis_extent,
+)
 from ._legend_settings import (
     base_display_unit,
     format_display_unit,
@@ -81,6 +98,7 @@ from ._plot_model import (
 )
 from ._plot_model_builder import (
     amplitude_mode_for_kind,
+    build_compute_spec,
     overall_level_band_differs_from_dock,
     traces_kept_after_unload,
 )
@@ -100,6 +118,9 @@ __all__ = [
     "NOTHING_PENDING",
     "PendingRestore",
     "build_trace_descriptor",
+    # Order-curve identity -- (file, channel index, order), one composition
+    "resolve_curve_channel_key",
+    "resolve_order_curve_identity",
     # Live channel drops -- what a graph claimed and still waits for
     "LiveChannelDrops",
     # Graph spectrogram -- the one owner of a graph's spectrogram
@@ -114,6 +135,8 @@ __all__ = [
     "SpectrogramModel",
     "Trace",
     "ViewSpec",
+    # The one block -> Trace.compute_spec recipe
+    "build_compute_spec",
     # Visibility
     "AcceptOutcome",
     "HiddenReason",
@@ -122,6 +145,8 @@ __all__ = [
     "amplitude_mode_for_kind",
     "overall_level_band_differs_from_dock",
     "traces_kept_after_unload",
+    # Spectrogram image geometry -- the span of one image axis
+    "resolve_image_axis_extent",
     # Legend & palette
     "base_display_unit",
     "resolve_carousel_colour",
@@ -130,6 +155,8 @@ __all__ = [
     # Rendering mode & curve look
     "CurveLook",
     "LARGE_CURVE_POINTS",
+    "CurveDecimation",
+    "resolve_curve_decimation",
     "LINE_STYLES",
     "RenderingMode",
     "resolve_curve_look",

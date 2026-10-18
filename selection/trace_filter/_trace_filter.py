@@ -68,7 +68,7 @@ class TraceIdentity:
 
     Resolving the source lookup here (rather than inside trace_matches) is
     what keeps render()'s per-trace cost to a dict lookup plus the facet
-    checks themselves -- sources_by_path() is built once per dock, not once
+    checks themselves -- the path -> entry map is read once per dock, not once
     per trace (see plan's "Otvorené riziká": render() is a hot path).
     """
     channel_identity: ChannelIdentity
@@ -378,65 +378,6 @@ def _scalar_facet(name: str, offered_field: str, checked_field: str,
                  offers_empty, apply_defaults, dead_values)
 
 
-def _identity_columns_facet() -> Facet:
-    """
-    The built-in Identity facets other than Channel (Direction, Channel type,
-    File name, Data Pool label, Result set -- §1.33): one register row, the
-    per-column loop kept inside. Each column gates exactly like Channel; a trace
-    with no value for a column (no source, a blank direction) lands in that
-    column's "(Empty)" bucket and is gated through it.
-    """
-    def hides(identity: TraceIdentity, selection: FilterSelection, offered: "OfferedFacets",
-              schema: Dict[str, Dict[str, Any]]) -> bool:
-        for key, offered_values in offered.identity_values.items():
-            value = getattr(identity, IDENTITY_FACET_ATTR[key], None)
-            if value is None:
-                if key in offered.empty_buckets and key not in selection.checked_empty_buckets:
-                    return True
-            elif (value in offered_values
-                  and value not in selection.checked_identity_values.get(key, set())):
-                return True
-        return False
-
-    def offered_from_resolved(facets: "ResolvedFacets") -> Dict[str, FrozenSet[str]]:
-        return {key: frozenset(v for v in values if v != EMPTY_FACET_VALUE)
-                for key, values in (getattr(facets, "identity") or {}).items()}
-
-    def offers_empty(facets: "ResolvedFacets") -> Set[str]:
-        return {key for key, values in (getattr(facets, "identity") or {}).items()
-                if EMPTY_FACET_VALUE in values}
-
-    def apply_defaults(checks: "DefaultedChecks", offered: "OfferedFacets",
-                       previously_offered: Optional["OfferedFacets"]) -> None:
-        for key, offered_values in offered.identity_values.items():
-            current = checks.checked_identity_values.setdefault(key, set())
-            prior = (None if previously_offered is None
-                     else set(previously_offered.identity_values.get(key, frozenset())))
-            _default_step(current, set(offered_values), prior)
-            _fold_empty_default(key, checks, offered, previously_offered)
-
-    def dead_values(identities: List[TraceIdentity], selection: FilterSelection,
-                    schema: Dict[str, Dict[str, Any]], offered: "OfferedFacets") -> Dict[str, Set[Any]]:
-        dead: Dict[str, Set[Any]] = {}
-        for key, offered_values in offered.identity_values.items():
-            permissive = _permissive_selection(
-                selection, "checked_identity_values", key, set(offered_values), key)
-            survivors = [identity for identity in identities
-                        if trace_matches(identity, permissive, schema, offered)]
-            carried = {getattr(identity, IDENTITY_FACET_ATTR[key], None) for identity in identities}
-            present = {getattr(identity, IDENTITY_FACET_ATTR[key], None) for identity in survivors}
-            dead_column = {value for value in offered_values
-                           if value in carried and value not in present}
-            if key in offered.empty_buckets and None in carried and None not in present:
-                dead_column.add(EMPTY_FACET_VALUE)
-            if dead_column:
-                dead[key] = dead_column
-        return dead
-
-    return Facet("identity_columns", "identity_values", "checked_identity_values",
-                 hides, offered_from_resolved, offers_empty, apply_defaults, dead_values)
-
-
 def _snapped_signatures(signatures: Iterable[Signature],
                         parameter_sets: Tuple[ParameterSet, ...]) -> Set[Signature]:
     """`signatures` with each one replaced by the signature of the offered
@@ -515,60 +456,57 @@ def _parameter_set_facet() -> Facet:
                  hides, offered_from_resolved, offers_empty, apply_defaults, dead_values)
 
 
-def _metadata_columns_facet() -> Facet:
+def _column_facet(name: str, offered_field: str, checked_field: str, resolved_attr: str,
+                  read: Callable[[TraceIdentity, str, Dict[str, Dict[str, Any]]], Optional[str]]
+                  ) -> Facet:
     """
-    Discrete metadata fields: the sixth gating family. Each opted-in
-    categorical schema column on the card gates exactly like an Identity column
-    -- offered and unchecked hides the trace carrying that value; a trace whose
-    source has no value for the column, or no source at all, lands in the
-    column's "(Empty)" bucket. This replaces §1.29's "metadata imposes nothing
-    when its selection is empty" rule.
-
-    `hides` reads `schema` (the register's fourth argument, ignored by the other
-    families) because a metadata value is not pre-resolved onto `TraceIdentity`
-    the way an Identity value is -- it is read per field off the source here.
+    A keyed column family: one register row holding a per-column
+    loop. The built-in Identity columns (Direction, Channel type, File name, Data
+    Pool label, Result set -- §1.33) and the discrete Metadata fields are the same
+    rule -- offered and unchecked hides the trace carrying that value; a trace
+    with no value for the column (no source, a blank direction) lands in that
+    column's "(Empty)" bucket and is gated through it. They differ only in how a
+    value is read off the identity (`read(identity, key, schema)`, None for "no
+    value") and in the names of the `OfferedFacets` / `FilterSelection` /
+    `ResolvedFacets` fields they use.
     """
     def hides(identity: TraceIdentity, selection: FilterSelection, offered: "OfferedFacets",
               schema: Dict[str, Dict[str, Any]]) -> bool:
-        source = identity.source
-        for key, offered_values in offered.metadata_values.items():
-            value = (None if source is None else curve_field_value(
-                source, schema, key, identity.channel_identity, identity.channel_index))
+        checked = getattr(selection, checked_field)
+        for key, offered_values in getattr(offered, offered_field).items():
+            value = read(identity, key, schema)
             if value is None:
                 if key in offered.empty_buckets and key not in selection.checked_empty_buckets:
                     return True
-            elif (value in offered_values
-                  and value not in selection.checked_metadata_values.get(key, set())):
+            elif value in offered_values and value not in checked.get(key, set()):
                 return True
         return False
 
     def offered_from_resolved(facets: "ResolvedFacets") -> Dict[str, FrozenSet[str]]:
         return {key: frozenset(v for v in values if v != EMPTY_FACET_VALUE)
-                for key, values in (getattr(facets, "metadata") or {}).items()}
+                for key, values in (getattr(facets, resolved_attr) or {}).items()}
 
     def offers_empty(facets: "ResolvedFacets") -> Set[str]:
-        return {key for key, values in (getattr(facets, "metadata") or {}).items()
+        return {key for key, values in (getattr(facets, resolved_attr) or {}).items()
                 if EMPTY_FACET_VALUE in values}
 
     def apply_defaults(checks: "DefaultedChecks", offered: "OfferedFacets",
                        previously_offered: Optional["OfferedFacets"]) -> None:
-        for key, offered_values in offered.metadata_values.items():
-            current = checks.checked_metadata_values.setdefault(key, set())
-            prior = (None if previously_offered is None
-                     else set(previously_offered.metadata_values.get(key, frozenset())))
+        previous = None if previously_offered is None else getattr(previously_offered, offered_field)
+        for key, offered_values in getattr(offered, offered_field).items():
+            current = getattr(checks, checked_field).setdefault(key, set())
+            prior = None if previous is None else set(previous.get(key, frozenset()))
             _default_step(current, set(offered_values), prior)
             _fold_empty_default(key, checks, offered, previously_offered)
 
     def dead_values(identities: List[TraceIdentity], selection: FilterSelection,
                     schema: Dict[str, Dict[str, Any]], offered: "OfferedFacets") -> Dict[str, Set[Any]]:
         dead: Dict[str, Set[Any]] = {}
-        for key, offered_values in offered.metadata_values.items():
+        for key, offered_values in getattr(offered, offered_field).items():
             permissive = _permissive_selection(
-                selection, "checked_metadata_values", key, set(offered_values), key)
-            values = [None if identity.source is None else curve_field_value(
-                          identity.source, schema, key, identity.channel_identity,
-                          identity.channel_index)
-                      for identity in identities]
+                selection, checked_field, key, set(offered_values), key)
+            # One read per identity: a Metadata read walks the source's channels.
+            values = [read(identity, key, schema) for identity in identities]
             carried = set(values)
             present = {value for identity, value in zip(identities, values)
                        if trace_matches(identity, permissive, schema, offered)}
@@ -580,8 +518,34 @@ def _metadata_columns_facet() -> Facet:
                 dead[key] = dead_column
         return dead
 
-    return Facet("metadata_columns", "metadata_values", "checked_metadata_values",
-                 hides, offered_from_resolved, offers_empty, apply_defaults, dead_values)
+    return Facet(name, offered_field, checked_field, hides, offered_from_resolved,
+                 offers_empty, apply_defaults, dead_values)
+
+
+def _read_identity_column(identity: TraceIdentity, key: str,
+                          schema: Dict[str, Dict[str, Any]]) -> Optional[str]:
+    """A built-in Identity column's value, pre-resolved onto the identity (§1.33)."""
+    return getattr(identity, IDENTITY_FACET_ATTR[key], None)
+
+
+def _read_metadata_field(identity: TraceIdentity, key: str,
+                         schema: Dict[str, Dict[str, Any]]) -> Optional[str]:
+    """A Metadata field's value, read per curve off its source (§1.56); None
+    when the trace has no source or the source has no value for the field."""
+    if identity.source is None:
+        return None
+    return curve_field_value(identity.source, schema, key, identity.channel_identity,
+                             identity.channel_index)
+
+
+def _identity_columns_facet() -> Facet:
+    return _column_facet("identity_columns", "identity_values", "checked_identity_values",
+                         "identity", _read_identity_column)
+
+
+def _metadata_columns_facet() -> Facet:
+    return _column_facet("metadata_columns", "metadata_values", "checked_metadata_values",
+                         "metadata", _read_metadata_field)
 
 
 # The six gating-facet families of §1.29 / §1.56, in the §1.33 order: Channel,
@@ -668,13 +632,16 @@ def offering_from_facets(facets: "ResolvedFacets") -> OfferedFacets:
     The OfferedFacets record for one populate_facets() call, built by looping
     GATING_FACETS over the ResolvedFacets `resolve_panel_render` already holds
     (§1.55) -- carries no Qt so the "what is on offer" half of §1.29 can be
-    exercised without a QApplication.
+    exercised without a QApplication. Only the columns the round draws are on
+    offer (`ResolvedFacets.drawn`, ADR §1.175): a column the panel does not
+    show never gates a curve.
 
     Only `range_fields` is filled by hand: ranges are not a gating facet (an
     untouched range constrains nothing, the opposite rule) so they have no row
     in the register. `empty_buckets` is the union of every family's offered
     "(Empty)" tokens (§1.56).
     """
+    facets = facets.drawn()
     offered = {facet.offered_field: facet.offered_from_resolved(facets)
                for facet in GATING_FACETS}
     empty_buckets: Set[str] = set()
@@ -726,14 +693,40 @@ def resolve_default_checks(offered: OfferedFacets, previously_offered: Optional[
     return checks
 
 
+def resolve_drawn_checks(checks: DefaultedChecks, offered: OfferedFacets) -> DefaultedChecks:
+    """
+    `checks` with every gating family -- or keyed column -- that `offered`
+    does not carry forgotten, its "(Empty)" token included. A
+    column is drawn when it offers at least one value, "(Empty)" counting;
+    `offered` already holds only the drawn ones (`offering_from_facets`).
+    """
+    kept = replace(checks)
+    drawn_tokens: Set[str] = set()
+    for facet in GATING_FACETS:
+        offered_value = getattr(offered, facet.offered_field)
+        if isinstance(offered_value, dict):
+            drawn_tokens |= set(offered_value)
+            setattr(kept, facet.checked_field,
+                    {key: values for key, values in getattr(checks, facet.checked_field).items()
+                     if key in offered_value})
+        elif offered_value or facet.name in offered.empty_buckets:
+            drawn_tokens.add(facet.name)
+        else:
+            setattr(kept, facet.checked_field, set())
+    kept.checked_empty_buckets = {token for token in checks.checked_empty_buckets
+                                  if token in drawn_tokens}
+    return kept
+
+
 def _range_selection_matches(identity: "TraceIdentity", schema: Dict[str, Dict[str, Any]],
-                             selection: FilterSelection) -> bool:
+                             selection: FilterSelection, offered: OfferedFacets) -> bool:
     """
     Whether `identity`'s source (its own channel, for a channel-layer
     field) survives every touched range facet in
     `selection.checked_ranges` -- a key's presence there is the "user moved this
     range" flag (an untouched range is simply absent, see
-    FilterSelection.checked_ranges). Takes `selection`, not the extracted dict,
+    FilterSelection.checked_ranges) -- whose widget is on offer
+    (`offered.range_fields`, ADR §1.175). Takes `selection`, not the extracted dict,
     so `trace_matches` names no `checked_*` attribute directly (ADR §1.55 pin,
     test_architecture.py).
 
@@ -748,7 +741,8 @@ def _range_selection_matches(identity: "TraceIdentity", schema: Dict[str, Dict[s
         return True
     fields = ranged_schema_fields(schema)
     for key, bounds in checked_ranges.items():
-        if key not in fields or not bounds or identity.source is None:
+        if (key not in fields or key not in offered.range_fields or not bounds
+                or identity.source is None):
             continue
         if value_in_range(identity.source, key, fields[key], bounds,
                           identity.channel_identity, identity.channel_index) is False:
@@ -831,7 +825,8 @@ def trace_matches(identity: TraceIdentity, selection: FilterSelection,
       [lo, hi]; a trace with no resolvable value for that field passes, unlike
       the batch resolver's apply_range_facets which drops it (§1.29 again, one
       level down: a range is only a positive assertion for the sources it can
-      actually judge).
+      actually judge). A range whose widget is not on offer constrains nothing
+     .
 
     `offered` has no default: a caller that has no offering to pass is asking
     for the pre-§1.29 "empty means nothing survives" behaviour by accident,
@@ -847,7 +842,7 @@ def trace_matches(identity: TraceIdentity, selection: FilterSelection,
         if facet.hides(identity, selection, offered, schema):
             return False
 
-    if not _range_selection_matches(identity, schema, selection):
+    if not _range_selection_matches(identity, schema, selection, offered):
         return False
 
     return True

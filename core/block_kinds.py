@@ -66,6 +66,18 @@ PARAM_COMPUTATION = "computation"
 META_EFFECTIVE_F_START = "effective_f_start"
 META_EFFECTIVE_F_STOP = "effective_f_stop"
 
+# What invalid (NaN) samples in the time channel cost one result (#673), in
+# `metadata` for the same reason as the effective band: it is a property of
+# this file, not a setting, so it must not split a Parameter Set. Present only
+# when the channel had any. A spectrum loses frames out of its average, a
+# tracked result loses tracking steps (left NaN).
+META_INVALID_SAMPLES = "invalid_samples"
+META_SKIPPED_FRAMES = "skipped_frames"
+META_FRAMES = "frames"
+META_EMPTY_STEPS = "empty_steps"
+META_STEPS = "steps"
+INVALID_SAMPLE_KEYS = (META_INVALID_SAMPLES, META_SKIPPED_FRAMES, META_FRAMES, META_EMPTY_STEPS, META_STEPS)
+
 # Provenance.step of a block read from a file rather than computed. A result
 # kind read this way is an Imported result (§1.134): its numbers were computed
 # by another tool, so it has no SpectralProcessing to carry.
@@ -209,6 +221,20 @@ def validate(block: Any) -> None:
             f"claiming a window and correction factors would be a lie about the data. "
             f"That is exactly what the flat block used to do."
         )
+
+
+def resolve_invalid_samples(block: Any) -> int:
+    """
+    How many invalid (NaN) samples the time channel behind `block` held (#673),
+    0 for a clean one -- what a batch run counts files by for its summary line.
+    """
+    return int((block.metadata or {}).get(META_INVALID_SAMPLES) or 0)
+
+
+def resolve_invalid_sample_metadata(metadata: Any) -> Dict[str, Any]:
+    """The invalid-sample entries of a block's `metadata` (#673), for a rebuild to carry over."""
+    metadata = metadata or {}
+    return {key: metadata[key] for key in INVALID_SAMPLE_KEYS if key in metadata}
 
 
 def resolve_clipped_f_stop(block: Any) -> Optional[Tuple[float, float]]:

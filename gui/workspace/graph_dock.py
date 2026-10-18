@@ -45,7 +45,7 @@ from view_models.plot import (
     LiveChannelDrops,
     format_display_unit,
     HiddenReason,
-    LARGE_CURVE_POINTS,
+    resolve_curve_decimation,
     RenderingMode,
     Trace,
     amplitude_mode_for_kind,
@@ -564,38 +564,32 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
         items += self.secondary_axis.iter_curves()
         return items
 
-    # Below this point count, clipToView/autoDownsample only add slicing cost
-    # to every pan/zoom frame with nothing to show for it -- measured on a
-    # 700-point order cut, 100 curves: 19ms/move with clipping vs 12ms
-    # without, against a 16ms frame budget at 60fps (BUGS.md K2-redraw).
-    # Above it (a multi-million-sample time signal) the same slicing is what
-    # keeps panning smooth. The same value puts a graph on OpenGL.
-    _CLIP_POINT_THRESHOLD = LARGE_CURVE_POINTS
-
     def apply_viewport_clipping(self) -> None:
-        """Sweep clipping across all curves on this dock if geometry has been initialized (#276)."""
+        """Sweep clipping/downsampling across all curves on this dock if geometry has been
+        initialized (#276). The one GUI application of ``resolve_curve_decimation``: a resize
+        and a Settings change both end here (#665 C27)."""
         if not self._geometry_initialized:
             return
-        self._sweep_clip_flag(self.plot_widget.plotItem.items)
-        self._sweep_clip_flag(self.secondary_axis.iter_curves())
+        self._sweep_clip_flag(self.iter_all_plot_items())
 
     def _sweep_clip_flag(self, items):
-        # Graph Rendering preferences can only switch these off (#580): the point-count rule
-        # decides where they are worth enabling, the saved preference vetoes it.
         ctx = self.app_context
-        allow_auto = getattr(ctx, "perf_auto_mode_active", True) and getattr(ctx, "perf_downsample_enabled", True)
-        allow_clip = getattr(ctx, "perf_render_screen_only", True)
+        prefs = dict(
+            render_screen_only=getattr(ctx, "perf_render_screen_only", True),
+            downsample_enabled=getattr(ctx, "perf_downsample_enabled", True),
+            auto_mode=getattr(ctx, "perf_auto_mode_active", True),
+            manual_factor=getattr(ctx, "perf_manual_factor", 1),
+        )
         for item in items:
             if not isinstance(item, pg.PlotDataItem):
                 continue
             x_data = item.xData
-            large = x_data is not None and len(x_data) > self._CLIP_POINT_THRESHOLD
-            clip, auto = large and allow_clip, large and allow_auto
-            if item.opts.get('clipToView') == clip and item.opts.get('autoDownsample') == auto:
+            rule = resolve_curve_decimation(0 if x_data is None else len(x_data), **prefs)
+            if (item.opts.get('clipToView') == rule.clip and item.opts.get('autoDownsample') == rule.auto
+                    and item.opts.get('downsample') == rule.factor):
                 continue  # already in the right state -- updateItems() would be pure waste
-            item.opts['clipToView'] = clip
-            item.opts['autoDownsample'] = auto
-            item.updateItems()
+            item.setDownsampling(rule.factor, auto=rule.auto, method=None)
+            item.setClipToView(rule.clip)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

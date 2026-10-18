@@ -23,6 +23,7 @@ from core.block_kinds import KIND_ORDER_CUT, STEP_READ
 from core.data_block import Acquisition, NVHDataBlock, Provenance
 from core.models import FUNC_TYPE_ORDER_FUNCTION, ChannelMetadata, MeasurementRunIndex
 from core.units import determine_channel_type
+from io_modules.number_pairs import build_lost_rows_part, read_number_pairs
 
 # Fixed on purpose: the export script is fixed. A configurable pattern is the
 # import wizard's job (ROADMAP B14).
@@ -48,20 +49,12 @@ def _read_unit(header_line: str) -> str:
     return match.group(1).strip().replace("˛", "²")   # The script writes ² as ˛.
 
 
-def _read_file(file_path: str) -> Tuple[str, np.ndarray]:
-    """(unit, n×2 array of frequency, peak amplitude); rows that are not two numbers are dropped."""
+def _read_file(file_path: str) -> Tuple[str, np.ndarray, int]:
+    """(unit, n×2 array of frequency, peak amplitude, lost row count); see read_number_pairs."""
     with open(file_path, encoding="utf-8-sig") as stream:
         unit = _read_unit(stream.readline())
-        pairs = []
-        for line in stream:
-            cells = _split_line(line)
-            if len(cells) != 2:
-                continue
-            try:
-                pairs.append((float(cells[0]), float(cells[1])))
-            except ValueError:
-                continue
-    return unit, np.asarray(pairs, dtype=np.float64).reshape(-1, 2)
+        pairs, lost_rows = read_number_pairs(_split_line(line) for line in stream)
+    return unit, np.asarray(pairs, dtype=np.float64).reshape(-1, 2), lost_rows
 
 
 def is_ansys_file(file_path: str) -> bool:
@@ -95,7 +88,10 @@ class AccReaderAnsys:
         if run_index.available_channels:
             return
         design_point, name = _resolve_name(self.file_path)
-        unit, pairs = _read_file(self.file_path)
+        unit, pairs, lost_rows = _read_file(self.file_path)
+        lost_part = build_lost_rows_part(None, lost_rows)
+        if lost_part is not None:
+            run_index.lost_parts.append(lost_part)
         meta = ChannelMetadata(index=0, name=name,
                                channel_type=determine_channel_type(unit, name), unit=unit)
         meta.func_type = FUNC_TYPE_ORDER_FUNCTION
@@ -111,7 +107,7 @@ class AccReaderAnsys:
             raise IndexError(
                 f"Channel index {dataset_index} is not a channel of {os.path.basename(self.file_path)}.")
         _, name = _resolve_name(self.file_path)
-        unit, pairs = _read_file(self.file_path)
+        unit, pairs, _ = _read_file(self.file_path)
         return NVHDataBlock.order_cut(
             name=name, values=pairs[:, 1], rpm=pairs[:, 0] * 60, order=_ORDER,
             value_unit=unit, processing=None,

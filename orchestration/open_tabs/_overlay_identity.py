@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Mapping, Optional, Tuple
 
 from core.models import MeasurementRunIndex
 from io_modules.measurement_files import canonical_path
 from selection.channel_identity import resolve_channel_at_index
 from session.data_pool import build_source_lookup
 from session.open_tabs import TraceSpec
-from view_models.plot import GraphCurves
+from view_models.plot import GraphCurves, resolve_curve_channel_key
 
 
 def _pool_channel_name(run: Optional[MeasurementRunIndex], channel_index: int) -> Optional[str]:
@@ -19,15 +19,24 @@ def _pool_channel_name(run: Optional[MeasurementRunIndex], channel_index: int) -
 
 
 def build_overlay_trace_specs(curves: GraphCurves,
-                              loaded_runs: Iterable[MeasurementRunIndex]) -> List[TraceSpec]:
+                              loaded_runs: Iterable[MeasurementRunIndex],
+                              tab_cache_files: Optional[Mapping[Tuple[str, int], str]] = None,
+                              ) -> List[TraceSpec]:
     """The ``TraceSpec`` of every ``GraphCurves.overlay_traces`` curve.
 
     Named by the channel the Data Pool holds at that file and channel index,
     so the saved name is one ``resolve_trace`` finds again; a file no longer
-    in the pool keeps the curve's own channel name.
+    in the pool keeps the curve's own channel name. Each carries the recipe
+    its curve was computed with, which its re-drop computes with on reopen,
+    and its Tab cache file from ``tab_cache_files`` (keyed by
+    ``build_channel_key`` of the curve's file and channel index), which the
+    re-drop reads first.
     """
     source_lookup = build_source_lookup(list(loaded_runs))
-    return [_trace_spec(trace, source_lookup) for trace in curves.overlay_traces()]
+    names = tab_cache_files or {}
+    return [_trace_spec(trace, source_lookup, compute_spec=trace.compute_spec,
+                        tab_cache_file=names.get(resolve_curve_channel_key(trace)))
+            for trace in curves.overlay_traces()]
 
 
 def build_base_trace_spec(curves: GraphCurves,

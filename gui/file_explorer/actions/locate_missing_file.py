@@ -33,7 +33,7 @@ LOCATE_FILTER = (
 def execute_locate_missing_file(app_context, explorer_widget, run_index, data_pool=None) -> bool:
     """Asks where a missing measurement went and re-points the project at it."""
     session = app_context.project_session
-    entry = session.source_for_path(run_index.file_path)
+    entry = session.source_location.entry_for_run(run_index)
 
     if entry is None:
         QMessageBox.information(

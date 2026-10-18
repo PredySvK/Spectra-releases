@@ -7,7 +7,8 @@ signal_processing/dsp/steps/.
 
     frame_cutting    -> Frames, cut at a uniform hop and windowed
     frame_fft        -> Frames to Unscaled power, in fixed-size batches
-    frame_averaging  -> the batches to one averaged Unscaled power spectrum
+    frame_averaging  -> the batches, less any frame an invalid (NaN) sample
+                        fell in, to one averaged Unscaled power spectrum
     spectrum_scaling -> canonical bin energy (P_canon) in squared units
 
 Short and batch-size-agnostic on purpose: this is a recipe, not a second
@@ -20,6 +21,7 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 
 from core.benchmark import benchmark_step
+from core.block_kinds import META_FRAMES, META_SKIPPED_FRAMES
 from core.dsp_configs import (
     VALID_AMPLITUDE_MODES,
     VALID_AVERAGING_TYPES,
@@ -29,7 +31,7 @@ from core.dsp_configs import (
 from signal_processing.dsp.windows import generate_window
 from signal_processing.dsp.steps.frame_cutting import cut_frames, hop_size_for_overlap
 from signal_processing.dsp.steps.frame_fft import unscaled_power_batches
-from signal_processing.dsp.steps.frame_averaging import average_batches
+from signal_processing.dsp.steps.frame_averaging import FrameCount, average_batches, skip_invalid_frames
 from signal_processing.dsp.steps.spectrum_scaling import compute_canonical_power, scale_canonical_to_amplitude
 
 
@@ -65,9 +67,10 @@ def compute_averaged_spectrum(
     enbw_hz = enbw_factor * (fs / fft_size)
 
     # The frame pipeline is lazy: cutting, FFT and averaging all run inside this one call.
+    frame_count = FrameCount()
     with benchmark_step("cut_window_fft"):
         frames = cut_frames(time_data, fft_size, hop_size, win)
-        unscaled_batches = unscaled_power_batches(frames)
+        unscaled_batches = skip_invalid_frames(unscaled_power_batches(frames), frame_count)
         avg_power = average_batches(
             unscaled_batches,
             averaging_type=averaging_type,
@@ -96,5 +99,7 @@ def compute_averaged_spectrum(
         "amplitude_mode": amplitude_mode,
         "spectrum_format": spectrum_format,
         "averaging_type": averaging_type,
+        META_FRAMES: frame_count.frames,
+        META_SKIPPED_FRAMES: frame_count.skipped,
     }
     return frequencies, amplitudes, meta

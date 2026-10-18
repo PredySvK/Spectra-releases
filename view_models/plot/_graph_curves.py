@@ -40,6 +40,7 @@ from ._plot_model import PlotModel, Trace
 from ._display_rebuild import (
     rebuild_amplitude_mode_display,
     rebuild_spectrum_with_display_settings,
+    rebuild_with_base,
     rebuild_with_domain,
     rebuild_with_units,
 )
@@ -217,7 +218,6 @@ class GraphCurves:
         self._mask: Mask = None
         self._visible: Optional[VisibleTraces] = None
         self._overlay_count: int = 0
-        self._holds_result_content: bool = False
         self._loaded_result_set_ids: FrozenSet[str] = frozenset()
         self._pending_result_set_ids: FrozenSet[str] = frozenset()
         self._applied_mask_key: Optional[tuple] = None
@@ -257,9 +257,9 @@ class GraphCurves:
 
     @property
     def holds_result_content(self) -> bool:
-        """Whether a result set was ever loaded onto this graph. Stays True
-        after every one of them is unloaded again."""
-        return self._holds_result_content
+        """Whether a result set is loaded onto this graph or queued for it.
+        Ends with the last one unloaded or abandoned (#689)."""
+        return bool(self._loaded_result_set_ids or self._pending_result_set_ids)
 
     @property
     def loaded_result_set_ids(self) -> FrozenSet[str]:
@@ -626,7 +626,6 @@ class GraphCurves:
         queued submits nothing new, and an untick before it lands can still
         cancel it. The graph owns the whole lifecycle request -> land /
         abandon -> unload."""
-        self._holds_result_content = True
         self._pending_result_set_ids = self._pending_result_set_ids | frozenset(ids)
 
     def land_result_set(
@@ -663,8 +662,10 @@ class GraphCurves:
     def unload_result_sets(self, ref_ids: Iterable[str]) -> bool:
         """Forget ``ref_ids`` (loaded and queued) and drop every curve read
         from them (Trace.result_set_id) -- the base curve too, since a loaded
-        curve can become the base one; the first curve left takes its place.
-        True when that leaves the graph without a curve: the curves are left
+        curve can become the base one. Its place goes to the first curve left
+        on the primary axis, else the first one left, and every other curve is
+        re-routed onto the axes against it (#693), so two incompatible units
+        never end up sharing one. True when that leaves the graph without a curve: the curves are left
         as they were and the caller empties the canvas rather than rendering
         a model with none."""
         ids = set(ref_ids)
@@ -677,20 +678,14 @@ class GraphCurves:
             return False
         if not kept:
             return True
-        if not any(t.is_base for t in kept):
-            kept = [replace(kept[0], is_base=True, axis="primary"), *kept[1:]]
-        self._model.traces = kept
+        if any(t.is_base for t in kept):
+            self._model.traces = kept
+        else:
+            base_index = next((i for i, t in enumerate(kept) if t.axis == "primary"), 0)
+            self._model = rebuild_with_base(replace(self._model, traces=kept), base_index)
         self._resolve()
         self._notify(CurvesReplaced())
         return False
-
-    def mark_holds_result_content(self) -> None:
-        """Marks this graph as a result-content dock without touching which
-        sets are loaded or pending -- for the call that queues zero new reads
-        (everything asked for is already loaded or pending) but must still
-        flip channel_drop's multi-source treatment on (ARCHITECTURE_DECISIONS
-        §1.30/§1.31)."""
-        self._holds_result_content = True
 
     def _adopt_into_result_set(self, traces: Iterable[Trace], result_set_id: str) -> None:
         """Count the held curves ``traces`` as read from ``result_set_id``

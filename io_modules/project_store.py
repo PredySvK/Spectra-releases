@@ -22,13 +22,14 @@ in English.
 import json
 import os
 import shutil
-import tempfile
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
+from core.asset_paths import user_data_dir
 from core.project_model import (
     OLDEST_READABLE_PROJECT_FORMAT_VERSION,
+    PROJECT_EXTENSION,
     PROJECT_FORMAT_VERSION,
     DataRoot,
     NVHProject,
@@ -45,6 +46,10 @@ CACHE_DIR_NAME = "cache"
 # project's cache folder too, in their own subfolder so the HDF5 result sets
 # stay easy to browse.
 SCAN_CACHE_DIR_NAME = "scan"
+
+# The Tab cache (curves of the open tabs, ADR §1.178) sits beside the scan
+# caches, in its own subfolder; neither is a result set.
+TAB_CACHE_DIR_NAME = "tabs"
 
 # How long an Untitled scan cache file may sit in the shared temp area before a
 # startup sweep removes it.
@@ -122,6 +127,19 @@ def project_folder(project_path: str) -> str:
     return os.path.dirname(os.path.abspath(project_path))
 
 
+def project_files_in(folder: str) -> List[str]:
+    """Every project file directly in `folder` (absolute paths); [] if it does not exist."""
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return []
+    return sorted(
+        os.path.join(os.path.abspath(folder), name) for name in names
+        if name.lower().endswith(PROJECT_EXTENSION)
+        and os.path.isfile(os.path.join(folder, name))
+    )
+
+
 def cache_folder(project_path: str) -> str:
     """Folder holding the HDF5 result sets for this project."""
     return os.path.join(project_folder(project_path), CACHE_DIR_NAME)
@@ -132,6 +150,11 @@ def scan_cache_folder(project_path: str) -> str:
     return os.path.join(cache_folder(project_path), SCAN_CACHE_DIR_NAME)
 
 
+def tab_cache_folder(project_path: str) -> str:
+    """Folder holding this project's Tab cache, one subfolder per tab."""
+    return os.path.join(cache_folder(project_path), TAB_CACHE_DIR_NAME)
+
+
 def untitled_scan_cache_folder() -> str:
     """
     Scan cache location for a project with no file yet.
@@ -140,10 +163,11 @@ def untitled_scan_cache_folder() -> str:
     not be re-parsed on every rescan while the user is still deciding whether
     to save. The caches go to a shared temp area keyed by data-folder identity;
     ProjectSession.save_as copies the relevant ones into the project's own
-    cache/scan/ on the first save.
+    cache/scan/ on the first save. The area sits in the same
+    per-user folder as the logs, so the app keeps one folder of its own
+   .
     """
-    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
-    return os.path.join(base, "NVH_Tool", "untitled_scan")
+    return str(user_data_dir() / "untitled_scan")
 
 
 def prune_untitled_scan_cache(max_age_days: int = UNTITLED_SCAN_CACHE_MAX_AGE_DAYS) -> None:
@@ -373,32 +397,6 @@ def resolve_root_in(root_directories: Mapping[str, Optional[str]], root: DataRoo
     """A root's folder from a snapshot. A root added after the snapshot was
     made from a folder that existed then, so its absolute fallback stands."""
     return root_directories.get(root.id, root.absolute_fallback)
-
-
-def build_sources_by_path(roots: Sequence[DataRoot], sources: Sequence[SourceEntry],
-                          root_directories: Mapping[str, Optional[str]]) -> Dict[str, SourceEntry]:
-    """
-    Every source whose root resolves, keyed by its canonical path on this
-    machine. Pure, so a worker can run it over copies of the project's roots
-    and sources.
-
-    The sources are bucketed by root_id once rather than re-scanned for every
-    root: the nested walk was O(roots x sources) per call.
-    """
-    sources_by_root: Dict[str, list] = {}
-    for entry in sources:
-        sources_by_root.setdefault(entry.root_id, []).append(entry)
-
-    by_path: Dict[str, SourceEntry] = {}
-    for root in roots:
-        directory = resolve_root_in(root_directories, root)
-        if directory is None:
-            continue
-        for entry in sources_by_root.get(root.id, ()):
-            # First root wins, the same tie-break source_for_path() makes,
-            # so the pool and the cache never pick different entries.
-            by_path.setdefault(canonical_path(os.path.join(directory, entry.relpath)), entry)
-    return by_path
 
 
 def read_file_listing(directory: str) -> Dict[str, Optional[dict]]:

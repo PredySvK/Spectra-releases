@@ -12,8 +12,10 @@ import functools
 import glob
 import logging
 import os
-from typing import List, Optional
+from typing import List, Optional, Protocol, Union
 
+from core.data_block import NVHDataBlock, RawChannel
+from core.models import MeasurementRunIndex
 from core.source_amplitude import SOURCE_AMPLITUDE_PEAK, SOURCE_AMPLITUDE_RMS
 from io_modules.reader_unv import AccReaderUnv
 
@@ -21,7 +23,7 @@ from io_modules.reader_unv import AccReaderUnv
 # Single source of truth for which measurement files the workspace recognizes.
 # Both the directory scan and the startup cache validation read this, so the two
 # can never drift apart and disagree about what belongs in a workspace.
-SUPPORTED_EXTENSIONS = ("*.unv", "*.uff", "*.asc", "*.xlsx", "*.txt", "*.csv")
+SUPPORTED_EXTENSIONS = ("*.unv", "*.uff", "*.asc", "*.ldsf", "*.xlsx", "*.txt", "*.csv")
 
 _MEASUREMENT_SUFFIXES = frozenset(ext.replace("*", "").lower() for ext in SUPPORTED_EXTENSIONS)
 
@@ -76,6 +78,7 @@ _READERS_BY_SUFFIX = {
     ".unv": "AccReaderUnv",
     ".uff": "AccReaderUnv",
     ".asc": "AccReaderAsc",
+    ".ldsf": "AccReaderLdsf",
     ".xlsx": "AccReaderMasta",
     ".txt": "AccReaderProcessedMeasurement",
     ".csv": "AccReaderAnsys",
@@ -99,7 +102,7 @@ _DEFAULT_SOURCE_AMPLITUDE = {
 def resolve_imported_result_reader(file_path: str) -> Optional[str]:
     """
     The name of the Imported-result reader that opens this file, by suffix, or
-    None for a time signal (`.unv`, `.uff`, `.asc`). No disk access.
+    None for a time signal (`.unv`, `.uff`, `.asc`, `.ldsf`). No disk access.
     """
     reader_name = _READERS_BY_SUFFIX.get(os.path.splitext(file_path)[1].lower())
     return reader_name if reader_name in _DEFAULT_SOURCE_AMPLITUDE else None
@@ -116,7 +119,26 @@ def is_simulated_result_file(file_path: str) -> bool:
     return _READERS_BY_SUFFIX.get(suffix) in _SIMULATED_READERS
 
 
-def open_measurement_reader(file_path: str):
+class MeasurementReader(Protocol):
+    """
+    What open_measurement_reader hands out, whatever the format.
+
+    No part of the file is left out in silence. A part a call
+    cannot read either makes that call raise -- the file, or the channel, is
+    then not read at all -- or goes into `run_index.lost_parts`, which makes the
+    measurement Partially read. The blank cells below a column that has ended
+    are not a part of the file.
+    """
+    file_path: str
+
+    def scan_file_structure(self) -> MeasurementRunIndex: ...
+
+    def load_channels_on_demand(self, run_index: MeasurementRunIndex) -> None: ...
+
+    def read_single_channel_data(self, dataset_index: int) -> Union[RawChannel, NVHDataBlock]: ...
+
+
+def open_measurement_reader(file_path: str) -> MeasurementReader:
     """
     The reader for a measurement file, chosen by extension.
 
@@ -138,6 +160,9 @@ def open_measurement_reader(file_path: str):
     if reader_name == "AccReaderAsc":
         from io_modules.reader_asc import AccReaderAsc
         return AccReaderAsc(file_path)
+    if reader_name == "AccReaderLdsf":
+        from io_modules.reader_ldsf import AccReaderLdsf
+        return AccReaderLdsf(file_path)
     if reader_name == "AccReaderMasta":
         from io_modules.reader_masta import AccReaderMasta
         return AccReaderMasta(file_path)
@@ -222,8 +247,7 @@ def discover_measurement_folders(root_path: str) -> List[str]:
     supported measurement file.
 
     Lets a single "Add to Data Pool" click on a parent folder (e.g. a dataset
-    root with per-run subfolders) expand into one entry per leaf folder --
-    the same shape build_ingest_folder_map() already produces for a manual multi-select,
+    root with per-run subfolders) expand into one entry per leaf folder,
     so a parent-folder pick and hand-picking every child folder behave
     identically downstream. A folder is only listed if it has files directly
     in it; an empty organizational folder (no measurements anywhere below it)

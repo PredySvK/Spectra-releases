@@ -17,6 +17,7 @@ from orchestration.dock_tasks._dock_tasks import (
     PURPOSE_COMPUTE,
     PURPOSE_DROP,
     PURPOSE_EVALUATION,
+    PURPOSE_TAB_CACHE,
     DockTasks,
 )
 
@@ -25,4 +26,5 @@ __all__ = [
     "PURPOSE_COMPUTE",
     "PURPOSE_DROP",
     "PURPOSE_EVALUATION",
+    "PURPOSE_TAB_CACHE",
 ]

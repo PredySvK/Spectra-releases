@@ -81,6 +81,9 @@ def integrate_band(energy_spectrum: np.ndarray, frequencies: np.ndarray, *,
     Weighted sum of `energy_spectrum` (canonical bin energy P_canon or ECF-scaled
     power/PSD) over [f_start, f_stop], with `fixed_band_weights`.
 
+    Only bins the band weighs are read, so a NaN bin outside the band does not
+    leak in as 0 * NaN; one inside it makes the result NaN.
+
     Returns 0.0 for an empty band. `spectrum_format == "psd"` multiplies by
     df (a density needs the bin width to become energy); "power", "canonical", and
     "linear" do not, because their per-bin values are already energy, not
@@ -92,13 +95,15 @@ def integrate_band(energy_spectrum: np.ndarray, frequencies: np.ndarray, *,
         return 0.0
     df = frequencies[1] - frequencies[0]
     weight = fixed_band_weights(frequencies, f_start=f_start, f_stop=f_stop)
+    inside = weight > 0.0
 
-    if not np.any(weight > 0.0):
+    if not np.any(inside):
         return 0.0
 
+    integral = float(np.sum(weight[inside] * energy_spectrum[inside]))
     if spectrum_format == "psd":
-        return float(df * np.sum(weight * energy_spectrum))
-    return float(np.sum(weight * energy_spectrum))
+        return df * integral
+    return integral
 
 
 def integrate_band_rows(energy_matrix: np.ndarray, frequencies: np.ndarray, *,
@@ -106,7 +111,8 @@ def integrate_band_rows(energy_matrix: np.ndarray, frequencies: np.ndarray, *,
                         f_stop=None) -> np.ndarray:
     """
     `integrate_band` of every row of `energy_matrix` (n_rows, n_freqs) over one
-    fixed band -- Overall Level, one row per tracking step. Zeros for an empty band.
+    fixed band -- Overall Level, one row per tracking step. Zeros for an empty band;
+    like `integrate_band`, only the bins the band weighs are read.
     """
     frequencies = np.asarray(frequencies, dtype=np.float64)
     energy_matrix = np.asarray(energy_matrix, dtype=np.float64)
@@ -114,7 +120,8 @@ def integrate_band_rows(energy_matrix: np.ndarray, frequencies: np.ndarray, *,
         return np.zeros(energy_matrix.shape[0], dtype=np.float64)
     weight = fixed_band_weights(frequencies, f_start=f_start, f_stop=f_stop)
 
-    integrated = np.sum(energy_matrix * weight[np.newaxis, :], axis=1)
+    inside = weight > 0.0
+    integrated = np.sum(energy_matrix[:, inside] * weight[np.newaxis, inside], axis=1)
     if spectrum_format == "psd":
         integrated = integrated * (frequencies[1] - frequencies[0])
     return integrated

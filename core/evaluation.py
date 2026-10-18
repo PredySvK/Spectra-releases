@@ -68,10 +68,9 @@ class SingleValue:
         amplitude_mode: str = "rms",
         prefs: Optional[UnitPreferences] = None,
     ) -> Tuple[Optional[float], str]:
-        """The Single value in the requested Format x Amplitude view. The
-        position of the maximum does not move between views (ADR §1.64 point
-        4: they are monotonic rescales of the same canonical number), so
-        `sample_index` stays valid however this is called."""
+        """The Single value in the requested Format x Amplitude view. Format
+        and lin/dB never move a maximum, Amplitude can: read a
+        row from `EvaluationTable.rows_in` of the same `amplitude_mode`."""
         if self.is_empty:
             empty_unit = self.block.value_unit
             if prefs is not None:
@@ -111,10 +110,23 @@ class EvaluationTable:
     """All the Single values one Evaluation produced over a dock's curves,
     plus which Evaluation and with what parameters (CONTEXT.md Evaluation
     table) -- so a pivot or trend view downstream never has to ask a second
-    place what produced its rows."""
+    place what produced its rows.
+
+    `rows` are the maxima of the RMS view, `peak_rows` those of the Peak view
+   : a spectrum's DC and Nyquist bins are not doubled for Peak,
+    so its maxima -- positions, order, even which ones there are -- can differ
+    between the two. None means the Evaluation's rows do not depend on
+    Amplitude and `rows` serve both."""
     evaluation_name: str
     params: Dict[str, Any]
     rows: Tuple[SingleValue, ...]
+    peak_rows: Optional[Tuple[SingleValue, ...]] = None
+
+    def rows_in(self, amplitude_mode: str) -> Tuple[SingleValue, ...]:
+        """The rows to show when the table's Amplitude switch is `amplitude_mode`."""
+        if amplitude_mode == "peak" and self.peak_rows is not None:
+            return self.peak_rows
+        return self.rows
 
 
 @dataclass(frozen=True)

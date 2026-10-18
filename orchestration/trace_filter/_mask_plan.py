@@ -79,8 +79,10 @@ def plan_mask_application(
     def predicate(trace: Trace) -> bool:
         return trace_matches(identity(trace), selection, schema, offered)
 
+    offered_ranges = {key: bounds for key, bounds in selection.checked_ranges.items()
+                      if key in offered.range_fields}
     missing = missing_range_value_fields(
-        [identity(trace) for trace in traces], schema, selection.checked_ranges
+        [identity(trace) for trace in traces], schema, offered_ranges
     )
     messages = tuple(
         f"WARNING: Filter '{schema.get(field, {}).get('custom_label', field)}' -- some curves on this graph have no value for it and are shown anyway."

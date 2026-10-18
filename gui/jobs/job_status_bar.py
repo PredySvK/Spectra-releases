@@ -65,12 +65,13 @@ class JobStatusBar(QWidget):
 
     open_jobs_requested = Signal()
 
-    def __init__(self, job_manager, parent=None, linger_ms: int = LINGER_MS):
+    def __init__(self, job_runner, parent=None, linger_ms: int = LINGER_MS):
         super().__init__(parent)
-        self.job_manager = job_manager
+        self.job_runner = job_runner
         self._job_id = None
         self._cancelling_job_id = None
         self._full_text = ""
+        self._note = None
 
         # Two rows rather than one: the Filters column is narrow, and the
         # label is the part that needs the width.
@@ -113,15 +114,15 @@ class JobStatusBar(QWidget):
         self._linger.timeout.connect(self._refresh)
 
         self.btn_cancel.clicked.connect(self._cancel_current)
-        job_manager.job_added.connect(self._refresh)
-        job_manager.job_changed.connect(self._refresh)
-        job_manager.job_finished.connect(self._refresh)
+        job_runner.job_added.connect(self._refresh)
+        job_runner.job_changed.connect(self._refresh)
+        job_runner.job_finished.connect(self._refresh)
 
         self._refresh()
 
     def _cancel_current(self):
         if self._job_id is not None:
-            self.job_manager.cancel(self._job_id)
+            self.job_runner.cancel(self._job_id)
             # cancel() only sets the token; a job with a step in flight stays
             # RUNNING until it returns, so the button has to disable itself to
             # show the click registered. The old `state is not CANCELLED` guard
@@ -132,10 +133,28 @@ class JobStatusBar(QWidget):
 
     def _pick_job(self):
         """Newest loud running job, or None."""
-        loud = [r for r in self.job_manager.running_jobs() if not r.quiet]
+        loud = [r for r in self.job_runner.running_jobs() if not r.quiet]
         return loud[-1] if loud else None
 
+    def show_note(self, text) -> None:
+        """
+        Puts `text` on the strip in place of any job until `show_note(None)`:
+        work the user is waiting on that is no job of its own, such as
+        closing while Tab cache writes finish (#731).
+        """
+        self._note = text or None
+        self._refresh()
+
     def _refresh(self, _job_id=None):
+        if self._note is not None:
+            self._linger.stop()
+            self._set_text(self._note)
+            self.bar.setFormat(_PLAIN_FORMAT)
+            self.bar.setTextVisible(False)
+            self.bar.setValue(0)
+            self.others.setText("")
+            self.btn_cancel.setEnabled(False)
+            return
         record = self._pick_job()
         if record is not None:
             self._linger.stop()
@@ -144,7 +163,7 @@ class JobStatusBar(QWidget):
 
         if self._job_id is not None:
             # The job on the strip just ended: hold its outcome for a moment.
-            finished = self.job_manager.record(self._job_id)
+            finished = self.job_runner.record(self._job_id)
             self._job_id = None
             if finished is not None and not finished.is_running:
                 self._show_finished(finished)
@@ -164,7 +183,7 @@ class JobStatusBar(QWidget):
         self.bar.setTextVisible(True)
         self.bar.setValue(record.percent)
 
-        running = len(self.job_manager.running_jobs())
+        running = len(self.job_runner.running_jobs())
         self.others.setText(f"+{running - 1} more" if running > 1 else "")
         self.btn_cancel.setEnabled(record.job_id != self._cancelling_job_id)
 

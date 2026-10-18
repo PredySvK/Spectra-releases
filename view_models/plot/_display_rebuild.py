@@ -5,8 +5,8 @@ global units, X domain -- without disk I/O or DSP recomputation.
 
 from __future__ import annotations
 
-from dataclasses import replace
-from typing import List, Optional
+from dataclasses import dataclass, replace
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -33,6 +33,132 @@ from ._plot_model_builder import (
 )
 
 
+@dataclass(frozen=True)
+class _RebuildRules:
+    """
+    What differs between the three in-memory rebuilds of a finished model; the
+    pass itself (``_rebuild_traces``) is the same for all of them.
+
+    ``linear`` -> a trace's (values, unit) before the global-unit conversion.
+    ``is_db`` / ``is_squared`` -> whether a trace ends in dB, and with which dB
+    formula. ``legend`` -> its legend for a unit label. ``new_spec`` -> its new
+    compute_spec, or None to leave it. ``writes_source``: the linear values
+    become the trace's ``y_raw`` / ``source_unit``. ``align_in_db``: a dB
+    overlay that shares the primary axis is first converted to the base unit
+    (only the units rebuild does, ADR §1.89).
+    """
+
+    linear: Callable[[Trace], Tuple[np.ndarray, str]]
+    is_db: Callable[[Trace], bool]
+    is_squared: Callable[[Trace], bool]
+    legend: Callable[[Trace, str], str]
+    new_spec: Callable[[Trace], Optional[Dict[str, Any]]]
+    writes_source: bool
+    align_in_db: bool
+
+
+def _rebuild_traces(model: PlotModel, prefs: UnitPreferences, rules: _RebuildRules) -> PlotModel:
+    """
+    The one pass over ``model``'s traces in the display units of ``prefs`` (ADR
+    §1.60, §1.89): physical unit conversion first, dB from the converted values
+    last. The base curve fixes the primary axis unit; a compatible overlay is
+    re-aligned onto it, an incompatible one keeps its own on the secondary axis;
+    legend and the ordinate label follow.
+    """
+    new_traces: List[Trace] = []
+    base_unit: Optional[str] = None
+    base_channel_type: Optional[str] = None
+    base_is_db = False
+    base_idx = _base_trace_index(model)
+
+    for i, tr in enumerate(model.traces):
+        y_lin, unit_lin = rules.linear(tr)
+        render_y, target_unit = convert_signal_to_global_unit(y_lin, unit_lin, tr.channel_type, prefs)
+        sanitized = sanitize_unit_string(target_unit)
+        was_db = rules.is_db(tr)
+
+        changes: Dict[str, Any] = {}
+        if rules.writes_source:
+            changes.update(y_raw=y_lin, source_unit=unit_lin)
+        compute = rules.new_spec(tr)
+        if compute is not None:
+            changes["compute_spec"] = compute
+
+        y, unit = render_y, sanitized
+        if tr.is_base or i == base_idx:
+            base_unit, base_channel_type, base_is_db = sanitized, tr.channel_type, was_db
+            changes.update(is_base=True, axis="primary")
+        else:
+            axis = resolve_overlay_axis(base_unit, sanitized, base_is_db=base_is_db, overlay_is_db=was_db)
+            if (axis == "primary" and base_unit and check_units_compatibility(base_unit, sanitized)
+                    and (rules.align_in_db or not was_db)):
+                y = convert_numeric_array(render_y, from_unit=sanitized, to_unit=base_unit)
+                unit = base_unit
+            changes["axis"] = axis
+        if was_db:
+            y, unit = to_decibels(y, rules.is_squared(tr)), "dB"
+        new_traces.append(replace(tr, y=y, unit=unit, label=rules.legend(tr, unit), **changes))
+
+    if base_unit is None:
+        view = model.view
+    elif base_is_db:
+        view = replace(model.view, y_label="Amplitude", y_unit="dB")
+    else:
+        view = replace(model.view, y_label=_y_axis_label(base_channel_type or ""),
+                       y_unit=format_display_unit(base_unit))
+    return replace(model, traces=new_traces, view=view)
+
+
+def _plain_legend(tr: Trace, unit: str) -> str:
+    return build_legend_text(tr.file_name, tr.channel_name, unit, tr.meta_ref)
+
+
+def _kind_legend(tr: Trace, unit: str) -> str:
+    """The legend of ``tr`` for ``unit`` -- a level curve keeps its band text."""
+    base_legend = _plain_legend(tr, unit)
+    if tr.block is not None and getattr(tr.block, "kind", None) in LEVEL_CURVE_KINDS:
+        return _level_legend_text(tr.block, base_legend)
+    return base_legend
+
+
+def rebuild_with_base(model: PlotModel, base_index: int) -> PlotModel:
+    """
+    ``model`` with trace ``base_index`` as its base curve and every other trace
+    re-routed onto the primary or secondary axis against it (#693) -- for when
+    the base curve left the graph. Works on the units the traces are already
+    shown in (no unit preferences, no raw data): a trace sharing the new
+    primary axis in a compatible unit spelled differently is converted onto
+    the base unit; values, dB state and pens are otherwise left as they are.
+    The ordinate label follows the new base.
+    """
+    base = model.traces[base_index]
+    base_unit = base.unit
+    base_is_db = base_unit == "dB"
+    new_traces: List[Trace] = []
+    for i, tr in enumerate(model.traces):
+        if i == base_index:
+            new_traces.append(replace(tr, is_base=True, axis="primary"))
+            continue
+        is_db = tr.unit == "dB"
+        axis = resolve_overlay_axis(base_unit, tr.unit, base_is_db=base_is_db, overlay_is_db=is_db)
+        changes: Dict[str, Any] = dict(is_base=False, axis=axis)
+        if axis == "primary" and not is_db and tr.unit != base_unit:
+            changes.update(y=convert_numeric_array(tr.y, from_unit=tr.unit, to_unit=base_unit),
+                           unit=base_unit, label=_kind_legend(tr, base_unit))
+        new_traces.append(replace(tr, **changes))
+
+    if base_is_db:
+        view = replace(model.view, y_label="Amplitude", y_unit="dB")
+    else:
+        view = replace(model.view, y_label=_y_axis_label(base.channel_type or ""),
+                       y_unit=format_display_unit(base_unit))
+    return replace(model, traces=new_traces, view=view)
+
+
+def _is_canonical(tr: Trace) -> bool:
+    return tr.block is not None and getattr(tr.block, "is_canonical", False)
+
+
 def rebuild_spectrum_with_display_settings(
     model: PlotModel,
     *,
@@ -45,107 +171,31 @@ def rebuild_spectrum_with_display_settings(
     Re-scales a spectrum PlotModel on the fly from its canonical blocks.
     Runs purely in-memory (< 1 ms), without disk I/O or DSP recomputation.
     """
-    prefs = prefs or UnitPreferences()
-    new_traces: List[Trace] = []
-    base_unit: Optional[str] = None
-    base_channel_type: Optional[str] = None
-    base_idx = _base_trace_index(model)
+    def linear(tr: Trace):
+        if _is_canonical(tr):
+            return tr.block.to_display_values(spectrum_format=spectrum_format, amplitude_mode=amplitude_mode)
+        return tr.y_raw, tr.source_unit
 
-    for i, tr in enumerate(model.traces):
-        if tr.block is not None and getattr(tr.block, "is_canonical", False):
-            y_disp, unit_disp = tr.block.to_display_values(
-                spectrum_format=spectrum_format, amplitude_mode=amplitude_mode
-            )
-        else:
-            y_disp, unit_disp = tr.y_raw, tr.source_unit
+    def is_squared(tr: Trace) -> bool:
+        if _is_canonical(tr):
+            return is_squared_format(spectrum_format)
+        return bool(tr.compute_spec and is_squared_format(tr.compute_spec.get("spectrum_format")))
 
-        render_y, target_unit = convert_signal_to_global_unit(
-            y_disp, unit_disp, tr.channel_type, prefs
-        )
-        sanitized = sanitize_unit_string(target_unit)
+    def new_spec(tr: Trace) -> Dict[str, Any]:
+        updated = dict(tr.compute_spec or {})
+        updated["spectrum_format"] = spectrum_format
+        updated["amplitude_mode"] = amplitude_mode
+        return updated
 
-        if decibel_scale:
-            if tr.block is not None and getattr(tr.block, "is_canonical", False):
-                is_squared = is_squared_format(spectrum_format)
-            else:
-                is_squared = bool(tr.compute_spec and is_squared_format(tr.compute_spec.get("spectrum_format")))
-            final_y = to_decibels(render_y, is_squared)
-            final_unit = "dB"
-            legend_text = build_legend_text(
-                tr.file_name, tr.channel_name, "dB", tr.meta_ref
-            )
-        else:
-            final_y = render_y
-            final_unit = sanitized
-            legend_text = build_legend_text(
-                tr.file_name, tr.channel_name, sanitized, tr.meta_ref
-            )
-
-        updated_compute = dict(tr.compute_spec or {})
-        updated_compute["spectrum_format"] = spectrum_format
-        updated_compute["amplitude_mode"] = amplitude_mode
-
-        is_base = tr.is_base or (i == base_idx)
-        if is_base:
-            base_unit = final_unit
-            base_channel_type = tr.channel_type
-            new_traces.append(replace(
-                tr,
-                y=final_y,
-                y_raw=y_disp,
-                source_unit=unit_disp,
-                unit=final_unit,
-                label=legend_text,
-                compute_spec=updated_compute,
-                is_base=True,
-                axis="primary",
-            ))
-            continue
-
-        axis = resolve_overlay_axis(
-            base_unit,
-            sanitized,
-            base_is_db=decibel_scale,
-            overlay_is_db=decibel_scale,
-        )
-        if axis == "primary" and not decibel_scale:
-            aligned_y = convert_numeric_array(render_y, from_unit=sanitized, to_unit=base_unit)
-            legend_text = build_legend_text(
-                tr.file_name, tr.channel_name, base_unit, tr.meta_ref
-            )
-            new_traces.append(replace(
-                tr,
-                y=aligned_y,
-                y_raw=y_disp,
-                source_unit=unit_disp,
-                unit=base_unit,
-                label=legend_text,
-                compute_spec=updated_compute,
-                axis="primary",
-            ))
-        else:
-            new_traces.append(replace(
-                tr,
-                y=final_y,
-                y_raw=y_disp,
-                source_unit=unit_disp,
-                unit=final_unit,
-                label=legend_text,
-                compute_spec=updated_compute,
-                axis=axis,
-            ))
-
-    if base_unit is not None:
-        if decibel_scale:
-            view = replace(model.view, y_label="Amplitude", y_unit="dB")
-        else:
-            view = replace(
-                model.view,
-                y_label=_y_axis_label(base_channel_type or ""),
-                y_unit=format_display_unit(base_unit),
-            )
-    else:
-        view = model.view
+    rebuilt = _rebuild_traces(model, prefs or UnitPreferences(), _RebuildRules(
+        linear=linear,
+        is_db=lambda tr: decibel_scale,
+        is_squared=is_squared,
+        legend=_plain_legend,
+        new_spec=new_spec,
+        writes_source=True,
+        align_in_db=False,
+    ))
 
     new_band_rms_cursors = []
     for c in model.band_rms_cursors:
@@ -156,8 +206,7 @@ def rebuild_spectrum_with_display_settings(
             new_band_rms_cursors.append(replace(c, processing=p))
         else:
             new_band_rms_cursors.append(c)
-
-    return replace(model, traces=new_traces, view=view, band_rms_cursors=new_band_rms_cursors)
+    return replace(rebuilt, band_rms_cursors=new_band_rms_cursors)
 
 
 def rebuild_amplitude_mode_display(
@@ -179,92 +228,29 @@ def rebuild_amplitude_mode_display(
     matching this dock's own kind. Any other trace rescales from its own
     ``y_raw``/``source_unit``.
     """
-    prefs = prefs or UnitPreferences()
-    new_traces: List[Trace] = []
-    base_unit: Optional[str] = None
-    base_channel_type: Optional[str] = None
-    base_idx = _base_trace_index(model)
-
-    for i, tr in enumerate(model.traces):
+    def linear(tr: Trace):
         block = tr.block
         kind = getattr(block, "kind", None) if block is not None else None
-        is_level_curve = kind in LEVEL_CURVE_KINDS
-
         if kind in RMS_PEAK_CURVE_KINDS:
-            raw_unscaled = block.values
-            raw_unscaled_unit = block.value_unit
+            raw, raw_unit = block.values, block.value_unit
         else:
-            raw_unscaled = tr.y_raw
-            raw_unscaled_unit = tr.source_unit
+            raw, raw_unit = tr.y_raw, tr.source_unit
+        return _linear_amplitude_display(raw, raw_unit, amplitude_mode)
 
-        scaled_y, order_unit = _linear_amplitude_display(raw_unscaled, raw_unscaled_unit, amplitude_mode, block=block)
+    def new_spec(tr: Trace) -> Dict[str, Any]:
+        updated = dict(tr.compute_spec or {})
+        updated["amplitude_mode"] = amplitude_mode
+        return updated
 
-        render_y, target_unit = convert_signal_to_global_unit(
-            scaled_y, order_unit, tr.channel_type, prefs
-        )
-        sanitized = sanitize_unit_string(target_unit)
-
-        updated_compute = dict(tr.compute_spec or {})
-        updated_compute["amplitude_mode"] = amplitude_mode
-
-        def _legend(unit_value: str) -> str:
-            base_legend = build_legend_text(
-                tr.file_name, tr.channel_name, unit_value, tr.meta_ref
-            )
-            return _level_legend_text(block, base_legend) if is_level_curve else base_legend
-
-        is_base = tr.is_base or (i == base_idx)
-        if is_base:
-            base_unit = sanitized
-            base_channel_type = tr.channel_type
-            new_traces.append(replace(
-                tr,
-                y=render_y,
-                y_raw=scaled_y,
-                source_unit=order_unit,
-                unit=sanitized,
-                label=_legend(sanitized),
-                compute_spec=updated_compute,
-                is_base=True,
-                axis="primary",
-            ))
-            continue
-
-        axis = resolve_overlay_axis(base_unit, sanitized)
-        if axis == "primary":
-            aligned_y = convert_numeric_array(render_y, from_unit=sanitized, to_unit=base_unit)
-            new_traces.append(replace(
-                tr,
-                y=aligned_y,
-                y_raw=scaled_y,
-                source_unit=order_unit,
-                unit=base_unit,
-                label=_legend(base_unit),
-                compute_spec=updated_compute,
-                axis="primary",
-            ))
-        else:
-            new_traces.append(replace(
-                tr,
-                y=render_y,
-                y_raw=scaled_y,
-                source_unit=order_unit,
-                unit=sanitized,
-                label=_legend(sanitized),
-                compute_spec=updated_compute,
-                axis=axis,
-            ))
-
-    if base_unit is not None:
-        view = replace(
-            model.view,
-            y_label=_y_axis_label(base_channel_type or ""),
-            y_unit=format_display_unit(base_unit),
-        )
-    else:
-        view = model.view
-
-    return replace(model, traces=new_traces, view=view)
+    return _rebuild_traces(model, prefs or UnitPreferences(), _RebuildRules(
+        linear=linear,
+        is_db=lambda tr: False,
+        is_squared=lambda tr: False,
+        legend=_kind_legend,
+        new_spec=new_spec,
+        writes_source=True,
+        align_in_db=False,
+    ))
 
 
 def rebuild_with_units(model: PlotModel, prefs: UnitPreferences) -> PlotModel:
@@ -278,84 +264,15 @@ def rebuild_with_units(model: PlotModel, prefs: UnitPreferences) -> PlotModel:
     linear value last, off its own pre-rebuild ``unit`` and its
     ``compute_spec["spectrum_format"]``.
     """
-    new_traces: List[Trace] = []
-    base_unit: Optional[str] = None
-    base_channel_type: Optional[str] = None
-    base_is_db = False
-
-    def _to_db_if_needed(y: np.ndarray, unit: str, was_db: bool, is_squared: bool):
-        if not was_db:
-            return y, unit
-        return to_decibels(y, is_squared), "dB"
-
-    base_idx = _base_trace_index(model)
-
-    for i, tr in enumerate(model.traces):
-        render_y, target_unit = convert_signal_to_global_unit(
-            tr.y_raw, tr.source_unit, tr.channel_type, prefs
-        )
-        sanitized = sanitize_unit_string(target_unit)
-        was_db = tr.unit == "dB"
-        is_squared = is_squared_format((tr.compute_spec or {}).get("spectrum_format"))
-
-        is_base = tr.is_base or (i == base_idx)
-        if is_base:
-            base_unit = sanitized
-            base_channel_type = tr.channel_type
-            base_is_db = was_db
-            final_y, final_unit = _to_db_if_needed(render_y, sanitized, was_db, is_squared)
-            legend = build_legend_text(
-                tr.file_name, tr.channel_name, final_unit, tr.meta_ref
-            )
-            new_traces.append(replace(
-                tr,
-                y=final_y,
-                unit=final_unit,
-                label=legend,
-                is_base=True,
-                axis="primary",
-            ))
-            continue
-
-        axis = resolve_overlay_axis(
-            base_unit,
-            sanitized,
-            base_is_db=base_is_db,
-            overlay_is_db=was_db,
-        )
-        if axis == "primary" and base_unit and check_units_compatibility(base_unit, sanitized):
-            aligned_y = convert_numeric_array(render_y, from_unit=sanitized, to_unit=base_unit)
-            final_y, final_unit = _to_db_if_needed(aligned_y, base_unit, was_db, is_squared)
-            legend = build_legend_text(
-                tr.file_name, tr.channel_name, final_unit, tr.meta_ref
-            )
-            new_traces.append(replace(tr, y=final_y, unit=final_unit, label=legend, axis="primary"))
-        else:
-            final_y, final_unit = _to_db_if_needed(render_y, sanitized, was_db, is_squared)
-            legend = build_legend_text(
-                tr.file_name, tr.channel_name, final_unit, tr.meta_ref
-            )
-            new_traces.append(replace(
-                tr,
-                y=final_y,
-                unit=final_unit,
-                label=legend,
-                axis=axis,
-            ))
-
-    if base_unit is not None:
-        if base_is_db:
-            view = replace(model.view, y_label="Amplitude", y_unit="dB")
-        else:
-            view = replace(
-                model.view,
-                y_label=_y_axis_label(base_channel_type or ""),
-                y_unit=format_display_unit(base_unit),
-            )
-    else:
-        view = model.view
-
-    return replace(model, traces=new_traces, view=view)
+    return _rebuild_traces(model, prefs, _RebuildRules(
+        linear=lambda tr: (tr.y_raw, tr.source_unit),
+        is_db=lambda tr: tr.unit == "dB",
+        is_squared=lambda tr: is_squared_format((tr.compute_spec or {}).get("spectrum_format")),
+        legend=_plain_legend,
+        new_spec=lambda tr: None,
+        writes_source=False,
+        align_in_db=True,
+    ))
 
 
 def rebuild_with_domain(model: PlotModel, to_quantity: str) -> PlotModel:

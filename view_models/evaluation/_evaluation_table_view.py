@@ -26,12 +26,13 @@ from core.axis_projections import X_AXIS_NATIVE, resolve_x_axis_display
 from core.data_block import KIND_SPECTRUM
 from core.evaluation import EvaluationTable, SingleValue
 from core.filter_card_config import (
-    BUILTIN_COLUMN_KEYS, BUILTIN_COLUMN_LABELS,
     COLUMN_CHANNEL, COLUMN_DIRECTION, COLUMN_FILE_NAME,
     COLUMN_ORDER, COLUMN_PARAMETER_SET, COLUMN_RESULT_SET,
 )
 from core.units import UnitPreferences
 from io_modules.metadata_schema import parse_value
+
+from ._evaluation_columns import build_column_descriptor
 
 COLUMNS = ("Channel", "Measurement", "Source", "Order / Band", "Value (RMS)", "at X", "Edge", "Parameter Set")
 
@@ -48,12 +49,7 @@ class RowCells:
 
 def _header_label_for_column(col_key: str, schema: Mapping[str, Mapping[str, Any]]) -> str:
     """Returns human-readable column label for a built-in or schema metadata field."""
-    if col_key in BUILTIN_COLUMN_LABELS:
-        return BUILTIN_COLUMN_LABELS[col_key]
-    if col_key in schema:
-        cfg = schema[col_key]
-        return cfg.get("custom_label") or cfg.get("field_name") or col_key
-    return col_key
+    return build_column_descriptor(col_key, schema).label
 
 
 def active_metadata_columns(
@@ -64,11 +60,8 @@ def active_metadata_columns(
     stays selected in EvaluationConfig but drops out of the table."""
     active: List[str] = []
     for col_key in selected_cols:
-        if col_key in BUILTIN_COLUMN_KEYS:
+        if build_column_descriptor(col_key, schema).is_active:
             active.append(col_key)
-        elif col_key in schema:
-            if schema[col_key].get("is_active", True) is not False:
-                active.append(col_key)
     return active
 
 
@@ -85,7 +78,7 @@ def table_headers(
     called with for the row cells to line up with these headers."""
     units = set()
     x_units = set()
-    for row in table.rows:
+    for row in table.rows_in(amp_mode):
         if not row.is_empty:
             _, u = row.display_value(spec_format, amp_mode, prefs)
             if u:
@@ -305,10 +298,11 @@ def rows_for_table(
     active_meta_cols: Sequence[str] = (),
     schema: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> List[RowCells]:
-    """Computes one RowCells per row of table, in table.rows order."""
+    """Computes one RowCells per row the table holds for `amplitude_mode`
+    (EvaluationTable.rows_in), in that order."""
     return [
         _row_cells(single, spectrum_format, amplitude_mode, prefs, active_meta_cols, schema)
-        for single in table.rows
+        for single in table.rows_in(amplitude_mode)
     ]
 
 

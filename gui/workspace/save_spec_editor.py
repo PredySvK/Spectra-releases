@@ -39,6 +39,7 @@ from gui.appearance import APP_TOKENS
 from gui.dialogs.channel_selection_dialog import ChannelSelectionDialog
 from gui.ribbon.save_section import SAVE_CHANNEL_TYPE_OPTIONS
 from io_modules.result_cache.cache_naming import sanitize_result_set_label
+from view_models.result_sets import build_label_preview
 
 _ANY_TYPE = "Any type"
 
@@ -202,12 +203,11 @@ class SaveSpecEditor(QGroupBox):
         )
 
     def _sync_label_note(self, *_) -> None:
-        typed = self.edit_label.text().strip()
-        clean = sanitize_result_set_label(typed)
-        if typed and not clean:
+        preview = build_label_preview(self.edit_label.text())
+        if preview.kind == "unusable":
             text = "This name has no usable characters -- it will be auto-named."
-        elif clean and clean != typed:
-            text = f"Saved as folder: {clean}"
+        elif preview.kind == "changed":
+            text = f"Saved as folder: {preview.clean}"
         else:
             text = ""
         self.lbl_label_note.setText(text)

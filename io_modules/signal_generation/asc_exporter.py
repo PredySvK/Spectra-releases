@@ -18,9 +18,11 @@ from io_modules.atomic_write import write_text_atomic
 # on "," inside the first "[...]". The format has no escaping, so a name carrying
 # any of these would shift every following name and unit off its column -- one
 # channel then reads a neighbour's data under its own name (audit 02, S11/11.2).
+# A backslash is doubled by str(list) and never undone on read, so the channel
+# would come back under a different name (#682).
 # frozenset, not set: this is a constant, and a mutable container at module level
 # is the module-level mutable state the project forbids.
-_HEADER_UNSAFE_CHARS = frozenset(",[]'")
+_HEADER_UNSAFE_CHARS = frozenset(",[]'\\")
 
 
 def _reject_header_unsafe_names(names: List[str]) -> None:

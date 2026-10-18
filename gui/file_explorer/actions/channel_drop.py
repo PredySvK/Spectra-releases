@@ -12,15 +12,17 @@ import dataclasses
 from contextlib import nullcontext
 import numpy as np
 
+from core.block_kinds import PARAM_ORDER
 from core.dsp_configs import SpectrumConfig
-from core.channel_drop import build_drop_descriptor, read_drop_descriptor
+from core.channel_drop import build_drop_descriptor
 from core.units import strip_channel_name_prefix
-from selection.channel_identity import resolve_channel_at_index
+from session.data_pool import DeadLink, find_dropped_channel
 from view_models.plot import overall_level_band_differs_from_dock
 from view_models.analysis_kinds import (
     ANALYSIS_SPECTROGRAM, ANALYSIS_TIME, resolve_analysis_kind,
 )
 from orchestration import live_compute
+from orchestration.live_compute import ComputeOrigin, build_cache_hit_line, resolve_cache_finder
 from orchestration.dock_tasks import PURPOSE_DROP
 from orchestration.channel_drop import (
     DropFacts,
@@ -36,7 +38,7 @@ from gui.handlers.dock_tab_title import set_dock_tab_title, update_dock_tab_titl
 
 def execute_channel_drop_processing(
     dock_instance, raw_descriptors: list, app_context, *,
-    workspace, spectral_requests=None, live_drop_handler=None, batch_label=None,
+    workspace, live_drop_handler=None, batch_label=None,
 ) -> bool:
     """
     Main routing execution entry point triggered by UI dock drop signals.
@@ -46,17 +48,16 @@ def execute_channel_drop_processing(
     live in `orchestration.channel_drop.run_channel_drop`; this wraps the dock in
     the `DropTarget` it runs against.
 
-    The three collaborators are passed in rather than read off the window
-    (#242): `workspace` is the Workspace whose `dock_tasks`
-    every background path goes through, `spectral_requests` serves
-    spectrogram drops, and `live_drop_handler` serves result-content docks.
+    The two collaborators are passed in rather than read off the window
+    (#242): `workspace` is the Workspace whose `dock_tasks` every background
+    path goes through -- a spectrogram drop computes as the dock's own
+    compute -- and `live_drop_handler` serves result-content docks.
     Only `workspace` is required: every background path runs through
     it, so a caller that forgot it would otherwise fail with an AttributeError
-    deep inside a dispatcher instead of at the call. The other two serve one
-    branch each and are genuinely absent when a drop cannot reach that branch.
+    deep inside a dispatcher instead of at the call. The handler serves one
+    branch and is genuinely absent when a drop cannot reach that branch.
     """
-    target = _DockDropTarget(
-        dock_instance, app_context, workspace, spectral_requests, live_drop_handler)
+    target = _DockDropTarget(dock_instance, app_context, workspace, live_drop_handler)
     return run_channel_drop(
         target, raw_descriptors, pending_drops=dock_instance.pending_drops,
         workers=live_compute, batch_label=batch_label)
@@ -65,17 +66,16 @@ def execute_channel_drop_processing(
 class _DockDropTarget:
     """One dock and the shell around it, as the `DropTarget` a drop run needs."""
 
-    def __init__(self, dock, app_context, workspace, spectral_requests, live_drop_handler):
+    def __init__(self, dock, app_context, workspace, live_drop_handler):
         from gui.workspace.graph_dock import GraphDock
         from gui.workspace.spectrogram_dock import SpectrogramDock
 
         self._dock = dock
         self._context = app_context
         self._workspace = workspace
-        self._spectral_requests = spectral_requests
         self._live_drop_handler = live_drop_handler
         self._is_graph = isinstance(dock, GraphDock)
-        # A dock that has ever loaded h5 result-set curves (ADR §1.30,
+        # An order dock holding h5 result-set curves (ADR §1.30,
         # ResultContentHandler.load_into_dock) can hold channels from several
         # source files at once, so it has no single dock-wide tacho to reuse --
         # routed separately, see live_channel_drop.LiveChannelDropHandler.
@@ -117,28 +117,42 @@ class _DockDropTarget:
     def spectrum_config(self):
         return _spectrum_config_for_drop(self._dock, self._context)
 
-    def _runs_by_path(self):
-        return {run.file_path: run for run in getattr(self._context.pool, "loaded_runs", [])}
+    def restored_config(self, recipe):
+        return self._workspace.resolve_restore_config(self.facts.analysis_kind, recipe)
+
+    def drop_restore(self, resolved):
+        project_path = getattr(getattr(self._context, "project_session", None), "path", None)
+        return live_compute.DropRestore(
+            project_path=project_path,
+            subject=resolve_analysis_kind(self.facts.analysis_kind).display_name,
+            resolved=resolved,
+        )
+
+    def _keep(self, desc, channel_name, result):
+        """A dropped channel's curve is drawn: say it came from its Tab cache
+        file, and keep it there."""
+        if result.from_tab_cache:
+            self._workspace.log_tab_cache_hit(self._dock, channel_name)
+        self._workspace.keep_dropped_channel(self._dock, desc, result)
+
+    def cache_finder(self):
+        """The worker-thread cache lookup, or None when the ribbon switched the cache off."""
+        return resolve_cache_finder(getattr(self._context, "project_session", None),
+                                    getattr(self._context, "use_result_cache_lookup", True))
 
     def order_inputs(self):
         context = self._context
         return OrderDropInputs(
             config=context.order_tracking_settings,
-            use_cache=getattr(context, "use_result_cache_lookup", True),
-            project_session=getattr(context, "project_session", None),
-            runs_by_path=self._runs_by_path(),
+            run_lookup=self._context.pool.run_lookup,
             dock_tacho=getattr(self._dock, "tacho_block", None),
             with_overall_level=context.order_tracking_overall_level,
         )
 
     def overall_level_inputs(self):
-        context = self._context
-        project_session = getattr(context, "project_session", None)
         return OverallLevelDropInputs(
-            config=context.overall_level_settings,
-            use_cache=getattr(context, "use_result_cache_lookup", True),
-            finder=getattr(project_session, "find_cached_block_background", None),
-            runs_by_path=self._runs_by_path(),
+            config=self._context.overall_level_settings,
+            run_lookup=self._context.pool.run_lookup,
             dock_tacho=getattr(self._dock, "tacho_block", None),
         )
 
@@ -147,12 +161,15 @@ class _DockDropTarget:
         # A SpectrogramDock holds no curves to coalesce; a GraphDock lands the
         # whole drop as one draw (#440).
         with nullcontext() if is_spec else dock.curves.coalesce_changes():
-            for desc, data_block, spectrum_block, io_time, dsp_time in rendered:
+            for desc, data_block, spectrum_result in rendered:
                 if is_spec:
-                    _route_to_spectrogram(
-                        dock, data_block, desc, self._context, self._spectral_requests)
-                elif spectrum_block is not None:
-                    _render_spectrum_overlay(dock, data_block, spectrum_block, desc)
+                    _route_to_spectrogram(dock, data_block, desc, self._context, self._workspace)
+                elif spectrum_result is not None:
+                    if spectrum_result.from_cache:
+                        self._context.log(build_cache_hit_line(
+                            f"Spectrum for {desc['channel_name']}", spectrum_result.result_set_label))
+                    _render_spectrum_overlay(dock, spectrum_result.blocks[0], desc)
+                    self._keep(desc, desc["channel_name"], spectrum_result)
                 else:
                     _route_to_time_domain(dock, data_block, desc, self._context)
         if not is_spec:
@@ -162,13 +179,12 @@ class _DockDropTarget:
             update_dock_tab_title(dock)
 
     def render_orders(self, rendered):
-        for desc, ch_name, cache_label, order_rows, metadata, io_time, dsp_time in rendered:
-            if cache_label is not None:
-                self._context.log(
-                    f"PROJECT: Order tracking for {ch_name} loaded from result set "
-                    f"'{cache_label}' -- FFT settings unchanged, no recompute needed."
-                )
-            _render_order_overlay(self._dock, desc["file_name"], ch_name, order_rows, metadata)
+        for desc, ch_name, result in rendered:
+            if result.from_cache:
+                self._context.log(build_cache_hit_line(
+                    f"Order tracking for {ch_name}", result.result_set_label))
+            _render_order_overlay(self._dock, desc["file_name"], ch_name, result.blocks)
+            self._keep(desc, ch_name, result)
         # The end-of-batch title update of the run already ran by the time
         # this lands, so this dock's tab must refresh its own count now that
         # the curves it was waiting on actually exist.
@@ -177,13 +193,12 @@ class _DockDropTarget:
     def render_overall_level(self, rendered):
         dock = self._dock
         with dock.curves.coalesce_changes():  # one draw for the whole drop (#440)
-            for desc, ch_name, cache_label, result_block, io_time, dsp_time in rendered:
-                if cache_label is not None:
-                    self._context.log(
-                        f"PROJECT: Overall Level for {ch_name} loaded from result set '{cache_label}' "
-                        f"-- settings unchanged, no recompute needed."
-                    )
-                _render_overall_level_overlay(dock, result_block, self._context)
+            for desc, ch_name, result in rendered:
+                if result.from_cache:
+                    self._context.log(build_cache_hit_line(
+                        f"Overall Level for {ch_name}", result.result_set_label, what="settings"))
+                _render_overall_level_overlay(dock, result.blocks[0], self._context)
+                self._keep(desc, ch_name, result)
         update_dock_tab_title(dock)
 
     def refresh_title(self):
@@ -239,8 +254,9 @@ def _spectrum_config_for_drop(dock_instance, app_context) -> SpectrumConfig:
     )
 
 
-def _render_spectrum_overlay(dock_instance, data_block, result_block, desc):
-    """Overlays an already-computed spectrum (see _dispatch_simple_drops_async) onto the target dock."""
+def _render_spectrum_overlay(dock_instance, result_block, desc):
+    """Overlays an already-computed (or cached) spectrum onto the target dock;
+    the block carries its channel's identity either way."""
     file_name, ch_name = desc["file_name"], desc["channel_name"]
 
     freqs = result_block.primary_axis.values
@@ -250,22 +266,24 @@ def _render_spectrum_overlay(dock_instance, data_block, result_block, desc):
         y=amps.astype(np.float64),
         source_label=f"[{file_name}] {ch_name}",
         incoming_unit=y_unit,
-        source_meta=data_block.display_meta(),
+        source_meta=result_block.display_meta(),
         block=result_block,
     )
 
 
-def _render_order_overlay(dock_instance, file_name, ch_name, order_rows, metadata) -> None:
-    """Renders each requested order as a separate curve overlay on the dock,
-    landed as one draw (#440)."""
+def _render_order_overlay(dock_instance, file_name, ch_name, blocks) -> None:
+    """Renders each requested order -- and the Overall Level and Residual
+    curves, which carry no order number -- as a separate curve overlay on the
+    dock, landed as one draw (#440)."""
     with dock_instance.curves.coalesce_changes():
-        for order, rpm_axis, amps, y_unit, block in order_rows:
+        for block in blocks:
+            order = block.provenance.params.get(PARAM_ORDER)
             dock_instance.add_curve(
-                x=rpm_axis.astype(np.float64),
-                y=amps.astype(np.float64),
+                x=block.primary_axis.values.astype(np.float64),
+                y=block.values.astype(np.float64),
                 source_label=f"Order {order} [{ch_name}]",
-                incoming_unit=y_unit,
-                source_meta=metadata,
+                incoming_unit=block.value_unit,
+                source_meta=block.display_meta(),
                 block=block,
                 title=f"Order Compare: [{file_name}]",
             )
@@ -292,50 +310,78 @@ def _render_overall_level_overlay(dock_instance, result_block, app_context) -> N
     )
 
 
-def _route_to_spectrogram(dock_instance, data_block, desc, app_context, spectral_requests):
-    """Routes waterfall specific drops asynchronously via SpectralRequests."""
+def _route_to_spectrogram(dock_instance, data_block, desc, app_context, workspace):
+    """
+    Pairs a channel dropped onto a spectrogram with the one it already holds
+    and, once both are there, computes it as the dock's own compute (one
+    `compute` slot: a Refresh supersedes it, it supersedes one in flight). A
+    failure leaves the image already on screen, as a failed Refresh does.
+
+    A spectrogram restored from the Tab cache shows its image without the raw
+    channels it was computed from; the one a drop does not bring is read from
+    the dock's measurement by that compute.
+    """
     config = app_context.spectrogram_settings
+    vib_block = getattr(dock_instance, "vib_block", None)
     decision = decide_spectrogram_drop(
         data_block,
-        getattr(dock_instance, "vib_block", None),
+        vib_block,
         getattr(dock_instance, "tacho_block", None),
         config.tracking_mode,
         channel_name=desc["channel_name"],
+        measurement_path=_restored_measurement_path(dock_instance) if vib_block is None else None,
     )
     for message in decision.messages:
         app_context.log(message)
     if decision.is_rejected:
         return
 
+    # Refresh, the cache lookup and the saved tab all read the channel from
+    # run_index/channel_meta, not from the blocks -- keep them on the dropped one.
+    dropped = None
+    if data_block.channel_type != "tacho":
+        dropped = _resolve_dropped_channel(desc, app_context)
+        if isinstance(dropped, str):
+            app_context.log(dropped)
+            return
+
     dock_instance.vib_block = decision.vib_block
     dock_instance.tacho_block = decision.tacho_block
-    if data_block.channel_type != "tacho":
-        # Refresh, the cache lookup and the saved tab all read the channel from
-        # run_index/channel_meta, not from the blocks -- keep them on the dropped one.
-        dock_instance.run_index, dock_instance.channel_meta = _resolve_dropped_channel(
-            desc, app_context)
+    if dropped is not None:
+        dock_instance.run_index, dock_instance.channel_meta = dropped
     if not decision.should_compute:
         return
 
     _update_spectrogram_tab_title(dock_instance)
+    workspace.dispatch_compute(
+        dock_instance, origin=ComputeOrigin.REFRESH, vib_block=dock_instance.vib_block)
 
-    # We deliberately dispatch this heavy 2D computation to the asynchronous thread pool
-    spectral_requests.request_tracked_waterfall(
-        vib_block=dock_instance.vib_block,
-        tacho_block=getattr(dock_instance, "tacho_block", None),
-        config=config,
-        widget_tag=dock_instance.dock_id
-    )
+
+def _restored_measurement_path(dock_instance):
+    """The file of a spectrogram that shows an image it holds no raw channels
+    for (restored from the Tab cache); None for any other."""
+    spectrogram = getattr(dock_instance, "spectrogram", None)
+    run_index = getattr(dock_instance, "run_index", None)
+    if spectrogram is None or spectrogram.model is None or run_index is None:
+        return None
+    return run_index.file_path
 
 
 def resolve_dropped_channels(raw_descriptors: list, app_context) -> list:
     """
     A drop's descriptors as the `(run_index, channel_meta, label)` rows a
     double click on the same Data Pool rows hands to
-    Workspace.open_channels_tab.
+    Workspace.open_channels_tab. A descriptor whose file or channel is not in
+    the pool is refused with its reason in the log -- no bare run is made up.
     """
-    return [(*_resolve_dropped_channel(desc, app_context), desc["channel_name"])
-            for desc in raw_descriptors]
+    rows = []
+    for desc in raw_descriptors:
+        resolved = _resolve_dropped_channel(desc, app_context)
+        if isinstance(resolved, str):
+            app_context.log(resolved)
+            continue
+        rows.append((*resolved, desc["channel_name"]))
+    return rows
 
 
 def build_channel_descriptors(rows: list) -> list:
@@ -348,13 +394,15 @@ def build_channel_descriptors(rows: list) -> list:
 
 
 def _resolve_dropped_channel(desc, app_context):
-    """The loaded run and channel a descriptor names, or a bare pair when its file is not loaded."""
-    for run in getattr(getattr(app_context, "pool", None), "loaded_runs", []):
-        if run.file_path == desc["file_path"]:
-            channel = resolve_channel_at_index(run.available_channels, desc["channel_index"])
-            if channel is not None:
-                return run, channel[1]
-    return read_drop_descriptor(desc)
+    """The pooled run and channel a descriptor names, or the log line saying why it is refused."""
+    name = desc["channel_name"]
+    run = app_context.pool.run_lookup(desc["file_path"])
+    if isinstance(run, DeadLink):
+        return f"ERROR: Cannot add '{name}' -- its file is not currently loaded."
+    channel = find_dropped_channel(run, name, desc["channel_index"])
+    if channel is None:
+        return f"ERROR: Cannot add '{name}' -- its channel was not found on '{run.file_name}'."
+    return run, channel
 
 
 def _update_spectrogram_tab_title(dock_instance):

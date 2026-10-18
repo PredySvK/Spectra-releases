@@ -56,9 +56,9 @@ class _FinishedCallback:
 class WorkflowRunBridge:
     """One job with one step per source file."""
 
-    def __init__(self, app_context, job_manager):
+    def __init__(self, app_context, job_runner):
         self.app_context = app_context
-        self.job_manager = job_manager
+        self.job_runner = job_runner
         # (label, was_anything_written)
         self.run_finished = _FinishedCallback()
         self._chain_cancel = CancelToken()
@@ -78,7 +78,7 @@ class WorkflowRunBridge:
         self._chain_cancel = CancelToken()
         context = self.app_context
         run_chain_batches(
-            chains, context.project_session, self.job_manager,
+            chains, context.project_session, self.job_runner,
             overwrite_by_block=overwrite_by_block,
             compression=getattr(context, "result_cache_compression", None),
             on_message=context.log, on_finished=self._on_finished,
@@ -88,7 +88,7 @@ class WorkflowRunBridge:
     def supersede(self) -> None:
         """Stop the active batch and its not-yet-submitted chains."""
         self._chain_cancel.cancel()
-        supersede_running_batch(self.job_manager)
+        supersede_running_batch(self.job_runner)
 
     def start(self, workflow: Workflow, selection: MeasurementSelection,
               label: str, overwrite_by_block: Optional[Mapping[str, str]] = None,
@@ -122,7 +122,7 @@ class WorkflowRunBridge:
             return
 
         run_batch(
-            plan, workflow, session, self.job_manager,
+            plan, workflow, session, self.job_runner,
             compression=getattr(context, "result_cache_compression", None),
             on_message=context.log, on_finished=self._on_finished,
         )

@@ -15,10 +15,10 @@ def run_companion_curves(project_session, runs, plotted, channel_pairs):
     with the requested orders restricts those reads to explicitly paired
     channels; waveforms are candidates for each requested order.
     """
-    by_path = project_session.sources_by_path()
+    location = project_session.source_location
     channels = {}
     for run in runs:
-        source = ProjectSession.entry_for_run(run, by_path)
+        source = location.entry_for_run(run)
         if source is None:
             continue
         for label, meta in run.available_channels.items():

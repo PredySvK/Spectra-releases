@@ -23,29 +23,26 @@ import numpy as np
 from PySide6.QtWidgets import QWidget
 
 from core.jobs import JobState, job_step
+from view_models.plot import build_compute_spec
 from view_models.trace_filter import resolve_stored_curves_already_held
 from io_modules.result_cache.compare_curve_reader import read_result_curves
 from orchestration.result_sets import plan_result_set_load
-
-# QSettings key (main_window_frame.app_context.shared_settings) for how many
-# curves "Load Result Sets…" will read without asking first -- a project-wide
-# tuning knob, not a per-window one, same reasoning as result_cache_compression
-# in main_window.py. 500 is a starting point to revisit once a real project's
-# result sets have been loaded through this a few times.
-_CURVE_LIMIT_KEY = "result_content_curve_limit"
-_DEFAULT_CURVE_LIMIT = 500
 
 
 def _append_curve_to_dock(dock, curve: dict) -> None:
     """
     One loaded curve becomes one Trace on `dock` via dock.add_curve (#276).
     """
-    x = np.asarray(curve["x"], dtype=np.float64)
-    y = np.asarray(curve["y"], dtype=np.float64)
+    block = curve.get("block")
+    # A curve that carries its block needs no x/y of its own: the block is
+    # the source of both, and of its settings and axis quantity (#665 C01).
+    x = np.asarray(curve["x"], dtype=np.float64) if "x" in curve else None
+    y = np.asarray(curve["y"], dtype=np.float64) if "y" in curve else None
     x_quantity = curve.get("x_quantity", "")
     compute_spec = curve.get("compute_spec")
+    if compute_spec is None and block is not None:
+        compute_spec = build_compute_spec(block)
     result_set_id = curve.get("result_set_id", "")
-    block = curve.get("block")
 
     dock.add_curve(
         x=x,
@@ -66,10 +63,10 @@ class ResultContentHandler:
     Coordinates loading result sets into docks.
     """
 
-    def __init__(self, app_context, find_dock, job_manager, parent_widget: Optional[QWidget] = None):
+    def __init__(self, app_context, find_dock, job_runner, parent_widget: Optional[QWidget] = None):
         self.app_context = app_context
         self.find_dock = find_dock
-        self.job_manager = job_manager
+        self.job_runner = job_runner
         self.parent_widget = parent_widget
 
     def load_into_dock(self, dock, ref_ids: Iterable[str]) -> None:
@@ -102,16 +99,7 @@ class ResultContentHandler:
         session = context.project_session
 
         already_accounted = set(dock.curves.loaded_or_pending_result_set_ids)
-        # Marks this dock as a result-content dock from this call on, even if
-        # new_ids turns out empty -- gui.file_explorer.actions.channel_drop reads
-        # GraphCurves.holds_result_content to decide whether a manually dropped
-        # channel needs the multi-source (per-file tacho, "ask before computing")
-        # treatment a dock that has never loaded any h5 curve does not.
-        dock.curves.mark_holds_result_content()
-        limit = _DEFAULT_CURVE_LIMIT
-        settings = getattr(context, "shared_settings", None)
-        if settings is not None:
-            limit = int(settings.value(_CURVE_LIMIT_KEY, _DEFAULT_CURVE_LIMIT))
+        limit = context.result_content_curve_limit
         plan = plan_result_set_load(session.project, session.path, ref_ids, already_accounted, limit)
         for message in plan.messages:
             context.log(message)
@@ -163,7 +151,7 @@ class ResultContentHandler:
                 landing = live.curves.land_result_set(
                     ref_id, curves,
                     lambda stored, held: resolve_stored_curves_already_held(
-                        stored, held, session.sources_by_path(), sources_by_id,
+                        stored, held, session.source_location.entries_by_path, sources_by_id,
                     ),
                 )
                 if landing is None:
@@ -172,7 +160,7 @@ class ResultContentHandler:
                 # source_path / channel_index: what lets the Trace filter resolve the
                 # curve's measurement (identity_for_trace). Not `file_path`, which
                 # the drop de-duplication reads as "this channel is already plotted".
-                path_by_source_id = {entry.id: path for path, entry in session.sources_by_path().items()}
+                path_by_source_id = session.source_location.paths_by_entry_id
                 for curve in landing.to_draw:
                     meta = {**(curve.get("meta") or {}), "channel_index": curve.get("channel_index"),
                             "source_path": path_by_source_id.get(curve.get("source_id", ""))}
@@ -222,7 +210,7 @@ class ResultContentHandler:
                 f"{totals['channels']} channel match(es).{already_shown}"
             )
 
-        self.job_manager.submit(
+        self.job_runner.submit(
             f"Load Result Sets - {len(read_plan)} set(s)",
             [job_step(item["ref_label"], read_result_curves, [item], None) for item in read_plan],
             lane="batch",

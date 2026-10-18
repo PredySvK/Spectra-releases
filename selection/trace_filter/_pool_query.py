@@ -39,13 +39,10 @@ class PoolQuery:
     identity_values: Dict[str, List[str]] = field(default_factory=dict)
 
 
-def resolve_pool_query(selection: FilterSelection, offering: OfferedFacets,
-                       offered_metadata_values: Mapping[str, AbstractSet[str]]) -> PoolQuery:
+def resolve_pool_query(selection: FilterSelection, offering: OfferedFacets) -> PoolQuery:
     """
     The pool query for one card's `selection` against what it currently
-    offers. `offered_metadata_values` is passed apart from `offering` because
-    the panel keeps the metadata half of the last render itself (it is not
-    recorded on a replay).
+    offers.
 
     Discrete metadata, Identity columns and Channel are reported only as a real
     narrowing (§1.96, §1.107); a moved range only while its widget is on the
@@ -55,7 +52,7 @@ def resolve_pool_query(selection: FilterSelection, offering: OfferedFacets,
     checked_channels = set(selection.checked_channel_identities) & offered_channels
     narrows_channels = bool(checked_channels) and checked_channels != offered_channels
     return PoolQuery(
-        metadata_values=_narrowing(offered_metadata_values,
+        metadata_values=_narrowing(offering.metadata_values,
                                    selection.checked_metadata_values, selection, offering),
         channel_identities=(sorted(checked_channels, key=channel_identity_sort_key)
                             if narrows_channels else []),

@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from core.block_kinds import KIND_ORDER_RESIDUAL, KIND_OVERALL_LEVEL, KINDS, PARAM_COMPUTATION, PARAM_ORDER
 from core.project_model import SourceEntry
-from view_models.plot import Trace
+from view_models.plot import Trace, build_compute_spec
 from io_modules.measurement_files import canonical_path
 from selection.channel_identity import split_channel_base_and_direction
 from selection.parameter_sets import parameter_signature
@@ -101,7 +101,10 @@ def identity_for_stored_curve(curve: Mapping[str, Any], source: Optional[SourceE
     values stay None.
     """
     result_kind = curve.get("kind") or None
-    compute_spec = curve.get("compute_spec")
+    # The recipe a live curve's spec is built with, applied to the stored block
+    # (#665 C19): the reader hands over the block, not a spec of its own.
+    block = curve.get("block")
+    compute_spec = build_compute_spec(block) if block is not None else curve.get("compute_spec")
     if result_kind == KIND_OVERALL_LEVEL and compute_spec is not None:
         # The Overall Level builders stamp this onto every Trace they build,
         # so a drawn curve's signature carries it and the stored one must too.

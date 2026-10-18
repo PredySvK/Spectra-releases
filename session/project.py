@@ -37,7 +37,6 @@ from io_modules.project_store import (
     DirectoryIndex,
     IndexReport,
     adopt_untitled_scan_caches,
-    build_sources_by_path,
     index_all_roots,
     index_root_listing,
     load_project,
@@ -47,15 +46,27 @@ from io_modules.project_store import (
     resolve_root,
     resolve_root_in,
     save_project,
+    tab_cache_folder,
 )
+from io_modules.tab_cache import remove_unreferenced_tab_cache_files
+from .tab_cache import build_referenced_tab_cache_names
 from core.units import determine_channel_type
 from io_modules.measurement_files import canonical_path, file_exists, file_stamp
-from session.result_sets import ResultSetsMixin
+from session.result_sets import ResultSetCopyPlan, ResultSetsMixin
+from session.source_location import SourceLocation, build_source_location
 
 UNTITLED_NAME = "Untitled"
 
-# ui_state key the global X axis unit is stored under (issue #459).
+# view_state keys (core.project_model.NVHProject.view_state). The global X axis
+# unit (issue #459); the Filter panel's switches, Global values and active card
+# (ticket #178); which schema conflicts the user has already been shown.
 X_AXIS_UNIT_KEY = "x_axis_unit"
+FILTER_STATE_KEY = "compare_filters"
+# Kept in view_state rather than beside the field's own settings in
+# metadata_schema: the metadata editor rewrites that dict wholesale from what it
+# was given, which would drop an extra key it knows nothing about and make the
+# conflict dialog reappear after every visit to the editor.
+ACKNOWLEDGED_KEY = "acknowledged_schema_conflicts"
 
 # Supplied by the GUI when a path is needed; returns a chosen path or None if
 # the user cancelled. Injected so this module never imports a file dialog.
@@ -64,6 +75,14 @@ PathProvider = Callable[[], Optional[str]]
 # Injected by the GUI window to run scan-cache adoption asynchronously (via
 # QtJobRunner) rather than copying files synchronously on the GUI thread.
 CacheAdopter = Callable[[str, Sequence[DataRoot]], None]
+
+# Supplied by the GUI: the recipe of every open graph, as TabSpec dicts. Called
+# right before every write, so each way of saving keeps the current tabs.
+OpenTabsCapture = Callable[[], List[Dict]]
+
+# Supplied by the GUI: called after every successful write, whichever path
+# triggered it, so the window title, recent list and file claim catch up.
+SavedListener = Callable[[], None]
 
 
 @dataclass
@@ -128,15 +147,19 @@ class ProjectSession(ResultSetsMixin):
 
       - Browsing, plotting and changing FFT settings never touch the project,
         so they can never mark it unsaved.
-      - Indexing a folder marks an already-saved project as changed, because
-        its stored source list is now behind. On an Untitled project it does
-        not, because there is no stored list to be behind and the folder is
-        recovered from the last-directory setting on the next start. This is
+      - A View change (mark_view_changed) marks only a project that has a
+        file: indexing a folder, the X axis unit, a checked filter value. On an
+        Untitled project there is no stored state to be behind and the folder
+        is recovered from the last-directory setting on the next start. This is
         what lets the user open the app, look at a folder and leave without
         being asked to save anything.
-      - Metadata edits, unit corrections and result sets always mark the
-        project as changed, Untitled or not. These exist nowhere else, so
-        losing them silently is not acceptable.
+      - A Work change (mark_work_changed) always marks the project, Untitled or
+        not: metadata edits, unit corrections, result sets, Filter cards, an
+        open graph's recipe. These exist nowhere else, so losing them silently
+        is not acceptable.
+
+    Callers say which kind of change they made and never decide on their own
+   .
     """
 
     def __init__(self, cache_adopter: Optional[CacheAdopter] = None):
@@ -145,7 +168,10 @@ class ProjectSession(ResultSetsMixin):
         self._dirty = False
         self._channel_pairs: List[Tuple[ChannelIdentity, ChannelIdentity]] = []
         self._cache_adopter = cache_adopter
+        self._open_tabs_capture: Optional[OpenTabsCapture] = None
+        self._saved_listener: Optional[SavedListener] = None
         self._workflow_history: Dict[str, _WorkflowHistory] = {}
+        self._source_location = SourceLocation()
 
     # ---- state --------------------------------------------------------
 
@@ -156,6 +182,20 @@ class ProjectSession(ResultSetsMixin):
     @property
     def path(self) -> Optional[str]:
         return self._path
+
+    @property
+    def source_location(self) -> SourceLocation:
+        """Memory-only path <-> entry lookup; current as of the last refresh_source_location()."""
+        return self._source_location
+
+    def refresh_source_location(self, root_directories: Mapping[str, Optional[str]]) -> SourceLocation:
+        """
+        Rebuilds the snapshot from `root_directories` (read_root_directories(),
+        taken off the GUI thread) and the project's current sources. Reads no disk.
+        """
+        self._source_location = build_source_location(
+            self._project.data_roots, self._project.sources, root_directories)
+        return self._source_location
 
     @property
     def has_file(self) -> bool:
@@ -174,52 +214,106 @@ class ProjectSession(ResultSetsMixin):
         """
         self._cache_adopter = adopter
 
+    def set_open_tabs_capture(self, capture: Optional[OpenTabsCapture]) -> None:
+        """
+        Plugs in the GUI's read of the open graphs. Every write calls it first,
+        so Save, a committed result set and a save_edit all store the tabs as
+        they are now -- not as they were at the last explicit Save (#654).
+        """
+        self._open_tabs_capture = capture
+
+    def set_saved_listener(self, listener: Optional[SavedListener]) -> None:
+        """Plugs in what the window does after every successful write."""
+        self._saved_listener = listener
+
     @property
     def display_name(self) -> str:
         """Window-title form: the project name, marked when unsaved."""
         base = self._project.name or UNTITLED_NAME
         return f"{base}*" if self._dirty else base
 
-    def mark_dirty(self) -> None:
+    def mark_work_changed(self) -> None:
         """
-        Records a change that exists nowhere but in the project.
+        Records a Work change: one that exists nowhere but in the project.
 
-        Called by metadata editing, unit corrections and result-set creation.
         Applies to an Untitled project too, so that work is not lost on close.
         """
         self._dirty = True
+
+    def mark_view_changed(self) -> None:
+        """
+        Records a View change: how the data is being looked at.
+
+        Only meaningful once the project has a file: on an Untitled one there
+        is nothing stored to be behind, so it never prompts.
+        """
+        if self.has_file:
+            self._dirty = True
 
     @property
     def x_axis_unit(self) -> str:
         """The project's global X axis unit (issue #459), one of
         core.axis_projections.X_AXIS_UNITS; native when unset or unknown."""
-        value = self._project.ui_state.get(X_AXIS_UNIT_KEY, X_AXIS_NATIVE)
+        value = self._project.view_state.get(X_AXIS_UNIT_KEY, X_AXIS_NATIVE)
         return value if value in X_AXIS_UNITS else X_AXIS_NATIVE
 
     def set_x_axis_unit(self, x_axis_unit: str) -> None:
-        """
-        Records the global X axis unit with the project. Cosmetic, like the
-        rest of ui_state: it asks to be saved only on a project that has a
-        file, so switching it on an Untitled one never prompts.
-        """
+        """Records the global X axis unit with the project. A View change."""
         if x_axis_unit not in X_AXIS_UNITS:
             raise ValueError(f"Unknown X axis unit: {x_axis_unit!r}")
         if x_axis_unit == self.x_axis_unit:
             return
-        self._project.ui_state[X_AXIS_UNIT_KEY] = x_axis_unit
-        if self.has_file:
-            self._dirty = True
+        self._project.view_state[X_AXIS_UNIT_KEY] = x_axis_unit
+        self.mark_view_changed()
 
-    def _mark_structural_change(self) -> None:
-        """
-        Records a change to the source list.
+    @property
+    def filter_state(self) -> Optional[Dict]:
+        """The Filter panel's saved switches, Global values and active card."""
+        return self._project.view_state.get(FILTER_STATE_KEY)
 
-        Only meaningful once the project has a file: until then the folder is
-        re-discovered from settings on the next start, so there is nothing to
-        preserve and nothing to prompt about.
+    def set_filter_state(self, snapshot: Dict, *, is_change: bool = True) -> None:
         """
-        if self.has_file:
-            self._dirty = True
+        Records the Filter panel's state (session.trace_filter.
+        build_filter_state_snapshot). A View change; `is_change=False` stores
+        it without one -- picking another card's tab is a view choice the next
+        Save keeps, not an edit. An unchanged snapshot is no change at all.
+        """
+        if self._project.view_state.get(FILTER_STATE_KEY) == snapshot:
+            return
+        self._project.view_state[FILTER_STATE_KEY] = snapshot
+        if is_change:
+            self.mark_view_changed()
+
+    @property
+    def filter_profiles(self) -> List[Dict]:
+        """The user-added Filter cards' identities, as saved."""
+        return [dict(profile) for profile in self._project.filter_profiles]
+
+    def set_filter_profiles(self, profiles: Sequence[Dict]) -> None:
+        """Records the user-added Filter cards. A Work change when they differ."""
+        profiles = [dict(profile) for profile in profiles]
+        if profiles == self._project.filter_profiles:
+            return
+        self._project.filter_profiles = profiles
+        self.mark_work_changed()
+
+    def put_filter_card(self, card) -> None:
+        """Stores one Filter card's configuration. A Work change."""
+        self._project.put_filter_card(card)
+        self.mark_work_changed()
+
+    @property
+    def acknowledged_schema_conflicts(self) -> List[str]:
+        return list(self._project.view_state.get(ACKNOWLEDGED_KEY) or [])
+
+    def acknowledge_schema_conflicts(self, keys) -> None:
+        """Remembers which schema conflicts the user has seen. A View change."""
+        seen = set(self.acknowledged_schema_conflicts)
+        seen.update(keys)
+        if seen == set(self.acknowledged_schema_conflicts):
+            return
+        self._project.view_state[ACKNOWLEDGED_KEY] = sorted(seen)
+        self.mark_view_changed()
 
     # ---- lifecycle ----------------------------------------------------
 
@@ -229,6 +323,7 @@ class ProjectSession(ResultSetsMixin):
         self._channel_pairs = []
         self._path = None
         self._dirty = False
+        self._source_location = SourceLocation()
         return self._project
 
     def load_project_file(self, project_path: str) -> None:
@@ -247,6 +342,8 @@ class ProjectSession(ResultSetsMixin):
         self._channel_pairs = []
         self._path = os.path.abspath(project_path)
         self._dirty = False
+        self._source_location = SourceLocation()
+        self._remove_unreferenced_tab_cache()
 
     def open_project(self, project_path: str) -> Dict[str, IndexReport]:
         """
@@ -260,17 +357,49 @@ class ProjectSession(ResultSetsMixin):
         self.load_project_file(project_path)
 
         reports = index_all_roots(self._project, self._path)
+        self.refresh_source_location(read_root_directories(self._path, self._project.data_roots))
         if any(report.changed for report in reports.values()):
             self._dirty = True
         return reports
 
     def save(self) -> str:
         """Saves to the existing path. Use save_as() when there is none yet."""
+        self._write()
+        self._notify_saved()
+        return self._path
+
+    def _write(self) -> None:
+        """Writes the project to its path, current tabs included. Tells nobody:
+        a caller that must roll back on failure (commit_result_set) notifies
+        only once the whole unit has succeeded."""
         if self._path is None:
             raise ValueError("Project has never been saved; a path is required.")
+        self._capture_open_tabs()
         save_project(self._project, self._path)
         self._dirty = False
-        return self._path
+        self._remove_unreferenced_tab_cache()
+
+    def _remove_unreferenced_tab_cache(self) -> None:
+        """
+        Deletes the Tab cache files the saved project no longer names:
+        a closed tab, a removed curve, a result a newer Save replaced, or a file a
+        crash or a "Don't save" left behind. Runs right after open and after
+        every write, on the GUI thread: it only unlinks a handful of small
+        files in one folder the project owns, and the deletion never raises,
+        so a clean-up problem cannot fail a Save. Never touches anything
+        outside `cache/tabs/`.
+        """
+        remove_unreferenced_tab_cache_files(
+            tab_cache_folder(self._path),
+            build_referenced_tab_cache_names(self._project.open_tabs))
+
+    def _capture_open_tabs(self) -> None:
+        if self._open_tabs_capture is not None:
+            self._project.open_tabs = list(self._open_tabs_capture())
+
+    def _notify_saved(self) -> None:
+        if self._saved_listener is not None:
+            self._saved_listener()
 
     def save_edit(self, edit: Callable[[], None]) -> bool:
         """
@@ -287,13 +416,14 @@ class ProjectSession(ResultSetsMixin):
         """
         had_other_unsaved_edits = self._dirty
         edit()
-        self.mark_dirty()
+        self.mark_work_changed()
         if had_other_unsaved_edits:
             return False
         self.save()
         return True
 
-    def save_as(self, project_path: str) -> str:
+    def save_as(self, project_path: str,
+                result_set_copy: Optional[ResultSetCopyPlan] = None) -> str:
         """
         Saves to a new location, re-expressing the data roots against it.
 
@@ -301,17 +431,26 @@ class ProjectSession(ResultSetsMixin):
         file carry no relative path at all, and a Save As into a different
         folder invalidates the ones that do -- in both cases the project would
         reopen unable to find any of its measurements.
+
+        Result sets are the same problem one level down: they live in the
+        folder's `cache/`. A move into another folder with result sets needs
+        `result_set_copy` -- a plan from `build_result_set_copy` whose copies
+        have already been made -- or it is refused, and so is a folder that
+        already holds another project.
         """
         was_untitled = self._path is None
         new_path = os.path.abspath(project_path)
+        self._refuse_shared_folder(new_path)
         old_path = self._path
         old_name = self._project.name
         root_snapshot = [
             (root, root.relpath, root.absolute_fallback)
             for root in self._project.data_roots
         ]
+        result_set_snapshot = self._apply_result_set_copy(new_path, result_set_copy)
 
         try:
+            self._capture_open_tabs()
             reanchor_roots(self._project, self._path, new_path)
             self._path = new_path
             if self._project.name == UNTITLED_NAME:
@@ -323,14 +462,18 @@ class ProjectSession(ResultSetsMixin):
             for root, relpath, absolute_fallback in root_snapshot:
                 root.relpath = relpath
                 root.absolute_fallback = absolute_fallback
+            self._restore_result_sets(result_set_snapshot)
             raise
 
+        if result_set_copy is not None and result_set_copy.copies:
+            self._write_cache_index()
         if was_untitled:
             if self._cache_adopter is not None:
                 self._cache_adopter(new_path, list(self._project.data_roots))
             else:
                 self.adopt_untitled_scan_caches()
         self._dirty = False
+        self._notify_saved()
         return new_path
 
     def adopt_untitled_scan_caches(self) -> List[str]:
@@ -346,8 +489,6 @@ class ProjectSession(ResultSetsMixin):
         if not self._path:
             return []
         return adopt_untitled_scan_caches(self._path, self._project.data_roots)
-
-    _adopt_untitled_scan_caches = adopt_untitled_scan_caches
 
     def ensure_saved(self, path_provider: PathProvider) -> bool:
         """
@@ -388,8 +529,9 @@ class ProjectSession(ResultSetsMixin):
             self._project, self._path, directory, label,
             root_directories=index.root_directories)
         report = index_root_listing(self._project, root, directory, index.file_listing)
+        self.refresh_source_location(index.root_directories)
         if reconciled or report.changed:
-            self._mark_structural_change()
+            self.mark_view_changed()
         return report
 
     def resolved_directories(self) -> List[str]:
@@ -416,7 +558,7 @@ class ProjectSession(ResultSetsMixin):
         # immediately without needing a re-scan.
         correct_entry_channel(entry, channel_label, unit)
 
-        self.mark_dirty()
+        self.mark_work_changed()
         return True
 
 
@@ -429,7 +571,7 @@ class ProjectSession(ResultSetsMixin):
         would take the user's labels and visibility choices with it.
         """
         self._project.metadata_schema = dict(schema)
-        self.mark_dirty()
+        self.mark_work_changed()
 
     @property
     def channel_pairs(self) -> List[Tuple[ChannelIdentity, ChannelIdentity]]:
@@ -455,20 +597,19 @@ class ProjectSession(ResultSetsMixin):
         if entry is None or entry.source_amplitude == source_amplitude:
             return False
         entry.source_amplitude = source_amplitude
-        self.mark_dirty()
+        self.mark_work_changed()
         return True
 
-    @staticmethod
-    def apply_source_amplitudes(runs, by_path: Dict[str, SourceEntry]) -> int:
+    def apply_source_amplitudes(self, runs) -> int:
         """
         Lays the project's Source amplitude answers over freshly loaded runs,
         the way apply_unit_overrides lays unit corrections: the scan reports
         the file, the project restates what the user said about it. Returns
-        how many runs were touched. `by_path` is a map from sources_by_path().
+        how many runs were touched.
         """
         touched = 0
         for run in runs:
-            entry = ProjectSession.entry_for_run(run, by_path)
+            entry = self._source_location.entry_for_run(run)
             if entry is None or not entry.source_amplitude:
                 continue
             for channel_meta in getattr(run, "available_channels", {}).values():
@@ -484,12 +625,12 @@ class ProjectSession(ResultSetsMixin):
         explorer has in hand. Returns False when the file is not part of the
         project, which is the case while no data folder has been registered.
         """
-        entry = self.source_for_path(getattr(run, "file_path", ""))
+        entry = self._source_location.entry_for_run(run)
         if entry is None:
             return False
         return self.set_unit_override(entry.id, channel_label, unit)
 
-    def apply_unit_overrides(self, runs, by_path: Dict[str, SourceEntry]) -> int:
+    def apply_unit_overrides(self, runs) -> int:
         """
         Lays the project's unit corrections over freshly loaded runs.
 
@@ -498,12 +639,11 @@ class ProjectSession(ResultSetsMixin):
         and the project restates it on every load. Deleting the cache costs a
         re-scan and nothing else.
 
-        `by_path` is a map from sources_by_path(). Returns how many channels
-        were corrected.
+        Returns how many channels were corrected.
         """
         corrected = 0
         for run in runs:
-            entry = self.entry_for_run(run, by_path)
+            entry = self._source_location.entry_for_run(run)
             if entry is None or not entry.unit_overrides:
                 continue
 
@@ -515,7 +655,7 @@ class ProjectSession(ResultSetsMixin):
 
         return corrected
 
-    def sync_source_metadata(self, runs, by_path: Dict[str, SourceEntry]) -> int:
+    def sync_source_metadata(self, runs) -> int:
         """
         Writes everything a scan just discovered about each run into its
         SourceEntry: the linked Level 2 Excel row, the file's own Level 1
@@ -527,11 +667,11 @@ class ProjectSession(ResultSetsMixin):
         comparator's filters can see a file's metadata without its data root
         being mounted. Only entries that actually changed are touched, so
         re-scanning an untouched folder never marks the project dirty on its
-        own. `by_path` is a map from sources_by_path().
+        own.
         """
         synced = 0
         for run in runs:
-            entry = self.entry_for_run(run, by_path)
+            entry = self._source_location.entry_for_run(run)
             if entry is None:
                 continue
 
@@ -568,9 +708,9 @@ class ProjectSession(ResultSetsMixin):
         if synced:
             # A folder re-scan syncing derived metadata is a structural change,
             # not a user decision -- on an Untitled project (no has_file guard
-            # in mark_dirty()) it must not manufacture unsaved-changes state
+            # in mark_work_changed()) it must not manufacture unsaved-changes state
             # out of the very first browse.
-            self._mark_structural_change()
+            self.mark_view_changed()
         return synced
 
     def sync_parsed_metadata(self, schema: Dict) -> int:
@@ -628,9 +768,9 @@ class ProjectSession(ResultSetsMixin):
         """
         Stores a named selection, replacing one of the same name.
 
-        A project decision, so it marks the project dirty -- unlike the Compare
-        filter state, which is cosmetic and lives in ui_state precisely so that
-        merely looking around does not make a project unsaved.
+        A Work change -- unlike the checked filter values, a View change kept
+        in view_state so that merely looking around does not make an Untitled
+        project unsaved.
         """
         if not selection.name:
             raise ValueError("A stored selection needs a name -- it is how a recipe refers to it.")
@@ -640,13 +780,13 @@ class ProjectSession(ResultSetsMixin):
                 "pick another name for a stored selection."
             )
         stored = self._project.put_selection(selection)
-        self.mark_dirty()
+        self.mark_work_changed()
         return stored
 
     def remove_selection(self, name: str) -> bool:
         removed = self._project.remove_selection(name)
         if removed:
-            self.mark_dirty()
+            self.mark_work_changed()
         return removed
 
     def workflows_using_selection(self, name: str) -> List[str]:
@@ -685,7 +825,7 @@ class ProjectSession(ResultSetsMixin):
         # snapshots so undo cannot resurrect the selection's obsolete name.
         for history in self._workflow_history.values():
             history.snapshots = [rename_input(snapshot) for snapshot in history.snapshots]
-        self.mark_dirty()
+        self.mark_work_changed()
 
     # ---- block-diagram workflows ----------------------------
 
@@ -723,7 +863,7 @@ class ProjectSession(ResultSetsMixin):
                 snapshots.append(workflow)
                 history.cursor = len(snapshots) - 1
         stored = self._project.put_workflow(workflow)
-        self.mark_dirty()
+        self.mark_work_changed()
         return stored
 
     def can_undo_workflow(self, name: str) -> bool:
@@ -756,62 +896,8 @@ class ProjectSession(ResultSetsMixin):
         removed = self._project.remove_workflow(name)
         if removed:
             self._workflow_history.pop(name, None)
-            self.mark_dirty()
+            self.mark_work_changed()
         return removed
-
-    @staticmethod
-    def entry_for_run(run, by_path: Dict[str, SourceEntry]) -> Optional[SourceEntry]:
-        """Looks a run up in a map from sources_by_path()."""
-        file_path = getattr(run, "file_path", "")
-        if not file_path:
-            return None
-        return by_path.get(canonical_path(file_path))
-
-    def sources_by_path(self, root_directories: Optional[Mapping[str, Optional[str]]] = None,
-                        ) -> Dict[str, SourceEntry]:
-        """
-        Every source the project can currently locate, keyed by its path on
-        this machine in the form source_for_path() compares against.
-
-        Built once and reused by anything that has to answer "which entry is
-        this run?" for a whole pool at a time. Doing it with source_for_path()
-        per run walks every root and every source again for each one, which a
-        single folder hid but a pool of several hundred files does not.
-
-        The sources are bucketed by root_id once rather than re-scanned for
-        every root: this method is called four or five times per ingested
-        folder, and the nested walk was O(roots x sources) each time.
-
-        `root_directories` is a snapshot from read_root_directories(), for a
-        caller that must not touch the disk; without one the roots are
-        resolved here.
-        """
-        # ponytail: the argument-less call is the one synchronous disk read left
-        # on the GUI thread -- GUI readers (filter routing, result content, data
-        # pool panel) and the pool's remove/reset/restore steps; move them onto
-        # a worker snapshot if a slow share makes them stall.
-        if root_directories is None:
-            root_directories = read_root_directories(self._path, self._project.data_roots)
-        return build_sources_by_path(self._project.data_roots, self._project.sources,
-                                     root_directories)
-
-    def source_for_path(self, absolute_path: str) -> Optional[SourceEntry]:
-        """Finds the project's entry for a file on disk, or None if unknown."""
-        if not absolute_path:
-            return None
-        target = canonical_path(absolute_path)
-
-        for root in self._project.data_roots:
-            directory = resolve_root(self._path, root)
-            if directory is None:
-                continue
-            for entry in self._project.sources:
-                if entry.root_id != root.id:
-                    continue
-                candidate = os.path.normcase(os.path.join(directory, entry.relpath))
-                if candidate == target:
-                    return entry
-        return None
 
     def relocate_source(self, source_id: str, new_absolute_path: str) -> bool:
         """
@@ -838,7 +924,7 @@ class ProjectSession(ResultSetsMixin):
             return False
 
         root_directories = read_root_directories(self._path, self._project.data_roots)
-        existing = self.sources_by_path(root_directories).get(canonical_path(absolute))
+        existing = self._source_location.entry_for_path(absolute)
         if existing is not None and existing.id != entry.id:
             return False
 
@@ -849,7 +935,7 @@ class ProjectSession(ResultSetsMixin):
         if self._project.source_by_id(source_id) is not entry:
             # Finding the root folded a duplicate of the target folder away,
             # and this entry went with it into the one kept for the file.
-            self.mark_dirty()
+            self.mark_work_changed()
             return False
 
         stamp = file_stamp(absolute)
@@ -860,30 +946,29 @@ class ProjectSession(ResultSetsMixin):
             entry.mtime_ns = stamp["mtime_ns"]
         entry.in_pool = True
 
-        self.mark_dirty()
+        self.refresh_source_location(root_directories)
+        self.mark_work_changed()
         return True
 
-    def set_pool_membership(self, paths, in_pool: bool,
-                            by_path: Dict[str, SourceEntry]) -> int:
+    def set_pool_membership(self, paths, in_pool: bool) -> int:
         """
         Records which measurements are in the Data Pool.
 
         Takes paths rather than ids because that is what the pool deals in --
         it holds runs read off disk, not project entries. Returns how many
         entries actually changed, so a re-scan that admits the same files it
-        admitted last time does not mark the project dirty. `by_path` is a map
-        from sources_by_path().
+        admitted last time does not mark the project dirty.
         """
         changed = 0
         for path in paths:
-            entry = by_path.get(canonical_path(path))
+            entry = self._source_location.entry_for_path(path)
             if entry is None or entry.in_pool == in_pool:
                 continue
             entry.in_pool = in_pool
             changed += 1
 
         if changed:
-            self._mark_structural_change()
+            self.mark_view_changed()
         return changed
 
     def set_setup_label(self, source_id: str, setup_label: str) -> bool:
@@ -900,75 +985,52 @@ class ProjectSession(ResultSetsMixin):
         if entry.setup_label == setup_label:
             return True
         entry.setup_label = setup_label
-        self.mark_dirty()
+        self.mark_work_changed()
         return True
 
-    def find_cached_result(self, absolute_path: str, channel_name: str, kind: str,
-                           live_params: Dict, wanted_block_params: Optional[List[Dict]] = None,
-                           channel_index: Optional[int] = None):
+    def cache_finder(self) -> Callable:
         """
-        Answers "is this result already on disk?" for any block kind: looks for
-        an already-saved result set of `kind` that can serve `channel_name` at
-        `live_params` without recomputing it. Returns a cache_lookup.CachedResult
-        (stored blocks plus the set they came from) or None on a miss (unknown
-        source, no saved result set with matching settings, or a requested block
-        not present).
+        The result-set lookup for a worker thread: "is this
+        result already on disk?" for any block kind. The returned callable owns
+        the project, its path and the path <-> entry snapshot as they are now,
+        so the worker neither reads the disk to find the entry nor touches the
+        live session. It returns a cache_lookup.CachedResult (stored blocks plus
+        the set they came from) or None on a miss (unknown source, no saved
+        result set with matching settings, or a requested block not present),
+        and never persists `cache/index.json`.
 
         See io_modules.result_cache.cache_lookup for what "matching" means.
         `channel_index` (the channel's ChannelMetadata.index) tells two
         same-named channels of one file apart; every caller that has the
         channel's metadata in hand should pass it.
         """
-        entry = self.source_for_path(absolute_path)
-        if entry is None:
-            return None
+        from io_modules.result_cache.cache_lookup import find_cached_result
 
-        from io_modules.result_cache.cache_lookup import find_cached_result as _lookup
-        return _lookup(self._project, self._path, entry, channel_name, kind,
-                       live_params, wanted_block_params,
-                       write_index=True, channel_index=channel_index)
+        project, project_path, location = self._project, self._path, self._source_location
 
-    def find_cached_result_background(self, absolute_path: str, channel_name: str, kind: str,
-                                     live_params: Dict,
-                                     wanted_block_params: Optional[List[Dict]] = None,
-                                     channel_index: Optional[int] = None):
-        """
-        `find_cached_result` for a worker thread: the lookup -- which
-        opens HDF5 shards and reads arrays out of them -- runs on the background
-        thread rather than the GUI thread. Unlike `find_cached_result` there is
-        no `write_index` knob: a worker never persists `cache/index.json`.
-        """
-        entry = self.source_for_path(absolute_path)
-        if entry is None:
-            return None
+        def finder(absolute_path: str, channel_name: str, kind: str, live_params: Dict,
+                   wanted_block_params: Optional[List[Dict]] = None,
+                   channel_index: Optional[int] = None):
+            entry = location.entry_for_path(absolute_path)
+            if entry is None:
+                return None
+            return find_cached_result(project, project_path, entry, channel_name, kind,
+                                      live_params, wanted_block_params,
+                                      write_index=False, channel_index=channel_index)
 
-        from io_modules.result_cache.cache_lookup import find_cached_result_background as _lookup
-        return _lookup(self._project, self._path, entry, channel_name, kind,
-                       live_params, wanted_block_params, channel_index=channel_index)
-
-    def find_cached_block_background(self, absolute_path: str, channel_name: str, kind: str,
-                                     live_params: Dict,
-                                     wanted_block_params: Optional[List[Dict]] = None,
-                                     channel_index: Optional[int] = None):
-        entry = self.source_for_path(absolute_path)
-        if entry is None:
-            return None
-
-        from io_modules.result_cache.cache_lookup import find_cached_block_background as _lookup
-        return _lookup(self._project, self._path, entry, channel_name, kind,
-                       live_params, wanted_block_params, channel_index=channel_index)
+        return finder
 
 
 # ---- test setup assignment (gui/file_explorer/actions/assign_test_setup.py) --
 
 def apply_setup_label(session: ProjectSession, file_paths, label: str):
     """Records a test setup label against each file's project entry."""
-    by_path = session.sources_by_path()
+    location = session.source_location
 
     assigned = 0
     unknown = 0
     for path in file_paths:
-        entry = by_path.get(canonical_path(path))
+        entry = location.entry_for_path(path)
         if entry is None:
             unknown += 1
             continue

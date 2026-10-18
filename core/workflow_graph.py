@@ -117,8 +117,7 @@ class SaveSpec:
     would need a third value beyond today's `complete` / `partial`.
 
     `all_channels` is its own field rather than "an empty set means all", the
-    same distinction `MeasurementSelection` and `ResultSetRef` make: an empty set
-    means *no* channels.
+    same distinction `ResultSetRef` makes: an empty set means *no* channels.
 
     `label` is what the result set written at this block is called on disk. Blank
     lets the runner derive one (the run's own name for a single-save graph, that

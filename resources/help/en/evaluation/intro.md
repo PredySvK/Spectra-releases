@@ -37,7 +37,7 @@ A curve with no valid sample (an order below the frequency resolution or above N
 ## Toolbar
 
 - **Evaluation:** the choice above. Its parameters appear next to it.
-- **Amplitude (RMS / Peak):** ([Amplitude format](topic:shared/amplitude_format)) Peak = &radic;2 &times; RMS. A display switch; nothing is recomputed and the position does not move.
+- **Amplitude (RMS / Peak):** ([Amplitude format](topic:shared/amplitude_format)) Peak = &radic;2 &times; RMS. A display switch; nothing is recomputed. On a spectrum a maximum can move: the 0 Hz and Nyquist bins are not multiplied by &radic;2, so in Peak an interior bin can overtake them. The table always shows the maxima of the mode you see.
 - **Format (Linear / Power / PSD):** how spectrum rows are shown; enabled only when the table holds spectra. Order cuts and Overall Level have no such choice.
 - **Units:** follow the global unit settings ([Units](topic:units/intro)); the table updates when you change them.
 - **Copy** or Ctrl+C copies the selected rows, or the whole table when nothing is selected, tab-separated with headers for Excel. The right-click menu offers the same.

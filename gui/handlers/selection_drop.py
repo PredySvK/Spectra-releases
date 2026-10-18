@@ -14,7 +14,6 @@ later leaves the graph as it is.
 from PySide6.QtWidgets import QMessageBox
 
 from core.jobs import job_step
-from io_modules.project_store import read_root_directories
 from selection.measurement_selection import build_channel_drop_descriptors, resolve
 from selection.source_facets import all_pool_sources
 
@@ -27,11 +26,11 @@ _SLOT = "selection_drop.expand"
 
 
 def _expand(selection, sources, schema, session, runs) -> list:
-    """The Selection's channels as drop descriptors. Reads the disk (root folders), so off the GUI thread."""
-    by_path = session.sources_by_path(read_root_directories(session.path, session.project.data_roots))
+    """The Selection's channels as drop descriptors, off the GUI thread."""
+    location = session.source_location
     files = {}
     for run in runs:
-        entry = session.entry_for_run(run, by_path)
+        entry = location.entry_for_run(run)
         if entry is not None:
             files[entry.id] = (run.file_path, run.file_name)
     return build_channel_drop_descriptors(resolve(selection, sources, schema), files)

@@ -43,10 +43,10 @@ import os
 from typing import Optional
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFileDialog, QMessageBox
+from PySide6.QtWidgets import QFileDialog, QMessageBox, QProgressDialog
 
 from core.jobs import job_step
-from core.project_model import PROJECT_EXTENSION
+from core.project_model import PROJECT_EXTENSION, PROJECT_FORMAT_VERSION
 from gui.project_claim import ProjectClaim, activate_holder
 from gui.dialogs.metadata_editor_dialog import MetadataEditorDialog
 from io_modules.measurement_files import SUPPORTED_EXTENSIONS, holds_measurement_suffix
@@ -54,7 +54,7 @@ from io_modules.project_store import ProjectFormatError
 from orchestration.channel_pairing import (
     copy_project_channel_pairing, read_project_channel_pairing)
 from orchestration.data_pool import save_metadata_schema
-from orchestration.jobs import SynchronousJobRunner
+from orchestration.result_sets import run_result_set_copy
 
 PROJECT_FILTER = f"NVH Project (*{PROJECT_EXTENSION});;All Files (*.*)"
 
@@ -126,6 +126,16 @@ def ensure_project_saved(app_context, parent_widget) -> bool:
         return False
 
 
+def _format_size(size_bytes: int) -> str:
+    """A byte count the way the Save As question shows it ("3.2 GB")."""
+    size = float(size_bytes)
+    for unit in ("B", "kB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GB"
+
+
 def _default_directory(app_context) -> str:
     return app_context.active_directory or os.path.expanduser("~")
 
@@ -141,7 +151,7 @@ class ProjectDocumentHandler:
     def __init__(self, app_context, project_ribbon_tab, workspace, explorer_panel,
                  filter_panel, filter_routing, live_order_results, workflow_view,
                  log_panel, data_pool, parent_widget, *, show_welcome, show_workspace,
-                 set_titlebar_text, show_x_axis_unit=None, job_runner=None):
+                 set_titlebar_text, job_runner, show_x_axis_unit=None):
         self.app_context = app_context
         # A caller that only drives part of this (a test frame, a spawned
         # view-only workspace) may carry none of the panels -- every read below
@@ -162,9 +172,8 @@ class ProjectDocumentHandler:
         # The Settings window's Units/X axis unit choice, re-synced to whichever
         # project is open (issue #459); None for a caller with no Settings window.
         self.show_x_axis_unit = show_x_axis_unit
-        # Reads channel_pairing.xlsx off the GUI thread; a caller without a
-        # queue (a test frame) gets the inline runner.
-        self.job_runner = job_runner or SynchronousJobRunner()
+        # Reads channel_pairing.xlsx off the GUI thread.
+        self.job_runner = job_runner
         # Marks the open project as taken for other Spectra processes (#546).
         self.claim = ProjectClaim()
         self.claim.activation_requested.connect(self._raise_window)
@@ -255,6 +264,29 @@ class ProjectDocumentHandler:
         # project has a different set.
         if self.workflow_view is not None:
             self.workflow_view.refresh()
+
+    def bind_project_session(self) -> None:
+        """
+        Hands the session the two things every write needs from the window,
+        whichever path triggers it: the open tabs, captured right
+        before the write, and the refresh after it -- recent list, title and
+        file claim. Before this, only Save and Save As did either, so a
+        committed result set wrote stale tabs and a first save through
+        `ensure_project_saved` left the title and recent list behind (#654).
+        """
+        context = self.app_context
+        session = context.project_session
+        if self.workspace is not None:
+            session.set_open_tabs_capture(self.workspace.capture_open_tabs_spec)
+        session.set_saved_listener(self._after_save)
+
+    def _after_save(self) -> None:
+        context = self.app_context
+        context.remember_project(context.project_session.path)
+        # What an Untitled project held of its Tab cache has a folder now (#731).
+        if self.workspace is not None:
+            self.workspace.write_held_tab_cache_files()
+        self.refresh_project_ui()
 
     def bind_run_finished(self, workflow_runner) -> None:
         """
@@ -421,7 +453,28 @@ class ProjectDocumentHandler:
 
         self.refresh_project_ui()
         self._enter_workspace()
+        self._warn_if_older_format(session.project.format_version)
         return True
+
+    def _warn_if_older_format(self, file_version: int) -> None:
+        """Say so when the project was written by an older format.
+
+        0.x keeps no backward compatibility: an older project opens with
+        whatever this build still reads, and the next Save writes the current
+        format. What it cannot read must not vanish silently.
+        """
+        if file_version >= PROJECT_FORMAT_VERSION:
+            return
+        message = (
+            "This project was saved by an older version of Spectra. Some of its "
+            "settings may not have been loaded (for example open tabs or custom "
+            "Filter cards).\n\nSaving will store it in the current format."
+        )
+        QMessageBox.warning(self.parent_widget, "Project from an older version", message)
+        self.app_context.log(
+            f"PROJECT: Opened project format version {file_version}; this release "
+            f"writes {PROJECT_FORMAT_VERSION}. Some settings may not have been loaded."
+        )
 
     def save_project(self) -> bool:
         """Saves, falling back to Save As when the project has no file yet."""
@@ -430,8 +483,6 @@ class ProjectDocumentHandler:
         if not session.has_file:
             return self.save_project_as()
 
-        if self.workspace is not None:
-            self.workspace.persist_open_tabs()
         try:
             session.save()
         except (OSError, ValueError) as error:
@@ -442,30 +493,131 @@ class ProjectDocumentHandler:
             context.log(f"PROJECT: Save failed: {error}")
             return False
 
-        context.remember_project(session.path)
         context.log(f"PROJECT: Saved {session.path}")
-        self.refresh_project_ui()
         return True
 
     def save_project_as(self) -> bool:
+        """
+        Saves under a new path. Into another folder, the result sets go along
+       : the user chooses to copy them or to leave them out, and
+        the copy runs on a background job behind a modal progress dialog --
+        the project is written only once it has finished.
+
+        Returns True when the project was saved by the time this returns; a
+        copy still running returns False and reports through the log and the
+        window when it ends.
+        """
         context = self.app_context
+        session = context.project_session
         chosen = ask_for_project_path(context, self.parent_widget)
         if not chosen:
             return False
 
+        old_path = session.path
+        # A Tab cache write still running would be named by the new project
+        # but missed by the copy: let them land first.
         if self.workspace is not None:
-            self.workspace.persist_open_tabs()
-        old_path = context.project_session.path
+            self.workspace.finish_tab_cache_writes()
         try:
-            context.project_session.save_as(chosen)
+            plan = session.build_result_set_copy(chosen)
+            if plan.relabels:
+                keep = self._ask_result_set_copy(plan)
+                if keep is None:
+                    return False
+                if not keep:
+                    plan = session.build_result_set_copy(chosen, keep_result_sets=False)
+            if not plan.copies:
+                session.save_as(chosen, result_set_copy=plan)
         except (OSError, ValueError) as error:
-            QMessageBox.critical(
-                self.parent_widget, "Cannot save project",
-                f"The project was not saved.\n\n{error}",
-            )
-            context.log(f"PROJECT: Save failed: {error}")
+            self._report_save_failure(error)
             return False
 
+        if plan.copies:
+            return self._save_as_with_copy(plan, old_path)
+        self._after_save_as(old_path, chosen)
+        return True
+
+    def _ask_result_set_copy(self, plan) -> Optional[bool]:
+        """True to copy the result sets, False to leave them out, None to cancel."""
+        box = QMessageBox(self.parent_widget)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Save Project As")
+        count = len(plan.relabels)
+        box.setText(
+            f"This project has {count} saved result set{'s' if count != 1 else ''} "
+            f"({_format_size(plan.result_set_bytes)}).\n\n"
+            "Copy them into the new project folder?")
+        box.setInformativeText(
+            "Without them the new project starts with no saved results; "
+            "the current project keeps its own either way.")
+        copy = box.addButton("Copy results", QMessageBox.ButtonRole.AcceptRole)
+        without = box.addButton("Save without results", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(copy)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is copy:
+            return True
+        if clicked is without:
+            return False
+        return None
+
+    def _save_as_with_copy(self, plan, old_path) -> bool:
+        """Runs the copy behind a modal progress dialog, then the save."""
+        context = self.app_context
+        dialog = QProgressDialog("Copying results…", "Cancel", 0, 100, self.parent_widget)
+        dialog.setWindowTitle("Save Project As")
+        # Modal on purpose: the project must not change while its copy is made,
+        # which is the whole lock -- no snapshot needed.
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        dialog.setMinimumDuration(0)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        state = {"job_id": None, "outcome": None}
+
+        def changed(job_id):
+            if job_id != state["job_id"]:
+                return
+            record = self.job_runner.record(job_id)
+            if record is not None:
+                dialog.setValue(record.percent)
+
+        job_changed = getattr(self.job_runner, "job_changed", None)
+
+        def done(outcome):
+            state["outcome"] = outcome
+            if job_changed is not None:
+                job_changed.disconnect(changed)
+            dialog.close()
+            if outcome.saved:
+                self._after_save_as(old_path, plan.project_path)
+            elif outcome.cancelled:
+                context.log("PROJECT: Save As cancelled; the project was not saved.")
+            else:
+                self._report_save_failure(outcome.error or "The results could not be copied.")
+
+        def cancel():
+            if state["job_id"] is not None and state["outcome"] is None:
+                self.job_runner.cancel(state["job_id"])
+
+        if job_changed is not None:
+            job_changed.connect(changed)
+        dialog.canceled.connect(cancel)
+        dialog.show()
+        state["job_id"] = run_result_set_copy(
+            self.job_runner, context.project_session, plan, on_done=done)
+        outcome = state["outcome"]
+        return bool(outcome is not None and outcome.saved)
+
+    def _report_save_failure(self, error) -> None:
+        QMessageBox.critical(
+            self.parent_widget, "Cannot save project",
+            f"The project was not saved.\n\n{error}",
+        )
+        self.app_context.log(f"PROJECT: Save failed: {error}")
+
+    def _after_save_as(self, old_path, chosen) -> None:
+        context = self.app_context
         if old_path:
             # The pairs live beside the project file, so a new folder needs the workbook too.
             # Copied on the GUI thread (§1.137): a background copy raced the editor's
@@ -474,10 +626,7 @@ class ProjectDocumentHandler:
                 copy_project_channel_pairing(old_path, chosen)
             except OSError as error:
                 context.log(f"WARNING: Channel pairing not copied to the new folder: {error}")
-        context.remember_project(chosen)
         context.log(f"PROJECT: Saved {chosen}")
-        self.refresh_project_ui()
-        return True
 
     def open_recent_project(self) -> bool:
         """Opens whatever the recent drop-down is pointing at."""
@@ -508,7 +657,7 @@ class ProjectDocumentHandler:
             # when it fails: open_project reports the error, Welcome stays empty.
             if self.open_project(project_path):
                 return
-        elif context.shared_settings.value("open_last_project_on_startup", False, type=bool):
+        elif context.settings_store.value("open_last_project_on_startup"):
             recent = context.recent_projects()
             if recent and self.open_project(recent[0]):
                 return

@@ -184,14 +184,15 @@ def _say(on_message: Optional[Callable[[str], None]], message: str) -> None:
 
 
 def _on_source_done(state: _RunState, payload, index: int) -> None:
-    manifest_by_block, errors, block_errors, clipped_blocks = payload
+    manifest_by_block, errors, block_errors, clipped_blocks, invalid_sample_blocks = payload
     state.errors.extend(f"{message}" for message in errors)
     for block_id, messages in block_errors.items():
         state.block_errors.setdefault(block_id, []).extend(messages)
     for block_id, entry in manifest_by_block.items():
         sink = state.sinks.get(block_id)
         if sink is not None:
-            sink.add(entry, index, f_stop_clipped=block_id in clipped_blocks)
+            sink.add(entry, index, f_stop_clipped=block_id in clipped_blocks,
+                     invalid_samples=block_id in invalid_sample_blocks)
 
 
 def _on_source_failed(state: _RunState, message: str, index: int) -> None:

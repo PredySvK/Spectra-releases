@@ -14,8 +14,8 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Sequence, Set
 
-from core.block_kinds import resolve_clipped_f_stop
-from core.jobs import CancelToken
+from core.block_kinds import resolve_clipped_f_stop, resolve_invalid_samples
+from core.jobs import CancelToken, JobCancelled
 from core.models import is_time_response
 from core.workflow_graph import SaveSpec, Workflow
 from io_modules.data_accessor import DataAccessor
@@ -149,6 +149,41 @@ def _blocked_save_blocks(workflow: Workflow,
     return blocked
 
 
+def _run_branches(workflow: Workflow, inputs, bound_channels, cancel: Optional[CancelToken],
+                  scratch: Dict[str, object], roots: Sequence[str]):
+    """
+    Run the graph for the save blocks `roots` over one channel and return
+    (outputs, {save block id: error}) -- a branch that raises costs only its own
+    save block its result, not a sibling's (#686).
+
+    The branches run in one `run_graph` call first, so an ancestor they share is
+    computed once. Only when that call raises and there is more than one root
+    is each re-run alone, to tell the failing branch from the healthy ones; a
+    shared ancestor that is itself at fault then fails every branch below it, as
+    it should. The retry costs a channel that fails, never one that succeeds.
+    Cancelling is not a branch failure and goes straight out.
+    """
+    try:
+        return run_graph(workflow, inputs, bound_channels, cancel,
+                         scratch=scratch, roots=set(roots)), {}
+    except JobCancelled:
+        raise
+    except Exception as error:
+        if len(roots) == 1:
+            return {}, {roots[0]: error}
+    outputs: Dict[str, list] = {}
+    failures: Dict[str, Exception] = {}
+    for root in roots:
+        try:
+            outputs.update(run_graph(workflow, inputs, bound_channels, cancel,
+                                     scratch=scratch, roots={root}))
+        except JobCancelled:
+            raise
+        except Exception as error:
+            failures[root] = error
+    return outputs, failures
+
+
 def _run_source_chain(entry, directory: str, channel_labels: Sequence[str],
                       workflow: Workflow, save_plan: Dict[str, _BlockSavePlan],
                       cancel: Optional[CancelToken] = None,
@@ -164,7 +199,8 @@ def _run_source_chain(entry, directory: str, channel_labels: Sequence[str],
     and numbers, not the arrays that were just persisted.
 
     No logging and no Qt here -- returns
-    (manifest_by_block, errors, block_errors, clipped_blocks). `manifest_by_block`
+    (manifest_by_block, errors, block_errors, clipped_blocks, invalid_sample_blocks).
+    `manifest_by_block`
     maps a save block id to its shard's manifest entry; a block this file
     contributed nothing to is simply absent. `errors` are the failures that hit every save block alike (the
     file, an optional bound channel, a channel this file does not have);
@@ -174,7 +210,9 @@ def _run_source_chain(entry, directory: str, channel_labels: Sequence[str],
     cannot mark a sibling set "partial", and a partial set never matches a cache
     lookup again (audit 02, finding S1/1.11; #331 for the bound-channel case).
     `clipped_blocks` are the save blocks whose Overall Level F max this file
-    clipped to its Nyquist, for the sink's summary line (§1.62 point 9).
+    clipped to its Nyquist, for the sink's summary line (§1.62 point 9);
+    `invalid_sample_blocks` likewise the ones a channel with invalid (NaN)
+    samples fed (#673).
     The size/mtime stamp is taken after the reads so it describes what was
     actually read, matching OrderBatchSaveController.
     """
@@ -184,10 +222,11 @@ def _run_source_chain(entry, directory: str, channel_labels: Sequence[str],
     # Per save block: the (channel meta, blocks) pairs this file contributes.
     per_block: Dict[str, List[tuple]] = {block_id: [] for block_id in save_plan}
     clipped_blocks: Set[str] = set()
+    invalid_sample_blocks: Set[str] = set()
 
     run = run_from_entry(entry, directory)
     if run is None:
-        return {}, [f"{entry.relpath}: not scanned yet"], {}, set()
+        return {}, [f"{entry.relpath}: not scanned yet"], {}, set(), set()
 
     input_block_id = sole_input_block_id(workflow)
     # One bag for this measurement, shared by every channel of it: order
@@ -212,7 +251,7 @@ def _run_source_chain(entry, directory: str, channel_labels: Sequence[str],
         block_errors.setdefault(block_id, []).extend(by_type.values())
     active_root_ids = {block_id for block_id in save_plan if block_id not in blocked}
     if not active_root_ids:
-        return {}, errors, block_errors, set()
+        return {}, errors, block_errors, set(), set()
 
     for position, label in enumerate(channel_labels):
         if cancel is not None:
@@ -250,28 +289,38 @@ def _run_source_chain(entry, directory: str, channel_labels: Sequence[str],
             if entry.id in plan.source_ids
             and save_spec_allows_channel(plan.save, meta.name, channel_type)
         ]
+        # Only the branches this channel is saved by are computed: a branch whose
+        # SaveSpec does not want it would be thrown away, and its failure used to
+        # cost the wanted one its result (#686).
+        targets = [block_id for block_id in targets if block_id in active_root_ids]
         if not targets:
             continue
 
         try:
             vib_block = DataAccessor.fetch_channel_data(run, meta)
-            outputs = run_graph(workflow, {input_block_id: vib_block}, bound_channels,
-                                cancel, scratch=scratch, roots=active_root_ids)
+        except JobCancelled:
+            raise
         except Exception as error:
             for block_id in targets:
                 block_errors.setdefault(block_id, []).append(
                     f"{entry.relpath}: {label}: {error}"
                 )
             continue
+        outputs, failures = _run_branches(
+            workflow, {input_block_id: vib_block}, bound_channels, cancel, scratch, targets)
+        for block_id, error in failures.items():
+            block_errors.setdefault(block_id, []).append(f"{entry.relpath}: {label}: {error}")
         for block_id in targets:
             blocks = outputs.get(block_id)
             if blocks:
                 per_block[block_id].append((meta, blocks))
                 if any(resolve_clipped_f_stop(block) for block in blocks):
                     clipped_blocks.add(block_id)
+                if any(resolve_invalid_samples(block) for block in blocks):
+                    invalid_sample_blocks.add(block_id)
 
     if not any(per_block.values()):
-        return {}, errors, block_errors, set()
+        return {}, errors, block_errors, set(), set()
 
     stamp = file_stamp(run.file_path)
     manifest_by_block: Dict[str, Optional[dict]] = {}
@@ -280,7 +329,7 @@ def _run_source_chain(entry, directory: str, channel_labels: Sequence[str],
             continue
         source = source_result_from(entry, results, stamp)
         manifest_by_block[block_id] = write_result_shard(save_plan[block_id].draft, source)
-    return manifest_by_block, errors, block_errors, clipped_blocks
+    return manifest_by_block, errors, block_errors, clipped_blocks, invalid_sample_blocks
 
 
 def source_result_from(entry, results: List[tuple], stamp: Optional[dict]) -> SourceResult:

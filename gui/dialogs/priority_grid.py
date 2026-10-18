@@ -20,8 +20,6 @@ from PySide6.QtWidgets import (
 from gui.appearance import APP_TOKENS
 
 
-_GREYED_STYLE = f"color: {APP_TOKENS.text_muted};"
-
 # One row: key, checkbox text, and why the row is greyed (None = not greyed).
 PriorityGridEntry = Tuple[str, str, Optional[str]]
 
@@ -119,7 +117,7 @@ class PriorityGrid(QGroupBox):
         checkbox = QCheckBox(text)
         checkbox.setChecked(checked)
         if greyed_reason:
-            checkbox.setStyleSheet(_GREYED_STYLE)
+            checkbox.setStyleSheet(f"color: {APP_TOKENS.text_muted};")
             checkbox.setToolTip(f"Cannot narrow anything down right now: {greyed_reason}.")
         checkbox.toggled.connect(lambda state, k=key: self._on_toggled(k, state))
         self.checkboxes[key] = checkbox

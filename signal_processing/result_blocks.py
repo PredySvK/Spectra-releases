@@ -5,8 +5,8 @@
 Single synchronous path for turning a loaded time-domain block into a spectrum,
 spectrogram, order cut, or Overall Level.
 
-The asynchronous equivalents (SpectralRequests, FileProcessingWorker) wrap
-these functions in QRunnable tasks so the UI does not block; neither they nor
+The asynchronous callers (a live view's `run_live_compute`, FileProcessingWorker)
+run these functions on worker threads so the UI does not block; neither they nor
 the batch save controller duplicate the parameter extraction, units, or
 construction logic here.
 
@@ -28,7 +28,10 @@ from typing import Any, Dict, List, Mapping, MutableMapping, Optional, Tuple, Un
 import numpy as np
 
 from core.benchmark import benchmark_step
-from core.block_kinds import KIND_OVERALL_LEVEL, PARAM_COMPUTATION, PARAM_ORDERS
+from core.block_kinds import (
+    INVALID_SAMPLE_KEYS, KIND_OVERALL_LEVEL, META_EMPTY_STEPS, META_FRAMES, META_INVALID_SAMPLES, META_SKIPPED_FRAMES,
+    META_STEPS, PARAM_COMPUTATION, PARAM_ORDERS,
+)
 from core.data_block import NVHDataBlock, Provenance, SpectralProcessing
 from core.dsp_configs import (
     SpectrumConfig, SpectrogramConfig, OrderTrackingConfig, OverallLevelConfig,
@@ -41,9 +44,9 @@ from signal_processing.dsp.order_cut import (
     compute_tracked_order_cuts, compute_tracked_order_cuts_with_overall_level,
 )
 from signal_processing.dsp.tracking import TrackingPlan, build_tracking_plan
-from signal_processing.dsp.spectrogram import compute_tracked_spectrogram
-from signal_processing.dsp.windows import generate_window
+from signal_processing.dsp.spectrogram import compute_tracked_spectrogram_with_window
 from signal_processing.dsp.dc_offset import remove_dc_offset
+from signal_processing.dsp.steps.frame_cutting import resolve_invalid_tracking_steps
 
 
 # A wrong metadata dt and the actual time-array spacing rarely disagree by a
@@ -209,9 +212,8 @@ def with_dc_removed(block: NVHDataBlock) -> NVHDataBlock:
 
 
 # One place per result kind where a raw DSP payload becomes a block. The
-# asynchronous path (SpectralRequests) cannot call compute_* -- its maths
-# already ran on a worker thread and it holds only the returned arrays -- so
-# before these existed it spelled the construction out again, and a spectrum
+# asynchronous path once held only the arrays a worker thread returned, not a
+# block, so before these existed it spelled the construction out again, and a spectrum
 # was assembled at two sites and an order cut at four. Every one of them
 # repeated the unit rule, the naming rule and the metadata copy.
 
@@ -315,6 +317,34 @@ def require_uniform_rpm_axis(block: NVHDataBlock) -> None:
     )
 
 
+def build_order_cut_block(source_block: NVHDataBlock, rpm_axis, order: float, amplitudes, *,
+                          window_type: str,
+                          fft_size: Optional[int] = None,
+                          value_unit: Optional[str] = None,
+                          name: Optional[str] = None,
+                          step: str = "compute_order_cuts",
+                          computation: Optional[Mapping[str, Any]] = None) -> NVHDataBlock:
+    """
+    One order cut in Linear RMS: the single recipe behind every
+    order-cut block, whether Order Tracking or an Evaluation row builds it.
+    `value_unit`, `name` and the provenance `step` default to Order Tracking's;
+    `rpm_axis` must already be a float64 array when it is shared between blocks.
+    """
+    if value_unit is None:
+        value_unit = format_order_unit(source_block.value_unit, "linear", "rms")
+    return NVHDataBlock.order_cut(
+        name=f"Order {order} [{source_block.name}]" if name is None else name,
+        values=amplitudes, rpm=rpm_axis, order=order,
+        value_unit=value_unit,
+        processing=SpectralProcessing(
+            window_type=window_type, amplitude_mode="rms",
+            spectrum_format="linear", fft_size=fft_size,
+        ),
+        provenance=_provenance(step, source_block, computation),
+        **source_block.inherited_context(),
+    )
+
+
 def build_order_cut_blocks(source_block: NVHDataBlock, rpm_axis,
                            orders_to_amplitude: Dict[float, np.ndarray], *,
                            window_type: str,
@@ -325,20 +355,11 @@ def build_order_cut_blocks(source_block: NVHDataBlock, rpm_axis,
     One block per extracted order. The rpm axis is shared between them; blocks
     are read-only, so that costs nothing and copies nothing. Always in Linear RMS.
     """
-    if value_unit is None:
-        value_unit = format_order_unit(source_block.value_unit, "linear", "rms")
     rpm_axis = np.asarray(rpm_axis, dtype=np.float64)
-    processing = SpectralProcessing(
-        window_type=window_type, amplitude_mode="rms",
-        spectrum_format="linear", fft_size=fft_size,
-    )
     return [
-        NVHDataBlock.order_cut(
-            name=f"Order {order} [{source_block.name}]",
-            values=amplitudes, rpm=rpm_axis, order=order,
-            value_unit=value_unit, processing=processing,
-            provenance=_provenance("compute_order_cuts", source_block, computation),
-            **source_block.inherited_context(),
+        build_order_cut_block(
+            source_block, rpm_axis, order, amplitudes, window_type=window_type,
+            fft_size=fft_size, value_unit=value_unit, computation=computation,
         )
         for order, amplitudes in orders_to_amplitude.items()
     ]
@@ -415,7 +436,7 @@ def compute_spectrum(time_block: NVHDataBlock, config: SpectrumConfig) -> NVHDat
         exponential_alpha=config.exponential_alpha,
     )
 
-    return _timed("result_blocks", build_spectrum_block,
+    block = _timed("result_blocks", build_spectrum_block,
         time_block, frequencies, amplitudes,
         window_type=config.window_type,
         acf=meta["acf"], ecf_linear=meta["ecf_linear"], enbw_hz=meta["enbw_hz"],
@@ -423,6 +444,47 @@ def compute_spectrum(time_block: NVHDataBlock, config: SpectrumConfig) -> NVHDat
         exponential_alpha=config.exponential_alpha,
         computation=computation_params(config),
     )
+    loss = {}
+    if meta[META_SKIPPED_FRAMES]:
+        loss = {META_SKIPPED_FRAMES: meta[META_SKIPPED_FRAMES], META_FRAMES: meta[META_FRAMES]}
+    return _note_invalid_samples(block, time_block, loss)
+
+
+def _resolve_tracked_loss(values: np.ndarray, plan: TrackingPlan, fft_size: int) -> Dict[str, int]:
+    """
+    The tracking steps invalid (NaN) samples in `values` leave empty, as
+    `_note_invalid_samples` records them (#673); empty when they leave none.
+    Raises when they leave every step empty, before anything is computed.
+    """
+    invalid = ~np.isfinite(values)
+    if not invalid.any():
+        return {}
+    empty = resolve_invalid_tracking_steps(invalid, plan.trigger_indices, fft_size)
+    n_empty = int(np.count_nonzero(empty))
+    if not n_empty:
+        return {}
+    if n_empty == empty.size:
+        raise ValueError(
+            f"Every one of the {empty.size} tracking steps holds an invalid (NaN) "
+            "sample; there is nothing left to show."
+        )
+    return {META_EMPTY_STEPS: n_empty, META_STEPS: int(empty.size)}
+
+
+def _note_invalid_samples(block: NVHDataBlock, time_block: NVHDataBlock,
+                          loss: Mapping[str, int]) -> NVHDataBlock:
+    """
+    `block` with what invalid (NaN) samples of `time_block` cost it in its
+    metadata (`core.block_kinds.META_INVALID_SAMPLES`, #673), or unchanged when
+    `loss` is empty: samples no frame or step reached left the result as a
+    clean channel's, and a warning about them would be noise.
+    """
+    if not loss:
+        return block
+    invalid = int(np.count_nonzero(~np.isfinite(time_block.values)))
+    return replace(block, metadata={
+        **block.metadata, META_INVALID_SAMPLES: invalid, **{k: int(v) for k, v in loss.items()},
+    })
 
 
 def _tracking_plan_for(scratch: Optional[MutableMapping[str, Any]],
@@ -473,7 +535,8 @@ class TrackingScratch:
     the price of one array comparison (~1-2 ms on a 75 s run-up). The sweep is
     part of it so the bag holds one plan per tracking mode, not one per step
     ever tried (each plan is ~15 MB, ADR §1.117). Thread-safe: a job keeps the
-    bag it was handed even after a newer call replaces it.
+    bag it was handed even after a newer call replaces it, and calls that meet
+    an empty bag at the same time build its plan once between them (#99).
     """
 
     def __init__(self):
@@ -481,10 +544,15 @@ class TrackingScratch:
         self._identity = None
         self._tacho: Optional[NVHDataBlock] = None
         self._scratch: Dict[Any, Any] = {}
+        self._build_lock = threading.Lock()
 
     def resolve_scratch(self, tacho_block: Optional[NVHDataBlock],
                     config: Union[OrderTrackingConfig, SpectrogramConfig, OverallLevelConfig]
                     ) -> MutableMapping[str, Any]:
+        return self._resolve(tacho_block, config)[0]
+
+    def _resolve(self, tacho_block, config):
+        """The bag for this tacho and sweep, and the lock its plan is built under."""
         identity = (config.step, config.direction, config.hysteresis)
         if tacho_block is not None:
             identity += (tacho_block.value_unit, tacho_block.acquisition.dt, len(tacho_block.values))
@@ -496,11 +564,23 @@ class TrackingScratch:
                 and _same_samples(old.primary_axis.values, tacho_block.primary_axis.values)))
             if identity != self._identity or not same_tacho:
                 self._identity, self._tacho, self._scratch = identity, tacho_block, {}
-            return self._scratch
+                self._build_lock = threading.Lock()
+            return self._scratch, self._build_lock
 
     def compute(self, compute_fn, vib_block: NVHDataBlock, tacho_block: Optional[NVHDataBlock], config):
-        """`compute_fn` (compute_order_cuts and its tracked siblings) with this bag; run it on the worker."""
-        return compute_fn(vib_block, tacho_block, config, scratch=self.resolve_scratch(tacho_block, config))
+        """
+        `compute_fn` (compute_order_cuts and its tracked siblings) with this
+        bag; run it on the worker. A call that finds the bag empty computes
+        under its lock, so siblings arriving meanwhile wait for its plan rather
+        than build their own, then compute side by side. Without a tacho, or
+        tracked against time, there is no plan to wait for.
+        """
+        scratch, build_lock = self._resolve(tacho_block, config)
+        if tacho_block is not None and getattr(config, "tracking_mode", "rpm") == "rpm":
+            with build_lock:
+                if not scratch:
+                    return compute_fn(vib_block, tacho_block, config, scratch=scratch)
+        return compute_fn(vib_block, tacho_block, config, scratch=scratch)
 
 
 def compute_order_cuts(vib_block: NVHDataBlock, tacho_block: NVHDataBlock,
@@ -541,6 +621,7 @@ def compute_order_cuts(vib_block: NVHDataBlock, tacho_block: NVHDataBlock,
         values = _timed("remove_dc", remove_dc_offset, values, vib_block.channel_type)
 
     plan = _tracking_plan_for(scratch, config, tacho_rpm, len(values), fs)
+    loss = _resolve_tracked_loss(values, plan, config.fft_size)
     overall_level_config = _order_tracking_overall_level_config(config)
     band = None
     if with_overall_level:
@@ -579,7 +660,7 @@ def compute_order_cuts(vib_block: NVHDataBlock, tacho_block: NVHDataBlock,
             fft_size=config.fft_size, orders=config.orders_to_extract,
             computation=computation_params(config),
         ))
-    return blocks
+    return [_note_invalid_samples(block, vib_block, loss) for block in blocks]
 
 
 def _order_tracking_overall_level_config(config: OrderTrackingConfig) -> OverallLevelConfig:
@@ -606,6 +687,26 @@ def build_overall_level_missing_line(blocks: List[NVHDataBlock]) -> Optional[str
     )
 
 
+def build_invalid_samples_line(blocks: List[NVHDataBlock]) -> Optional[str]:
+    """
+    The one log line for a channel whose time signal held invalid (NaN)
+    samples (#673), from what `_note_invalid_samples` recorded on its blocks,
+    or None for a clean one. One line per channel: every block of an order
+    tracking run comes from the same signal.
+    """
+    block = next((b for b in blocks if b.metadata.get(META_INVALID_SAMPLES)), None)
+    if block is None:
+        return None
+    meta = block.metadata
+    channel = block.provenance.parents[0] if block.provenance.parents else block.name
+    invalid = int(meta[META_INVALID_SAMPLES])
+    if META_FRAMES in meta:
+        lost = f"{meta[META_SKIPPED_FRAMES]} of {meta[META_FRAMES]} frames skipped"
+    else:
+        lost = f"{meta[META_EMPTY_STEPS]} of {meta[META_STEPS]} tracking steps left empty"
+    return f"WARNING: {channel}: {invalid} invalid (NaN) sample{'s' if invalid != 1 else ''} -- {lost}."
+
+
 def compute_spectrogram(vib_block: NVHDataBlock, tacho_block: Optional[NVHDataBlock],
                         config: SpectrogramConfig,
                         scratch: Optional[MutableMapping[str, Any]] = None) -> NVHDataBlock:
@@ -613,7 +714,7 @@ def compute_spectrogram(vib_block: NVHDataBlock, tacho_block: Optional[NVHDataBl
     Vibration block (and tacho, unless tracking against time) in, one tracked
     waterfall block out.
 
-    This is the path SpectralRequests runs on a worker thread, exposed
+    This is the path a live spectrogram runs on a worker thread, exposed
     synchronously so the block workflow (§1.6) reaches a spectrogram through the
     one place a raw waterfall becomes a block -- not a fourth hand-assembled
     copy of it (§1.12).
@@ -660,14 +761,15 @@ def compute_spectrogram(vib_block: NVHDataBlock, tacho_block: Optional[NVHDataBl
 
     plan = _tracking_plan_for(scratch, config, tacho_rpm, len(values), fs,
                               tracking_mode=tracking_mode)
+    loss = _resolve_tracked_loss(values, plan, config.fft_size)
 
-    frequencies, z_values, magnitude_matrix = compute_tracked_spectrogram(
+    frequencies, z_values, magnitude_matrix, window = compute_tracked_spectrogram_with_window(
         vib_data=values, fs=fs, fft_size=config.fft_size,
         window_type=config.window_type, plan=plan,
     )
 
-    win, acf, ecf_linear, enbw_factor = generate_window(config.window_type, config.fft_size)
-    enbw_hz = enbw_factor * (fs / config.fft_size)
+    acf, ecf_linear = window.acf, window.ecf_linear
+    enbw_hz = window.enbw_factor * (fs / config.fft_size)
 
     block = _timed("result_blocks", build_spectrogram_block,
         vib_block, frequencies, z_values, magnitude_matrix,
@@ -676,7 +778,7 @@ def compute_spectrogram(vib_block: NVHDataBlock, tacho_block: Optional[NVHDataBl
         computation=computation_params(config),
     )
     require_uniform_rpm_axis(block)
-    return block
+    return _note_invalid_samples(block, vib_block, loss)
 
 
 def _effective_overall_level_band(config: OverallLevelConfig, fs: float) -> Tuple[float, float]:
@@ -743,15 +845,17 @@ def compute_overall_level(vib_block: NVHDataBlock, tacho_block: Optional[NVHData
 
     plan = _tracking_plan_for(scratch, config, tacho_rpm, len(values), fs,
                               tracking_mode=tracking_mode)
+    loss = _resolve_tracked_loss(values, plan, config.fft_size)
 
     axis_values, levels = compute_tracked_overall_level(
         values, fs, config.fft_size, config.window_type,
         f_start=band[0], f_stop=band[1], plan=plan,
     )
 
-    return _timed("result_blocks", build_overall_level_block,
+    block = _timed("result_blocks", build_overall_level_block,
         vib_block, axis_values, levels,
         tracked_against_speed=not against_time, window_type=config.window_type,
         fft_size=config.fft_size, f_start=config.f_start, f_stop=config.f_stop,
         effective_band=band, computation=computation_params(config),
     )
+    return _note_invalid_samples(block, vib_block, loss)

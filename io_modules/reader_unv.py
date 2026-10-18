@@ -15,7 +15,7 @@ import pyuff
 import numpy as np
 
 from core.models import (
-    FUNC_TYPE_TIME_RESPONSE, ChannelMetadata, MeasurementRunIndex, is_time_response,
+    FUNC_TYPE_TIME_RESPONSE, ChannelMetadata, LostPart, MeasurementRunIndex, is_time_response,
 )
 from core.data_block import Acquisition, RawChannel
 from core.units import determine_channel_type
@@ -79,6 +79,48 @@ class AsciiDataset58Encountered(Exception):
     """
 
 
+def _build_channel_metadata(
+    index: int, *, id1: str, id2: str, id3: str, id4: str, id5: str, raw_unit: str,
+    func_type_code: int, abscissa_inc: float, abscissa_min: float, num_pts: int,
+    rsp_node: int, rsp_dir: int, ref_node: int, ref_dir: int,
+):
+    """The registered key and ChannelMetadata for one dataset 58, from already
+    decoded header facts -- shared by the fast byte scan and the pyuff fallback so
+    the two branches cannot describe a channel differently. Each branch keeps its
+    own decoding and its own defaults for absent fields."""
+    unique_name = f"Set #{index}: {id1}" if id1 else f"Set #{index}: {id5}"
+
+    # One classification rule for all readers, shared with apply_unit_overrides
+    # via core.units (audit 02 finding 7.4): three hand-rolled copies disagreed,
+    # so a tacho in Hz/rad/s read as an accelerometer and got DC-removed.
+    # func_type 5 is a UNV-only tacho encoding core.units cannot see from
+    # unit/name.
+    channel_type = "tacho" if func_type_code == 5 else determine_channel_type(raw_unit, id1)
+
+    meta = ChannelMetadata(
+        index=index, name=id1 if id1 else id5, channel_type=channel_type, unit=raw_unit,
+    )
+    meta.func_type = func_type_code
+    meta.abscissa_inc = abscissa_inc
+    meta.abscissa_min = abscissa_min
+    meta.sampling_rate = (1.0 / abscissa_inc) if abscissa_inc > 0 else 0.0
+    meta.num_pts = num_pts
+    # id1..id5 are per-dataset UFF header fields, not one value per file (BUGS.md
+    # N1/N2) -- stored on the channel like every other Level-1 fact so the
+    # Metadata Editor's "channel" layer can read them per channel.
+    meta.id1 = id1
+    meta.id2 = id2
+    meta.id3 = id3
+    meta.id4 = id4
+    meta.id5 = id5
+    meta.ordinate_axis_units_lab = raw_unit
+    meta.rsp_node = rsp_node
+    meta.rsp_dir = rsp_dir
+    meta.ref_node = ref_node
+    meta.ref_dir = ref_dir
+    return unique_name, meta
+
+
 class AccReaderUnv:
     """
     UNV reader with a zero-copy binary fast path for Dataset 58b (real data,
@@ -113,15 +155,20 @@ class AccReaderUnv:
         try:
             self._fast_scan_headers(run_index)
             self._scanned = True
-        except Exception as e:
+        except Exception:
             # Safe fallback: any dataset 58 layout the fast scanner does not
             # recognise (ASCII, or a malformed/unexpected header) re-parses
             # the whole file through pyuff exactly as before this ticket.
-            print(f"FAST_SCAN_FALLBACK: Falling back to pyuff for {run_index.file_name}: {e}")
             run_index.available_channels.clear()
             self._dataset_offsets = {}
             self._load_channels_via_pyuff(run_index)
             self._scanned = True
+            return
+        if not run_index.available_channels:
+            # Nothing in the file looked like a binary dataset 58. Let pyuff
+            # decide whether it is an ASCII-only file or no UNV at all; it
+            # raises when no dataset can be enumerated.
+            self._load_channels_via_pyuff(run_index)
 
     def _ensure_scanned(self):
         """
@@ -216,28 +263,15 @@ class AccReaderUnv:
         raw_unit = _split_fixed_width(header_lines[8], _RECORD10_WIDTHS)[5]
 
         if run_index is not None:
-            unique_name = f"Set #{set_idx}: {id1}" if id1 else f"Set #{set_idx}: {id5}"
-            channel_type = "tacho" if func_type_code == 5 else determine_channel_type(raw_unit, id1)
-
-            meta = ChannelMetadata(
-                index=set_idx, name=id1 if id1 else id5, channel_type=channel_type, unit=raw_unit,
+            unique_name, meta = _build_channel_metadata(
+                set_idx, id1=id1,
+                id2=header_lines[1].decode("latin1", errors="replace").strip(),
+                id3=header_lines[2].decode("latin1", errors="replace").strip(),
+                id4=header_lines[3].decode("latin1", errors="replace").strip(),
+                id5=id5, raw_unit=raw_unit, func_type_code=func_type_code,
+                abscissa_inc=abscissa_inc, abscissa_min=abscissa_min, num_pts=num_pts,
+                rsp_node=rsp_node, rsp_dir=rsp_dir, ref_node=ref_node, ref_dir=ref_dir,
             )
-            meta.func_type = func_type_code
-            meta.abscissa_inc = abscissa_inc
-            meta.abscissa_min = abscissa_min
-            meta.sampling_rate = (1.0 / abscissa_inc) if abscissa_inc > 0 else 0.0
-            meta.num_pts = num_pts
-            meta.id1 = id1
-            meta.id2 = header_lines[1].decode("latin1", errors="replace").strip()
-            meta.id3 = header_lines[2].decode("latin1", errors="replace").strip()
-            meta.id4 = header_lines[3].decode("latin1", errors="replace").strip()
-            meta.id5 = id5
-            meta.ordinate_axis_units_lab = raw_unit
-            meta.rsp_node = rsp_node
-            meta.rsp_dir = rsp_dir
-            meta.ref_node = ref_node
-            meta.ref_dir = ref_dir
-
             run_index.add_channel_metadata(unique_name, meta)
 
         # Store a fast read descriptor only for the one layout this parser
@@ -274,8 +308,9 @@ class AccReaderUnv:
         try:
             datasets = uff.get_set_types()
         except Exception as e:
-            print(f"LAZY_PARSE_ERROR: Failed to enumerate datasets in {run_index.file_name}: {str(e)}")
-            return
+            raise ValueError(f"Not a readable UNV file: {e}") from e
+        if len(datasets) == 0:
+            raise ValueError("Not a readable UNV file: it holds no datasets")
 
         # Each dataset is parsed independently: one malformed header must not silently
         # drop every channel after it, which would read as "the file only has N
@@ -293,60 +328,31 @@ class AccReaderUnv:
                 id4 = str(ds_header.get('id4', '')).strip()
                 id5 = str(ds_header.get('id5', f'Dataset_{idx}')).strip()
 
-                unique_name = f"Set #{idx}: {id1}" if id1 else f"Set #{idx}: {id5}"
                 raw_unit = str(ds_header.get('ordinate_axis_units_lab', 'g')).strip()
-
-                func_type_code = int(ds_header.get('func_type', 1))
-
-                # One classification rule for all readers, shared with
-                # apply_unit_overrides via core.units (audit 02 finding 7.4):
-                # three hand-rolled copies disagreed, so a tacho in Hz/rad/s
-                # read as an accelerometer and got DC-removed. func_type 5 is a
-                # UNV-only tacho encoding core.units cannot see from unit/name.
-                if func_type_code == 5:
-                    channel_type = "tacho"
-                else:
-                    channel_type = determine_channel_type(raw_unit, id1)
-
-                meta = ChannelMetadata(
-                    index=idx,
-                    name=id1 if id1 else id5,
-                    channel_type=channel_type,
-                    unit=raw_unit
-                )
-
-                meta.func_type = int(ds_header.get('func_type', 1))
-                meta.abscissa_inc = float(ds_header.get('abscissa_inc', 0.0))
-                meta.abscissa_min = float(ds_header.get('abscissa_min', 0.0))
-                meta.sampling_rate = (1.0 / meta.abscissa_inc) if meta.abscissa_inc > 0 else 0.0
+                abscissa_inc = float(ds_header.get('abscissa_inc', 0.0))
 
                 raw_num_pts = ds_header.get('num_pts')
                 if raw_num_pts is not None:
-                    meta.num_pts = int(raw_num_pts)
+                    num_pts = int(raw_num_pts)
                 else:
                     x_data = ds_header.get('x')
-                    meta.num_pts = len(x_data) if x_data is not None else 0
+                    num_pts = len(x_data) if x_data is not None else 0
 
-                # id1..id5 are per-dataset UFF header fields, not one value per
-                # file (BUGS.md N1/N2) -- stored on the channel like every
-                # other Level-1 fact so the Metadata Editor's "channel" layer
-                # can read them without assuming a single value for the whole
-                # measurement.
-                meta.id1 = id1
-                meta.id2 = id2
-                meta.id3 = id3
-                meta.id4 = id4
-                meta.id5 = id5
-                meta.ordinate_axis_units_lab = raw_unit
-
-                meta.rsp_node = int(ds_header.get('rsp_node', 0))
-                meta.rsp_dir = int(ds_header.get('rsp_dir', 0))
-                meta.ref_node = int(ds_header.get('ref_node', 0))
-                meta.ref_dir = int(ds_header.get('ref_dir', 0))
-
+                unique_name, meta = _build_channel_metadata(
+                    idx, id1=id1, id2=id2, id3=id3, id4=id4, id5=id5,
+                    raw_unit=raw_unit,
+                    func_type_code=int(ds_header.get('func_type', 1)),
+                    abscissa_inc=abscissa_inc,
+                    abscissa_min=float(ds_header.get('abscissa_min', 0.0)),
+                    num_pts=num_pts,
+                    rsp_node=int(ds_header.get('rsp_node', 0)),
+                    rsp_dir=int(ds_header.get('rsp_dir', 0)),
+                    ref_node=int(ds_header.get('ref_node', 0)),
+                    ref_dir=int(ds_header.get('ref_dir', 0)),
+                )
                 run_index.add_channel_metadata(unique_name, meta)
             except Exception as e:
-                print(f"LAZY_PARSE_ERROR: Failed to map dataset #{idx} in {run_index.file_name}: {str(e)}")
+                run_index.lost_parts.append(LostPart(idx, str(e) or type(e).__name__))
                 continue
 
     def read_single_channel_data(self, dataset_index: int) -> RawChannel:

@@ -15,10 +15,14 @@ from core.evaluation import CurveIdentity, SingleValue
 from signal_processing.evaluation._edge import resolve_edge
 
 
-def extract_max(block: NVHDataBlock, identity: CurveIdentity) -> SingleValue:
+def extract_max(block: NVHDataBlock, identity: CurveIdentity,
+                amplitude_mode: str = "rms") -> SingleValue:
     """Extraction on one curve -- separate from
-    aggregation across curves, which lives in runner.evaluate."""
-    values = np.asarray(block.values, dtype=float)
+    aggregation across curves, which lives in runner.evaluate. The maximum
+    of the `amplitude_mode` view: on a spectrum RMS and Peak can peak at
+    different bins."""
+    values, _unit = block.to_display_values("linear", amplitude_mode)
+    values = np.asarray(values, dtype=float)
     finite = np.isfinite(values)
     if not finite.any():
         return SingleValue(identity=identity, block=block, sample_index=None)

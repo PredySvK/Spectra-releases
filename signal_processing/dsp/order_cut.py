@@ -34,9 +34,7 @@ from core.benchmark import benchmark_step
 from core.dsp_configs import VALID_AMPLITUDE_MODES, normalize_dsp_choice
 from signal_processing.dsp.windows import generate_window
 from signal_processing.dsp.tracking import TrackingPlan
-from signal_processing.dsp.preconditions import require_alignable
-from signal_processing.dsp.steps.frame_cutting import cut_trigger_blocks
-from signal_processing.dsp.steps.frame_fft import canonical_power_matrix
+from signal_processing.dsp.tracked_matrix import compute_tracked_power_matrix, require_plan
 from signal_processing.dsp.steps.band_integration import (
     integrate_band_rows,
     integrate_band_rows_outside_moving_bands,
@@ -136,37 +134,17 @@ def _tracked_order_cuts(
         amplitude_mode: str, plan: TrackingPlan,
         overall_band: Optional[Tuple[float, float]],
 ) -> Tuple[np.ndarray, Dict[float, np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
-    if plan is None:
-        raise ValueError("A TrackingPlan is required.")
+    require_plan(plan)
 
     if amplitude_mode != "rms":
         normalize_dsp_choice(amplitude_mode, VALID_AMPLITUDE_MODES, "amplitude_mode")
 
-    require_alignable(vib_data, fft_size)
-
-    if not plan.matches(fs, len(vib_data)):
-        raise ValueError(
-            f"Tracking plan does not fit this request: plan was built for "
-            f"{plan.n_samples} samples at {plan.fs} Hz; request is "
-            f"{len(vib_data)} samples at {fs} Hz."
-        )
-
-    if plan.trigger_indices.size == 0:
-        if plan.step <= 0:
-            raise ValueError(f"Tracking step must be positive, got {plan.step}.")
-        raise ValueError("No tracking triggers generated for Order Extraction.")
-
-    t_idx = plan.trigger_indices
+    matrix = compute_tracked_power_matrix(
+        vib_data, fs, fft_size, window_type, plan,
+        no_trigger_message="No tracking triggers generated for Order Extraction.",
+    )
     rpm_axis = plan.axis_values
-
-    win, acf, ecf_linear, _ = generate_window(window_type, fft_size)
-    sum_w2 = np.sum(win ** 2)
-
-    with benchmark_step("cut_window_fft"):
-        cut_rows, coverage_gain = cut_trigger_blocks(vib_data, t_idx, win)
-        frequencies = np.fft.rfftfreq(fft_size, 1.0 / fs)
-        p_canon_matrix = canonical_power_matrix(cut_rows, coverage_gain, len(frequencies),
-                                                fft_size=fft_size, sum_w2=sum_w2)
+    p_canon_matrix, frequencies, win = matrix.p_canon, matrix.frequencies, matrix.window.samples
 
     df = fs / fft_size
     nyquist_hz = fs / 2.0

@@ -31,11 +31,11 @@ from typing import Sequence, Tuple
 import numpy as np
 
 from core.block_kinds import KIND_SPECTROGRAM
-from core.data_block import NVHDataBlock, Provenance, SpectralProcessing
+from core.data_block import NVHDataBlock
 from core.evaluation import CurveIdentity, SingleValue
-from core.units import format_order_unit, strip_amplitude_suffix
 from signal_processing.dsp.order_cut import order_cut_from_spectrogram
 from signal_processing.evaluation.max_eval import extract_max
+from signal_processing.result_blocks import build_order_cut_block
 
 # Same default as Order Tracking's own ribbon (core.dsp_configs.OrderTrackingConfig)
 # -- a starting point for the widget, not read from it (ADR §1.64 point 8: the
@@ -93,20 +93,14 @@ def order_rows_from_spectrogram(
         fft_size=fft_size, window_type=window_type,
     )
 
-    value_unit = format_order_unit(strip_amplitude_suffix(block.value_unit), "linear", "rms")
-    processing = SpectralProcessing(
-        window_type=window_type, amplitude_mode="rms", spectrum_format="linear", fft_size=fft_size,
-    )
-
     rows = []
     for order in orders:
-        amplitudes = order_cuts[float(order)]
-        cut_block = NVHDataBlock.order_cut(
-            name=f"Order {order:g} [{block.name}]",
-            values=amplitudes, rpm=rpm_axis, order=float(order),
-            value_unit=value_unit, processing=processing,
-            provenance=Provenance(step="evaluation_typed_orders", parents=(block.name,)),
-            **block.inherited_context(),
+        # Name, unit and computation record match Order Tracking's own block (#669);
+        # only the step differs, because this cut comes from the spectrogram.
+        cut_block = build_order_cut_block(
+            block, rpm_axis, float(order), order_cuts[float(order)],
+            window_type=window_type, fft_size=fft_size, step="evaluation_typed_orders",
+            computation={"order_width": float(order_width)},
         )
         # Order width has no home of its own on the table (ADR "Order width
         # is visible in the table"), so it rides in the same cell as the order.

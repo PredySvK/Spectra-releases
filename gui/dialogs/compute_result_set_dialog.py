@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from io_modules.result_cache.cache_naming import sanitize_result_set_label
+from view_models.result_sets import build_label_preview
 from selection.measurement_selection import channel_identities_by_type
 
 from gui.dialogs.dialog_state import remember_dialog_geometry
@@ -171,22 +172,17 @@ class ComputeResultSetDialog(QDialog):
         self._update_compute_button_state()
 
     def _on_name_changed(self, *_) -> None:
-        typed = self.edit_name.text().strip()
-        clean = sanitize_result_set_label(typed)
-        if not typed:
-            self.lbl_name_preview.setText("")
-        elif not clean:
+        preview = build_label_preview(self.edit_name.text())
+        if preview.kind == "unusable":
             self.lbl_name_preview.setText("This name has no usable characters -- pick another.")
-        elif clean != typed:
-            self.lbl_name_preview.setText(f"Saved as folder: {clean}")
+        elif preview.kind == "changed":
+            self.lbl_name_preview.setText(f"Saved as folder: {preview.clean}")
         else:
             self.lbl_name_preview.setText("")
         self._update_compute_button_state()
 
     def _update_compute_button_state(self) -> None:
-        typed = self.edit_name.text().strip()
-        clean = sanitize_result_set_label(typed)
-        name_valid = not typed or bool(clean)
+        name_valid = build_label_preview(self.edit_name.text()).kind != "unusable"
 
         orders_valid = True
         if self.edit_orders is not None:
@@ -207,10 +203,10 @@ class ComputeResultSetDialog(QDialog):
     def _open_channel_picker(self) -> None:
         from gui.dialogs.channel_selection_dialog import ChannelSelectionDialog
 
-        loaded_runs = list(getattr(self._app_context.pool, "loaded_runs", []))
+        loaded_runs = list(self._app_context.pool.loaded_runs)
         types = set(SAVE_CHANNEL_TYPE_OPTIONS.get(self.combo_type.currentText(), set()))
         identities = channel_identities_by_type(
-            loaded_runs, types, self._app_context.project_session.sources_by_path()
+            loaded_runs, types, self._app_context.project_session.source_location.entries_by_path
         )
         dialog = ChannelSelectionDialog(
             identities, self._selected_identities, self, settings=self._settings

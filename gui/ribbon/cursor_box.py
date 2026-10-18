@@ -18,18 +18,23 @@ from gui.ribbon.icons import ribbon_icon
 _SIZE = 92
 _CHIP = 24
 
-_MAIN_QSS = (
-    f"QToolButton {{ background: {APP_TOKENS.cursor_background}; border: 2px solid {APP_TOKENS.cursor_border}; border-radius: 10px; }}"
-    f"QToolButton:hover {{ border-color: {APP_TOKENS.cursor_accent}; }}"
-    f"QToolButton:checked {{ background: {APP_TOKENS.cursor_checked}; border: 2px solid {APP_TOKENS.cursor_accent}; }}"
-)
-_CHIP_QSS = (
-    f"QToolButton {{ background-color: {APP_TOKENS.cursor_chip_background}; border: 1px solid {APP_TOKENS.cursor_chip_border};"
-    f"  border-radius: {_CHIP // 2}px; padding: 0; }}"
-    f"QToolButton:hover {{ background-color: {APP_TOKENS.cursor_chip_hover}; }}"
-    f"QToolButton:checked {{ background-color: {APP_TOKENS.cursor_chip_checked}; border: 1px solid {APP_TOKENS.cursor_chip_checked_border}; }}"
-    f"QToolButton:disabled {{ background-color: {APP_TOKENS.cursor_chip_disabled}; border: 1px solid {APP_TOKENS.cursor_chip_disabled_border}; }}"
-)
+
+def _main_qss() -> str:
+    return (
+        f"QToolButton {{ background: {APP_TOKENS.cursor_background}; border: 2px solid {APP_TOKENS.cursor_border}; border-radius: 10px; }}"
+        f"QToolButton:hover {{ border-color: {APP_TOKENS.cursor_accent}; }}"
+        f"QToolButton:checked {{ background: {APP_TOKENS.cursor_checked}; border: 2px solid {APP_TOKENS.cursor_accent}; }}"
+    )
+
+
+def _chip_qss() -> str:
+    return (
+        f"QToolButton {{ background-color: {APP_TOKENS.cursor_chip_background}; border: 1px solid {APP_TOKENS.cursor_chip_border};"
+        f"  border-radius: {_CHIP // 2}px; padding: 0; }}"
+        f"QToolButton:hover {{ background-color: {APP_TOKENS.cursor_chip_hover}; }}"
+        f"QToolButton:checked {{ background-color: {APP_TOKENS.cursor_chip_checked}; border: 1px solid {APP_TOKENS.cursor_chip_checked_border}; }}"
+        f"QToolButton:disabled {{ background-color: {APP_TOKENS.cursor_chip_disabled}; border: 1px solid {APP_TOKENS.cursor_chip_disabled_border}; }}"
+    )
 
 
 def _lit_icon(name: str, px: int = 16) -> QIcon:
@@ -49,7 +54,7 @@ def _corner_button(parent, icon: str, tooltip: str, *, checkable: bool) -> QTool
     button.setIcon(_lit_icon(icon, 14))
     button.setIconSize(QSize(14, 14))
     button.setCursor(Qt.CursorShape.PointingHandCursor)
-    button.setStyleSheet(_CHIP_QSS)
+    button.setStyleSheet(_chip_qss())
     button.setToolTip(tooltip)
     return button
 
@@ -62,7 +67,7 @@ class CursorBox(QToolButton):
         self.setCheckable(True)
         self.setFixedSize(_SIZE, _SIZE)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setStyleSheet(_MAIN_QSS)
+        self.setStyleSheet(_main_qss())
         self.setToolTip(
             "Cursor on/off: hover a curve graph to read the nearest sample of the nearest curve "
             "in a box next to the mouse (shortcut: C while a graph has focus).\n"

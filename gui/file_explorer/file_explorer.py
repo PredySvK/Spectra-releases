@@ -39,7 +39,7 @@ class UnvChannelExplorer(QWidget):
     def __init__(self, app_context, data_pool, parent=None, *,
                  filter_panel=None, focused_dock=None,
                  result_content_handler=None,
-                 refresh_and_apply_for_focused_dock=None, job_runner=None):
+                 refresh_and_apply_for_focused_dock=None, job_runner):
         super().__init__(parent)
         self.app_context = app_context
         self.job_runner = job_runner

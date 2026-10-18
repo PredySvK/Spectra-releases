@@ -2,11 +2,12 @@
 
 import dataclasses
 from dataclasses import dataclass
-from typing import Iterable, Mapping, NamedTuple
+from typing import Callable, Iterable, Mapping, NamedTuple
 
 from core.dsp_configs import OrderTrackingConfig
-from selection.channel_identity import build_channel_key, resolve_channel_at_index
+from selection.channel_identity import build_channel_key
 from selection.tacho import find_tacho_channel
+from session.data_pool import DeadLink, find_dropped_channel
 
 
 class ResultContentMemoKey(NamedTuple):
@@ -15,7 +16,10 @@ class ResultContentMemoKey(NamedTuple):
     with which settings, with the cache asked or not, against the file as it is
     on disk now. The size/mtime are part of it because the live memo outlives
     a re-measured file -- without them a dock kept plotting curves computed from
-    the previous contents of that path.
+    the previous contents of that path. The channel's unit and type are part of
+    it for the same reason: a unit correction (Fix Unit) changes neither the
+    file nor the settings, yet the memo handed back the curve computed under
+    the old unit -- 9.81x too high once "g" became "m/s^2" (#688).
     """
 
     file_path: str
@@ -24,6 +28,8 @@ class ResultContentMemoKey(NamedTuple):
     use_cache: bool
     size: object
     mtime_ns: object
+    unit: str
+    channel_type: str
 
 
 @dataclass(frozen=True)
@@ -45,9 +51,13 @@ def result_content_memo_key(
     config: OrderTrackingConfig,
     source_stamp: Mapping | None,
     use_cache: bool = True,
+    *,
+    unit: str,
+    channel_type: str,
 ) -> ResultContentMemoKey:
     """Lists in the config (e.g. orders_to_extract) are flattened to tuples so
-    the key is hashable."""
+    the key is hashable. ``unit`` and ``channel_type`` are the channel's as
+    they stand now, after any unit correction."""
     config_items = tuple(
         sorted(
             (name, tuple(value) if isinstance(value, list) else value)
@@ -61,12 +71,14 @@ def result_content_memo_key(
         use_cache,
         stamp.get("size"),
         stamp.get("mtime_ns"),
+        unit,
+        channel_type,
     )
 
 
 def plan_result_content_drop(
     descriptor: Mapping,
-    runs_by_path: Mapping[str, object],
+    run_lookup: Callable[[str], object],
     seen_keys: Iterable[tuple],
     config: OrderTrackingConfig,
     source_stamp: Mapping | None,
@@ -84,8 +96,8 @@ def plan_result_content_drop(
     if build_channel_key(file_path, channel_index) in set(seen_keys):
         return ResultContentDropPlan(False)
 
-    run = runs_by_path.get(file_path)
-    if run is None:
+    run = run_lookup(file_path)
+    if isinstance(run, DeadLink):
         return ResultContentDropPlan(
             False,
             f"ERROR: Cannot add '{channel_name}' to the comparison -- its file is not currently loaded.",
@@ -101,8 +113,8 @@ def plan_result_content_drop(
             channel_name=channel_name,
         )
 
-    channel = resolve_channel_at_index(run.available_channels, channel_index)
-    if channel is None:
+    channel_meta = find_dropped_channel(run, channel_name, channel_index)
+    if channel_meta is None:
         return ResultContentDropPlan(
             False,
             f"ERROR: Cannot add '{channel_name}' -- its channel metadata was not found on '{run.file_name}'.",
@@ -115,9 +127,11 @@ def plan_result_content_drop(
         True,
         run=run,
         tacho_meta=tacho_meta,
-        channel_meta=channel[1],
+        channel_meta=channel_meta,
         channel_name=channel_name,
         memo_key=result_content_memo_key(
-            file_path, channel_index, config, source_stamp, use_cache=use_cache
+            file_path, channel_index, config, source_stamp, use_cache=use_cache,
+            unit=channel_meta.unit, channel_type=channel_meta.type,
         ),
     )
+

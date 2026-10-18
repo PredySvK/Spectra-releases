@@ -8,8 +8,8 @@ Fetches high-precision float64 vectors exclusively through the DataAccessor (DAL
 Uses DTO configuration objects to stay completely decoupled from UI ribbon elements.
 """
 
-import pyqtgraph as pg
 from typing import Any, Dict, List, Optional, Union
+from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QTabBar, QTabWidget, QWidget
 
 from core.jobs import job_step
@@ -18,9 +18,9 @@ from gui.workspace.spectrogram_dock import SpectrogramDock
 from core.block_kinds import KIND_ORDER_CUT, resolve_clipped_f_stop
 from core.models import resolve_channel_block_kind
 from gui.workspace.analysis_tabs import AnalysisTabsMixin
-from gui.jobs.qt_job_runner import QtJobRunner
 from gui.handlers.companion_curves import CompanionCurvesHandler
-from orchestration.dock_tasks import PURPOSE_COMPUTE, DockTasks
+from orchestration import tab_cache
+from orchestration.dock_tasks import PURPOSE_COMPUTE, PURPOSE_TAB_CACHE, DockTasks
 from core.evaluation import EvaluationConfig
 from core.units import strip_channel_name_prefix
 from gui.workspace.open_tabs import OpenTabs
@@ -28,7 +28,9 @@ from io_modules.data_accessor import DataAccessor
 from io_modules.measurement_files import canonical_path
 from session.data_pool import DeadLink, ResolvedTrace
 from session.project import channel_label_for
-from signal_processing.result_blocks import UnevenRpmAxisError
+from orchestration import live_compute
+from orchestration.live_compute import ComputeOrigin, LiveFailure, LiveResult
+from signal_processing.result_blocks import TrackingScratch, UnevenRpmAxisError
 from view_models.analysis_kinds import (
     ANALYSIS_MODE_PROJECT, ANALYSIS_ORDERS, ANALYSIS_OVERALL_LEVEL, ANALYSIS_SPECTROGRAM, ANALYSIS_SPECTRUM,
     ANALYSIS_TIME, SKIP_CAPACITY, SKIP_IMPORTED, resolve_open_plan, resolve_analysis_kind, resolve_analysis_mode,
@@ -36,6 +38,13 @@ from view_models.analysis_kinds import (
 )
 
 HOME_TAB_TITLE = "Home Workspace"
+
+# What one Analysis kind does once its base curve has landed, beyond drawing it
+# -- a row here, not a branch in `land_live_result`.
+_LANDING_EXTRAS = {
+    ANALYSIS_SPECTRUM: lambda ws, dock, blocks: ws._apply_band_rms_preference(dock),
+    ANALYSIS_OVERALL_LEVEL: lambda ws, dock, blocks: ws._log_overall_level_band_clamp(blocks[0]),
+}
 
 
 def find_dock_by_id(tab_widget, dock_id: str):
@@ -100,17 +109,16 @@ class Workspace(AnalysisTabsMixin):
         restarts) its computation -- the pair a restore drives directly.
 
     Receive a result
-        `plot_frequency_block`, `plot_spectrogram_block`, `plot_order_cuts`,
-        `plot_overall_level_block`, `report_computation_failure`: the Qt slots
-        `SpectralRequests`' signals connect to. Each takes a `widget_tag`
-        (a `dock_id`) rather than a dock, and drops the result without a word
-        when no open dock carries that id.
+        `land_live_result` (a dock's base curve, from `dispatch_compute` --
+        a channel dropped onto a spectrogram too), `report_computation_failure`
+        (one failing). Each takes a `widget_tag` (a `dock_id`) rather than a dock,
+        and drops the result without a word when no open dock carries that id.
 
     Ask about the docks
         `find_dock_by_id`, `open_dock_ids`, `route_channel_drop`.
 
     Session and settings
-        `capture_open_tabs_spec`, `persist_open_tabs`, `restore_open_tabs`
+        `capture_open_tabs_spec`, `restore_open_tabs`
         (S6/S7), `rebuild_active_dock_display_settings`,
         `apply_graph_performance_settings`, `replot_time_docks_for_unit_change`,
         `toggle_band_rms_cursors`, `close_all_tabs`, `close_specific_tab`.
@@ -121,9 +129,9 @@ class Workspace(AnalysisTabsMixin):
         `dock_tasks` (`orchestration.dock_tasks.DockTasks` over the
         QtJobRunner): it runs a read on the interactive lane and applies the
         result back on the GUI thread, dropping it if the dock was closed or a
-        newer task with the same purpose for the same dock has since started. DSP computation
-        leaves by `SpectralRequests` and comes back as a Qt signal into the
-        `plot_*` slots above.
+        newer task with the same purpose for the same dock has since started. A
+        dock's own compute -- cache lookup, read and DSP -- is one such task
+        (`live_compute.run_live_compute`, ADR §1.167).
 
     Callback ordering
         A fresh open is `build_shell` then `dispatch_compute` -- the dock
@@ -136,11 +144,13 @@ class Workspace(AnalysisTabsMixin):
         These methods do not raise for a condition the user can cause: a
         missing tacho, a dead link in a saved recipe, a read that fails, a
         ribbon action on the wrong kind of tab all log through
-        `app_context.log` and leave something to look at -- a fresh open drops
-        its own tab (a restored one whose read fails stays a "Missing"
-        placeholder, `OpenTabs.drop_unreadable_fresh_open`), a refresh keeps the plot it already had
-        (`_abort_refresh`). A `TypeError` from a wrong call *is* raised: it is
-        a programming mistake, not a data problem.
+        `app_context.log` and leave something to look at. What a failed
+        compute does to its tab depends on why the dock was computing
+        (`ComputeOrigin`) and is decided in one table,
+        `live_compute.plan_compute_failure`: a fresh open drops its own tab, a
+        restored one stays (a "Missing" placeholder when its file cannot be
+        read), a refresh keeps the plot it already had. A `TypeError` from a
+        wrong call *is* raised: it is a programming mistake, not a data problem.
 
     Test seam
         Tests build a real instance through this constructor and drive the
@@ -151,8 +161,7 @@ class Workspace(AnalysisTabsMixin):
     def __init__(self, app_context, tab_widget: QTabWidget, *,
                  placeholder_graph=None,
                  filter_panel=None,
-                 job_manager=None,
-                 spectral_requests=None,
+                 job_runner,
                  live_drop_handler=None,
                  result_content_handler=None,
                  # gui.handlers.filter_routing.FilterRoutingHandler
@@ -173,21 +182,22 @@ class Workspace(AnalysisTabsMixin):
         # the same reason `filter_routing` below is None-able.
         self.filter_panel = filter_panel
         # gui.jobs.qt_job_runner.QtJobRunner: the workspace restore and every
-        # dock task run on it. The window always hands its own over; a
-        # workspace built without one (tests over a bare tab widget) gets a
-        # private queue rather than None, so its reads still leave the GUI
-        # thread the way the application's do.
-        self.job_manager = job_manager if job_manager is not None else QtJobRunner(app_context)
+        # dock task run on it. Always the window's own -- a workspace never
+        # builds a queue the Jobs dock cannot see.
+        self.job_runner = job_runner
         # Every dock's background read goes through here: one
         # answer to "is this result still wanted?" for the whole workspace.
         self.dock_tasks = DockTasks(
-            self.job_manager, is_open=lambda dock_id: self.find_dock_by_id(dock_id) is not None)
+            self.job_runner, is_open=lambda dock_id: self.find_dock_by_id(dock_id) is not None)
+        # Tab cache results of an Untitled project, written after its first
+        # Save (AnalysisTabsMixin.write_tab_cache_file, ADR §1.178).
+        self.held_tab_cache_writes = tab_cache.HeldTabCacheWrites()
         self.companion_curves = CompanionCurvesHandler(
             app_context, self.dock_tasks, self.route_channel_drop)
-        # gui.workspace.spectral_requests.SpectralRequests: every 1D/2D
-        # computation this manager and the channel drops ask for goes through
-        # it, and a closed dock's generation counter is dropped on it.
-        self.spectral_requests = spectral_requests
+        # One TrackingPlan bag for every dock's compute: a click on another
+        # channel of the same file (same tacho, same sweep) reuses the plan
+        # instead of rebuilding it (#500, ADR §1.133).
+        self.tracking_scratch = TrackingScratch()
         # gui.handlers.live_channel_drop.LiveChannelDropHandler, handed
         # straight on to `execute_channel_drop_processing` for result-content
         # docks.
@@ -271,8 +281,8 @@ class Workspace(AnalysisTabsMixin):
         try:
             if dialog.exec():
                 ctx.set_cursor_config(dialog.result_config())
-                ctx.set_highlight_other_opacity(dialog.result_other_opacity())
-                self.apply_highlight_opacity()
+                # The window's settings reactions redraw the graphs.
+                ctx.settings_store.apply({"highlight_other_opacity": dialog.result_other_opacity()})
         finally:
             dialog.deleteLater()
 
@@ -366,7 +376,7 @@ class Workspace(AnalysisTabsMixin):
         """
         session = getattr(self.app_context, "project_session", None)
         if session is not None:
-            session.mark_dirty()
+            session.mark_work_changed()
 
     def _remove_dock_tab(self, dock) -> None:
         """
@@ -407,13 +417,13 @@ class Workspace(AnalysisTabsMixin):
 
         return widget
 
-    def route_channel_drop(self, dock_instance, raw_descriptors, batch_label=None, *, mark_dirty=True) -> bool:
+    def route_channel_drop(self, dock_instance, raw_descriptors, batch_label=None, *, mark_work_changed=True) -> bool:
         """
         The one place that knows what `execute_channel_drop_processing` needs.
 
         An accepted drop changes what capture_open_tabs_spec writes on the next
         Save, so it marks the project dirty -- except a re-drop of curves the
-        graph already had (a restore or a refresh, `mark_dirty=False`).
+        graph already had (a restore or a refresh, `mark_work_changed=False`).
 
         Three of its arguments are collaborators this manager holds and the
         drop router does not (#242); binding them here means a fourth one is
@@ -427,11 +437,10 @@ class Workspace(AnalysisTabsMixin):
             raw_descriptors=raw_descriptors,
             app_context=self.app_context,
             workspace=self,
-            spectral_requests=self.spectral_requests,
             live_drop_handler=self.live_drop_handler,
             batch_label=batch_label,
         )
-        if accepted and mark_dirty:
+        if accepted and mark_work_changed:
             self._mark_project_dirty()
         return accepted
 
@@ -664,7 +673,7 @@ class Workspace(AnalysisTabsMixin):
 
         if isinstance(resolved, DeadLink):
             # Kept on the dock (not just logged) so a save made while the file
-            # is still missing does not drop this recipe from ui_state --
+            # is still missing does not drop this recipe from open_tabs --
             # capture_open_tabs_spec reads it back when dock.run_index is None
             # (S5/PLAN.md S6 "Zastaraný súbor"). The file may simply be on an
             # unmounted drive this session; without this, restoring once would
@@ -685,21 +694,15 @@ class Workspace(AnalysisTabsMixin):
         self.tabs.setCurrentIndex(tab_idx)
         return dock
 
-    def dispatch_compute(self, dock, *, is_fresh_open: bool) -> None:
+    def dispatch_compute(self, dock, *, origin: ComputeOrigin, vib_block=None) -> None:
         """
-        Starts (or restarts) the background read + DSP compute for `dock`,
-        branching on `dock.analysis_kind` -- the one property that already
-        tells docks apart everywhere else in this file. A fresh open
-        (build_shell just built `dock`, is_fresh_open=True) and a ribbon
-        Refresh (dock already has a run_index, is_fresh_open=False) both
-        call this; only the failure path differs (a fresh open with nothing
-        on screen yet drops the tab, a refresh leaves the existing plot in
-        place -- see _abort_refresh).
-
-        `is_fresh_open` is what today's open_acc_*_tab / refresh_active_*
-        pairs each hard-coded into two near-duplicate function bodies; the
-        per-kind bodies now live once each in the shared
-        `_dispatch_compute` method.
+        Starts (or restarts) the background compute for `dock`, branching on
+        `dock.analysis_kind` -- the one property that already tells docks
+        apart everywhere else in this file. A fresh open, a restore, a
+        ribbon Refresh and a channel dropped onto a spectrogram all call
+        this; `origin` says which, and is read only if the compute fails
+        (`report_computation_failure`). `vib_block` is the channel already
+        read for a drop, so the compute does not read it again.
 
         No request/response object of its own on purpose: there is exactly
         one thing being computed here, this dock's own base trace, so a
@@ -708,27 +711,23 @@ class Workspace(AnalysisTabsMixin):
         if (dock.analysis_kind == ANALYSIS_TIME or
                 (dock.channel_meta is not None
                  and resolve_channel_block_kind(dock.channel_meta) == KIND_ORDER_CUT)):
-            self._dispatch_compute_time(dock)
+            self._dispatch_compute_time(dock, origin=origin)
         else:
-            self._dispatch_compute(dock, dock.analysis_kind, is_fresh_open=is_fresh_open)
+            self._dispatch_compute(dock, dock.analysis_kind, origin=origin, vib_block=vib_block)
 
     def capture_open_tabs_spec(self) -> List[Dict[str, Any]]:
         """`self.tabs` -> one `TabSpec` dict per live analytical dock (see `OpenTabs.capture`)."""
         return self.open_tabs.capture()
 
-    def persist_open_tabs(self) -> None:
-        """Writes the current tab set into the project's `ui_state` (see `OpenTabs.persist`)."""
-        self.open_tabs.persist()
-
     def restore_open_tabs(self) -> None:
-        """Rebuilds every dock the project's `ui_state` recorded (see `OpenTabs.restore`)."""
+        """Rebuilds every dock the project's `open_tabs` recorded (see `OpenTabs.restore`)."""
         self.open_tabs.restore()
 
     def open_specific_channel_tab(self, run_index, channel_meta):
         if resolve_channel_block_kind(channel_meta) == KIND_ORDER_CUT:
             dock = self.build_shell(ANALYSIS_ORDERS, ResolvedTrace(run_index, channel_meta))
             self._mark_project_dirty()
-            self.dispatch_compute(dock, is_fresh_open=True)
+            self.dispatch_compute(dock, origin=ComputeOrigin.FRESH_OPEN)
             return
         open_by_kind = {
             ANALYSIS_SPECTROGRAM: self.open_acc_spectrogram_tab,
@@ -744,41 +743,71 @@ class Workspace(AnalysisTabsMixin):
 
         dock = self.build_shell(ANALYSIS_TIME, ResolvedTrace(run_index, channel_meta))
         self._mark_project_dirty()  # see AnalysisTabsMixin.open_acc_spectrum_tab
-        self.dispatch_compute(dock, is_fresh_open=True)
+        self.dispatch_compute(dock, origin=ComputeOrigin.FRESH_OPEN)
 
-    def _dispatch_compute_time(self, dock) -> None:
-        # Waveforms and Imported results both need only a background read.
+    def _dispatch_compute_time(self, dock, *, origin: ComputeOrigin) -> None:
+        # Waveforms and Imported results both need only a background read;
+        # they land and fail the way a computed curve does.
         dock.plot_widget.setTitle("⏳ Loading...")
-
-        def _on_loaded(data_block):
-            dock.plot_blocks([data_block])
-            # A restored tab (S7) may carry overlays dropped onto it in a
-            # previous session -- same consumer `refresh_active_spectrum`
-            # feeds, just reached from a fresh open here instead of a
-            # refresh (a time dock has none of its own, see this method's
-            # opening comment).
-            self._restore_pending_overlays(dock)
-
-        def _on_failed(message):
-            self.app_context.log(f"ERROR: IO block read exception: {message}")
-            self.open_tabs.drop_unreadable_fresh_open(dock)
-
+        self.open_tabs.start_compute(dock, origin=origin)
         self.dock_tasks.run(
             dock.dock_id, DataAccessor.fetch_channel_data, dock.run_index, dock.channel_meta,
-            purpose=PURPOSE_COMPUTE, on_success=_on_loaded, on_error=_on_failed,
+            purpose=PURPOSE_COMPUTE,
+            on_success=lambda data_block: self.land_live_result(
+                dock.dock_id, LiveResult(blocks=(data_block,))),
+            on_error=lambda message: self.report_computation_failure(
+                dock.dock_id, message, phase=live_compute.PHASE_READ),
         )
 
     # =========================================================================
     # PLOTTING CALLBACKS & CLEANUP
     # =========================================================================
-    def plot_frequency_block(self, widget_tag: str, block):
+    def land_live_result(self, widget_tag: str, result) -> bool:
+        """
+        The one place a dock's base curve lands, for every kind: the dock
+        takes the raw channels the compute read, the blocks are drawn, the
+        kind's own extra runs (`_LANDING_EXTRAS`), and whatever overlays the
+        dock still has pending come back. A `LiveFailure` goes to
+        `report_computation_failure` instead. True when the curve landed.
+        """
         target = self.find_dock_by_id(widget_tag)
         if target is None:
-            return
-        if isinstance(target, GraphDock):
-            target.plot_blocks([block])
-            self._apply_band_rms_preference(target)
-            self._restore_pending_overlays(target)
+            return False
+        if isinstance(result, LiveFailure):
+            for line in result.notices:
+                self.app_context.log(line)
+            self.report_computation_failure(widget_tag, result.message, phase=result.phase)
+            return False
+        if not result.blocks:
+            self.report_computation_failure(widget_tag, "The computation produced no curve to draw.")
+            return False
+
+        for line in result.notices:
+            self.app_context.log(line)
+        if result.vib_block is not None and isinstance(target, SpectrogramDock):
+            target.vib_block = result.vib_block
+        if result.tacho_block is not None:
+            target.tacho_block = result.tacho_block
+        if result.from_cache:
+            self._log_cache_hit(target, result)
+        if result.from_tab_cache:
+            self.log_tab_cache_hit(target, getattr(target.channel_meta, "name", ""))
+
+        if isinstance(target, SpectrogramDock):
+            try:
+                self._show_spectrogram(target, result.blocks[0])
+            except UnevenRpmAxisError as error:
+                self.report_computation_failure(widget_tag, str(error))
+                return False
+        else:
+            target.plot_blocks(list(result.blocks))
+
+        self.open_tabs.land_compute(target)
+        extra = _LANDING_EXTRAS.get(getattr(target, "analysis_kind", None))
+        if extra is not None:
+            extra(self, target, result.blocks)
+        self._restore_pending_overlays(target)
+        return True
 
     def _restore_pending_overlays(self, target) -> None:
         """
@@ -787,9 +816,8 @@ class Workspace(AnalysisTabsMixin):
         the reset (`capture_overlays_before_reset`, started by a Refresh in
         `gui/workspace/analysis_tabs.py`) and a reopened tab's saved overlays
         and result sets (`restore_open_tabs`). This stays a workspace.py
-        method because its callers (`plot_frequency_block`,
-        `plot_order_cuts`, `plot_overall_level_block`, the time read) are
-        plot-callback machinery, not analysis-specific.
+        method because its caller, `land_live_result` (which the time read
+        lands through too), is plot-callback machinery, not analysis-specific.
 
         Overlays are routed through the exact same channel-drop entry point
         a real drag uses, rather than duplicating its read/compute/overlay
@@ -813,7 +841,7 @@ class Workspace(AnalysisTabsMixin):
             self.result_content_handler.load_into_dock(target, list(restore.result_set_ids))
 
         if restore.overlays:
-            self.route_channel_drop(target, list(restore.overlays), mark_dirty=False)
+            self.route_channel_drop(target, list(restore.overlays), mark_work_changed=False)
         elif restore.from_refresh:
             from gui.handlers.dock_tab_title import update_dock_tab_title
             update_dock_tab_title(target)
@@ -842,46 +870,14 @@ class Workspace(AnalysisTabsMixin):
                 "Open a 1D Spectrum tab first."
             )
 
-    def plot_spectrogram_block(self, widget_tag: str, block):
-        target = self.find_dock_by_id(widget_tag)
-        if not isinstance(target, SpectrogramDock):
-            return
-
+    def _show_spectrogram(self, target, block) -> None:
         spec_settings = getattr(getattr(self, "app_context", None), "spectrogram_settings", None)
-        try:
-            target.spectrogram.show_block(
-                block,
-                color_scale=getattr(spec_settings, "color_scale", "Linear"),
-                spectrum_format=getattr(spec_settings, "spectrum_format", "linear"),
-                amplitude_mode=getattr(spec_settings, "amplitude_mode", "rms"),
-            )
-        except UnevenRpmAxisError as error:
-            # An rpm axis the image cannot draw truthfully (#434); the dock keeps
-            # whatever it showed and its title says this block did not land.
-            self.report_computation_failure(widget_tag, str(error))
-
-    def plot_order_cuts(self, widget_tag: str, blocks: list):
-        target = self.find_dock_by_id(widget_tag)
-        if not isinstance(target, GraphDock) or not blocks:
-            return
-
-        target.plot_blocks(blocks)
-
-        self._restore_pending_overlays(target)
-
-    def plot_overall_level_block(self, widget_tag: str, block):
-        target = self.find_dock_by_id(widget_tag)
-        if not isinstance(target, GraphDock):
-            return
-
-        # A successful compute means this dock's failure state (see
-        # report_computation_failure) no longer applies.
-        self.open_tabs.finish_compute(target)
-
-        target.plot_blocks([block])
-
-        self._log_overall_level_band_clamp(block)
-        self._restore_pending_overlays(target)
+        target.spectrogram.show_block(
+            block,
+            color_scale=getattr(spec_settings, "color_scale", "Linear"),
+            spectrum_format=getattr(spec_settings, "spectrum_format", "linear"),
+            amplitude_mode=getattr(spec_settings, "amplitude_mode", "rms"),
+        )
 
     def _log_overall_level_band_clamp(self, block) -> None:
         """
@@ -924,68 +920,30 @@ class Workspace(AnalysisTabsMixin):
             if hasattr(settings, param)
         })
 
-    def report_computation_failure(self, widget_tag: str, message: str):
+    def report_computation_failure(self, widget_tag: str, message: str, *,
+                                   phase: str = live_compute.PHASE_COMPUTE) -> None:
         """
-        Surfaces a failed computation on the dock that asked for it, so the
-        placeholder title does not sit there implying work is still in progress.
+        The one step for a compute that will not land, whatever its kind and
+        however it failed: logs why, then does to the tab what its compute
+        origin and the failed `phase` call for (`OpenTabs.fail_compute`).
         """
-        self.app_context.log(f"ERROR [{widget_tag}]: {message}")
         target = self.find_dock_by_id(widget_tag)
         if target is None or not hasattr(target, "plot_widget"):
+            self.app_context.log(f"ERROR [{widget_tag}]: {message}")
             return
-        if isinstance(target, GraphDock):
-            # The recompute will not land -- see AnalysisTabsMixin._abort_refresh.
-            target.curves.abort_restore()
-
-        # Overall Level is the one kind where an open-time failure (e.g. an
-        # empty band on this file) must drop the empty tab, while a refresh
-        # failure must leave the existing plot in place -- see
-        # _dispatch_compute, which stamps this before dispatching.
-        is_fresh_open = self.open_tabs.finish_compute(target)
-        if is_fresh_open is not None:
-            if is_fresh_open:
-                self._remove_dock_tab(target)
-            else:
-                target.plot_widget.setTitle("Overall Level interrupted - see System Log")
-            return
-
-        target.plot_widget.setTitle("Computation failed - see System Log")
+        self.open_tabs.fail_compute(target, phase, message)
 
     def apply_graph_performance_settings(self) -> None:
         """
-        Pushes the ribbon's decimation / clip-to-view preferences onto the
-        curves of every open dock.
-
-        Lives here so the graph layer keeps a single place that walks the open
-        docks and reaches into their PlotDataItems -- open_graph_settings used
-        to run this loop inline against main_window.workspace_tabs, a second
-        dock-touching path outside the plot_* routing.
+        Asks every open dock for the same clip / downsample sweep a resize runs
+        (#665 C27). Workspace applies nothing itself: the point-count rule and the
+        PlotDataItem calls live in GraphDock.apply_viewport_clipping. Docks without
+        that sweep (SpectrogramDock: no 1D curves, no secondary axis) are skipped.
         """
-        ctx = self.app_context
-        if not ctx.perf_downsample_enabled:
-            ds_value = 1
-        elif ctx.perf_auto_mode_active:
-            ds_value = True
-        else:
-            ds_value = ctx.perf_manual_factor
-        auto = ctx.perf_auto_mode_active and ctx.perf_downsample_enabled
-        clip = ctx.perf_render_screen_only
-
         for idx in range(self.tabs.count()):
-            sheet = self.tabs.widget(idx)
-            if not hasattr(sheet, "plot_widget"):
-                continue
-            # SpectrogramDock also has a plot_widget but no secondary axis and
-            # no iter_all_plot_items -- fall back to its primary item list.
-            if hasattr(sheet, "iter_all_plot_items"):
-                items = sheet.iter_all_plot_items()
-            else:
-                items = list(sheet.plot_widget.plotItem.items)
-            for item in items:
-                if isinstance(item, pg.PlotDataItem):
-                    item.setDownsampling(ds_value, auto=auto)
-                    item.setClipToView(clip)
-            sheet.plot_widget.viewport().update()
+            sweep = getattr(self.tabs.widget(idx), "apply_viewport_clipping", None)
+            if sweep is not None:
+                sweep()
 
     def replot_time_docks_for_unit_change(self) -> None:
         """
@@ -1038,6 +996,44 @@ class Workspace(AnalysisTabsMixin):
         if panel is not None and hasattr(panel, "on_units_changed"):
             panel.on_units_changed()
 
+    def finish_tab_cache_writes(self, show_note=None, timeout_ms: int = 60000) -> bool:
+        """
+        Waits, keeping the window painted, until every Tab cache write in
+        flight has landed -- closing the application calls this before it
+        cancels the job queue, or a result the user just waited for would
+        compute again on the next open, and Save As before it lists the files
+        to copy. `show_note(text)` puts a line on the
+        status strip for the wait and `show_note(None)` takes it down.
+        Returns False when `timeout_ms` ran out first.
+        """
+        def writing() -> bool:
+            return bool(self.dock_tasks.count_in_flight(PURPOSE_TAB_CACHE))
+
+        if not writing():
+            return True
+        if show_note is not None:
+            show_note("Saving tab cache before closing…")
+        loop = QEventLoop()
+
+        def landed(_job_id) -> None:
+            if not writing():
+                loop.quit()
+
+        # Every write is a job of its own: each finished job is the moment
+        # to look again. Nothing runs between the check above and exec(),
+        # so the last write cannot finish unseen.
+        self.job_runner.job_finished.connect(landed)
+        deadline = QTimer()
+        deadline.setSingleShot(True)
+        deadline.timeout.connect(loop.quit)
+        deadline.start(timeout_ms)
+        loop.exec()
+        deadline.stop()
+        self.job_runner.job_finished.disconnect(landed)
+        if show_note is not None:
+            show_note(None)
+        return not writing()
+
     def close_all_tabs(self) -> None:
         """
         Drops every open analysis tab, keeping the Home Workspace placeholder.
@@ -1054,9 +1050,9 @@ class Workspace(AnalysisTabsMixin):
         for index in range(self.tabs.count() - 1, -1, -1):
             if self.tabs.widget(index) is placeholder:
                 continue
-            self.close_specific_tab(index, mark_dirty=False)
+            self.close_specific_tab(index, mark_work_changed=False)
 
-    def close_specific_tab(self, index: int, *, mark_dirty: bool = True):
+    def close_specific_tab(self, index: int, *, mark_work_changed: bool = True):
         if index < 0 or index >= self.tabs.count():
             return
         target_widget = self.tabs.widget(index)
@@ -1070,7 +1066,7 @@ class Workspace(AnalysisTabsMixin):
 
         self.tabs.removeTab(index)
 
-        if mark_dirty and isinstance(target_widget, (GraphDock, SpectrogramDock)):
+        if mark_work_changed and isinstance(target_widget, (GraphDock, SpectrogramDock)):
             # Closing a tab changes what capture_open_tabs_spec would write on
             # the next Save just as much as opening one does -- see
             # AnalysisTabsMixin.open_acc_spectrum_tab.
@@ -1090,12 +1086,12 @@ class Workspace(AnalysisTabsMixin):
         if hasattr(target_widget, "_controller"):
             target_widget._controller = None
 
-        # The dock is gone -- stop its reads and its DSP computation still in
+        # The dock is gone -- stop its reads and its computation still in
         # flight; their results have nowhere to land.
         tag = getattr(target_widget, "dock_id", None)
         if tag:
             self.dock_tasks.cancel(tag)
-            self.spectral_requests.forget(tag)
+            self.held_tab_cache_writes.discard_dock(tag)
 
         target_widget.setParent(None)
         target_widget.deleteLater()

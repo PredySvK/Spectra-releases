@@ -10,6 +10,8 @@ Architecture:
   into the (block, identity) pairs Evaluation runs over, without a dock.
   synthetic_trace_for_block wraps a single-block dock's content (a
   spectrogram) as a Trace so it can go through the same path.
+- Column description: build_column_descriptor / build_schema_field_descriptor give one label and
+  active flag per metadata column, shared by the table and the column dialog.
 - Typed orders parameter parsing: parse_orders_text turns user input into float orders.
 
 What does NOT belong here: Qt widgets or drawing calls (gui/), deciding what
@@ -18,6 +20,7 @@ curves are relevant (selection/), or signal processing computation (signal_proce
 """
 
 from ._evaluation_adapter import curve_identities_for_traces, synthetic_trace_for_block
+from ._evaluation_columns import ColumnDescriptor, build_column_descriptor, build_schema_field_descriptor
 from ._evaluation_table_view import (
     COLUMNS,
     RowCells,
@@ -31,10 +34,13 @@ from ._evaluation_table_view import (
 from ._orders import parse_orders_text
 
 __all__ = [
+    "ColumnDescriptor",
     "COLUMNS",
     "RowCells",
     "active_metadata_columns",
     "curve_identities_for_traces",
+    "build_column_descriptor",
+    "build_schema_field_descriptor",
     "has_spectra",
     "parse_orders_text",
     "rows_for_table",

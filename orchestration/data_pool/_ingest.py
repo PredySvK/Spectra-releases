@@ -31,19 +31,21 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from core.jobs import JobState, job_step
-from io_modules.pool_ingest_plan import (
-    build_ingest_folder_map, derive_auto_tags, find_parent_metadata_files,
-)
+from io_modules.pool_ingest_plan import discover_selection_tree
 from io_modules.measurement_files import (
     canonical_path, discover_measurement_files, resolve_imported_result_reader, is_measurement_file,
 )
-from io_modules.project_store import build_sources_by_path, read_root_directories
+from orchestration.data_pool._selection_plan import (
+    build_ingest_folder_map, derive_auto_tags, find_parent_metadata_files,
+)
+from io_modules.project_store import read_root_directories
 from orchestration.data_pool._source_amplitude import (
     SourceAmplitudeAsker, plan_source_amplitude_questions, resolve_file_amplitudes,
 )
 from orchestration.jobs import JobRunner
-from session.data_pool import IntegrateResult
+from session.data_pool import IntegrateResult, ScannedDirectory
 from session.project import apply_setup_label
+from session.source_location import build_source_location
 
 INGEST_SLOT_KEY = "pool_ingest"
 
@@ -81,22 +83,23 @@ def plan_pool_ingest(paths, folder_files: Optional[dict] = None) -> IngestPlan:
     its folders and passes no paths: it re-tags nothing and inherits no parent
     sheet, so both maps come out empty.
 
-    Walks folder trees and reads the headers of generic-suffix files, so for a
-    path selection it runs on a worker (`PoolIngestUseCase.start_selection`).
+    Walks each selected folder tree once and reads the headers of generic-suffix
+    files, so for a path selection it runs on a worker (`PoolIngestUseCase.start_selection`).
     """
-    folder_files = folder_files if folder_files is not None else build_ingest_folder_map(paths)
+    tree = discover_selection_tree(paths)
+    folder_files = folder_files if folder_files is not None else build_ingest_folder_map(paths, tree)
     imported: Dict[str, list] = {}
     for directory, files in folder_files.items():
         # A whole folder (None) is every file in it; a picked set is just those.
-        for path in sorted(discover_measurement_files(directory) if files is None else files):
+        for path in sorted(tree.files_in(directory) if files is None else files):
             reader = resolve_imported_result_reader(path)
             if reader is not None:
                 imported.setdefault(reader, []).append(path)
     return IngestPlan(
         directories=tuple(folder_files.keys()),
         only_files=dict(folder_files),
-        auto_tag=derive_auto_tags(paths),
-        parent_excel=find_parent_metadata_files(paths),
+        auto_tag=derive_auto_tags(tree),
+        parent_excel=find_parent_metadata_files(tree),
         skipped_files=tuple(path for path in paths
                             if os.path.isfile(path) and not is_measurement_file(path)),
         imported_files={reader: tuple(files) for reader, files in imported.items()},
@@ -113,7 +116,7 @@ def plan_pool_refresh(directories, project_path, roots, sources) -> IngestPlan:
     calling thread; listing the folders and resolving the roots is disk work,
     so this runs on a worker (`PoolIngestUseCase.start_refresh`).
     """
-    known = build_sources_by_path(roots, sources, read_root_directories(project_path, roots))
+    known = build_source_location(roots, sources, read_root_directories(project_path, roots)).entries_by_path
     imported: Dict[str, list] = {}
     for directory in directories:
         for path in discover_measurement_files(directory):
@@ -378,7 +381,7 @@ class PoolIngestUseCase:
             f"Add to Data Pool - {len(steps)} folder(s)", steps,
             lane="batch", slot_key=INGEST_SLOT_KEY, max_parallel=1, quiet=quiet,
             progress_keyword="progress_fn",
-            on_step=lambda payload, index: self._on_scanned(state, payload, index),
+            on_step=lambda scanned, index: self._on_scanned(state, scanned, index),
             on_error=lambda message, index: self._on_failed(state, message, index),
             on_done=lambda record: self._on_finished(state, record),
         )
@@ -388,9 +391,8 @@ class PoolIngestUseCase:
 
     # ---- run callbacks (the thread that called start) -------------------
 
-    def _on_scanned(self, state: dict, payload, index: int) -> None:
+    def _on_scanned(self, state: dict, scanned: ScannedDirectory, index: int) -> None:
         directory = state["directories"][index]
-        runs, schema, directory_index = payload
         plan: IngestPlan = state["plan"]
 
         only_files = plan.only_files.get(directory)
@@ -401,19 +403,26 @@ class PoolIngestUseCase:
         if answered:
             extra["source_amplitudes"] = answered
         result = self._pool.integrate_scanned_directory(
-            directory, runs, schema, only_files, admit_unknown=state["admit_unknown"],
-            index=directory_index, **extra
+            directory, scanned.runs, scanned.schema, only_files, admit_unknown=state["admit_unknown"],
+            index=scanned.index, unreadable=scanned.unreadable, **extra
         )
 
         wanted = (only_files if only_files is not None
-                  else {canonical_path(run.file_path) for run in runs})
+                  else {canonical_path(run.file_path) for run in scanned.runs})
         state["added_paths"].extend(wanted)
 
         tag = plan.auto_tag.get(directory)
         if tag and wanted:
             apply_setup_label(self._session, wanted, tag)
 
-        self._report(state, FolderReport(directory=directory, integrated=result))
+        # A quiet refresh repeats the list only when it changed, so a recorder
+        # still writing a file does not flood the log on every watcher tick.
+        lines = ()
+        if not state["quiet"] or result.read_problems_changed:
+            lines = tuple(f"POOL: {line}" for line in result.read_problems.lines(directory))
+        self._report(state, FolderReport(
+            directory=directory, integrated=result,
+            log_messages=lines + tuple(scanned.messages)))
 
     def _on_failed(self, state: dict, message: str, index: int) -> None:
         directory = state["directories"][index]

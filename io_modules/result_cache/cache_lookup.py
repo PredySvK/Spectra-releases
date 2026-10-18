@@ -57,14 +57,13 @@ from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional
 
 from core.block_kinds import KIND_ORDER_CUT
-from core.data_block import NVHDataBlock
 from core.dsp_configs import DSP_ALGORITHM_VERSIONS
 from core.project_model import NVHProject, ResultSetRef, SourceEntry
 from core.units import sanitize_unit_string, strip_amplitude_suffix
 from io_modules.project_store import project_folder
 from io_modules.result_cache import cache_index, cache_layout
 from selection.parameter_sets import shape_signature
-from io_modules.result_cache.block_io import StoredBlock, block_from_stored
+from io_modules.result_cache.block_io import StoredBlock
 from io_modules.result_cache.cache_reader import ResultCacheReader
 
 
@@ -136,8 +135,8 @@ def find_cached_result(
     computing the whole request the ordinary way instead of stitching cached and
     fresh data together. The returned blocks are then in the requested order.
 
-    `write_index=False` (a view-only session, or a worker thread) forbids
-    persisting a rebuilt cache/index.json into the project folder.
+    `write_index=False` (a view-only session, or a worker thread -- ADR §1.54)
+    forbids persisting a rebuilt cache/index.json into the project folder.
 
     `channel_index`, if given, is the live channel's index within its file
     (ChannelMetadata.index); a candidate whose stored blocks record a different
@@ -198,26 +197,15 @@ def _corrected_unit(source_entry: SourceEntry, channel_name: str) -> Optional[st
 
     A correction is filed under whatever key the run had in hand when it was
     made -- the plain name or the reader's "Set #N: " / "Col #N: " label (see
-    correct_run_channel) -- so both forms are accepted here.
-    The stripped-name fallback only fires when the name is unique among this
-    source's channels: two same-named columns (#423) must not let a
-    correction filed under one column's exact label leak onto the other.
+    correct_run_channel) -- and which one counts is decided by the same
+    resolver the live graph uses, so cache and live graph show the same unit.
     """
-    overrides = source_entry.unit_overrides
-    if channel_name in overrides:
-        return overrides[channel_name]
-    from selection.channel_identity import is_channel_name_unique, strip_reader_label_prefix
+    from selection.channel_identity import resolve_unit_correction
 
-    clean_target = strip_reader_label_prefix(channel_name)
-    identities = (
-        (label, facts.get("name", "")) for label, facts in source_entry.channels.items()
-    )
-    if not is_channel_name_unique(clean_target, identities):
-        return None
-    return next(
-        (unit for label, unit in overrides.items()
-         if strip_reader_label_prefix(label) == clean_target),
-        None,
+    return resolve_unit_correction(
+        channel_name,
+        source_entry.unit_overrides,
+        ((label, facts.get("name", "")) for label, facts in source_entry.channels.items()),
     )
 
 
@@ -275,63 +263,6 @@ def _select_blocks(blocks: List[StoredBlock],
             return None
         selected.append(match)
     return selected
-
-
-def find_cached_result_background(
-    project: NVHProject, project_path: Optional[str], source_entry: SourceEntry,
-    channel_name: str, kind: str, live_params: Dict,
-    wanted_block_params: Optional[List[Dict[str, Any]]] = None,
-    channel_index: Optional[int] = None,
-) -> Optional[CachedResult]:
-    """
-    The worker-thread entry point to the cache.
-
-    Same lookup as `find_cached_result`, but there is deliberately no
-    `write_index` parameter: a background thread may read the `NVHProject` as a
-    GIL-benign exception, yet it must never persist a rebuilt `cache/index.json`
-    -- that stays a GUI-thread-only write via `ProjectSession._save_with_index()`
-    at result-set commit time. `write_index` is hardcoded `False` here, so
-    `write_index=True` cannot reach the cache from a worker even by mistake.
-    """
-    return find_cached_result(
-        project, project_path, source_entry, channel_name, kind, live_params,
-        wanted_block_params, write_index=False, channel_index=channel_index,
-    )
-
-
-def find_cached_block_background(
-    project: NVHProject, project_path: Optional[str], source_entry: SourceEntry,
-    channel_name: str, kind: str, live_params: Dict,
-    wanted_block_params: Optional[List[Dict[str, Any]]] = None,
-    channel_index: Optional[int] = None,
-) -> Optional[NVHDataBlock]:
-    """
-    Returns the freshest matching result set's block reconstructed as a ready,
-    plottable NVHDataBlock on a hit, or None on a miss.
-
-    Worker-thread entry point: composes `find_cached_result_background`
-    with `block_io.block_from_stored` so callers that need a single plottable
-    block (such as 1D spectrum docks) do not have to stitch the lookup and
-    reconstruction together or read the raw channel from disk.
-    """
-    cached = find_cached_result_background(
-        project, project_path, source_entry, channel_name, kind, live_params,
-        wanted_block_params=wanted_block_params, channel_index=channel_index,
-    )
-    if cached is None or not cached.blocks:
-        return None
-
-    try:
-        block = block_from_stored(cached.blocks[0], kind)
-    except ValueError:
-        return None
-
-    if cached.result_set_label:
-        meta = dict(block.metadata)
-        meta.setdefault("result_set_label", cached.result_set_label)
-        block = replace(block, metadata=meta)
-
-    return block
 
 
 def find_duplicate_result_set(

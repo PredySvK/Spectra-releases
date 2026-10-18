@@ -90,7 +90,8 @@ def classify_drop_descriptors(
     for descriptor in descriptors:
         if descriptor.get("block_kind") == KIND_ORDER_CUT:
             imported.append(descriptor)
-        elif facts.is_result_content_dock and "orders_to_extract" not in descriptor:
+        elif (facts.is_graph and facts.analysis_kind == ANALYSIS_ORDERS
+              and facts.is_result_content_dock and "orders_to_extract" not in descriptor):
             result_content.append(descriptor)
         elif facts.is_graph and facts.analysis_kind == ANALYSIS_ORDERS:
             order.append(descriptor)

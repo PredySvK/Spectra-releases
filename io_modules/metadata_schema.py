@@ -256,7 +256,7 @@ def resolve_excel_metadata_for_files(
 
     Returns the resolved lookup, keyed by each file's own normalized identity.
     """
-    log_fn = log_fn or print
+    log_fn = log_fn or (lambda message: None)
     lookup: Dict[str, Dict[str, Any]] = {}
     fallback_skipped = 0
 

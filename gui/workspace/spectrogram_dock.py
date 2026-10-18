@@ -18,7 +18,7 @@ from gui.workspace.cursor import SpectrogramCursorMixin
 from gui.workspace.plot_area import style_plot_area
 from orchestration.channel_drop import PendingDrops
 from view_models.analysis_kinds import ANALYSIS_SPECTROGRAM
-from view_models.plot import GraphSpectrogram, SpectrogramModel
+from view_models.plot import GraphSpectrogram, SpectrogramModel, resolve_image_axis_extent
 
 
 class SpectrogramDock(ChannelDropTargetMixin, SpectrogramCursorMixin, QWidget):
@@ -165,29 +165,22 @@ class SpectrogramDock(ChannelDropTargetMixin, SpectrogramCursorMixin, QWidget):
             decibel_scale=decibel_scale,
         )
 
-    @staticmethod
-    def _axis_extent(values, v_min: float, v_max: float) -> tuple[float, float]:
-        n = len(values)
-        span = v_max - v_min
-        if n > 1 and span > 0:
-            step = span / (n - 1)
-            return v_min - step / 2.0, span + step
-        return v_min - 0.5, 1.0
-
     def render_spectrogram_matrix(self, frequencies, times, magnitude_matrix, z_label="Time", z_unit="s"):
         if len(times) > 1 and times[0] > times[-1]:
             times = times[::-1]
             magnitude_matrix = magnitude_matrix[:, ::-1]
+        if len(frequencies) > 1 and frequencies[0] > frequencies[-1]:
+            frequencies = frequencies[::-1]
+            magnitude_matrix = magnitude_matrix[::-1, :]
 
         self.image_item.setImage(magnitude_matrix.T, autoLevels=True)
 
         t_min, t_max = float(np.min(times)), float(np.max(times))
         f_min, f_max = float(np.min(frequencies)), float(np.max(frequencies))
 
-        rect_x, rect_w = self._axis_extent(times, t_min, t_max)
-        rect_y, rect_h = self._axis_extent(frequencies, f_min, f_max)
-
-        rect = pg.QtCore.QRectF(rect_x, rect_y, rect_w, rect_h)
+        x_lo, x_hi = resolve_image_axis_extent(times)
+        y_lo, y_hi = resolve_image_axis_extent(frequencies)
+        rect = pg.QtCore.QRectF(x_lo, y_lo, x_hi - x_lo, y_hi - y_lo)
         self.image_item.setRect(rect)
 
         if t_max <= t_min: t_max = t_min + 1.0

@@ -14,9 +14,7 @@ class OrderDropInputs:
     """What an order-cut drop reads from the shell, taken on the GUI thread."""
 
     config: OrderTrackingConfig
-    use_cache: bool
-    project_session: Any
-    runs_by_path: Mapping[str, Any]
+    run_lookup: Callable[[str], Any]
     dock_tacho: Any
     with_overall_level: bool
 
@@ -26,9 +24,7 @@ class OverallLevelDropInputs:
     """What an Overall Level drop reads from the shell, taken on the GUI thread."""
 
     config: OverallLevelConfig
-    use_cache: bool
-    finder: Callable | None
-    runs_by_path: Mapping[str, Any]
+    run_lookup: Callable[[str], Any]
     dock_tacho: Any
 
 
@@ -54,6 +50,22 @@ class DropTarget(Protocol):
     def serve_result_content(self, descriptor: dict) -> bool: ...
 
     def spectrum_config(self) -> Any: ...
+
+    def restored_config(self, recipe: Mapping[str, Any]) -> Any:
+        """The ``live_compute.RestoreConfig`` restored overlays saved with
+        ``recipe`` compute with: the recipe laid over the ribbon's config of
+        this dock's kind -- never the "new curve takes the trace's settings"
+        choice."""
+
+    def drop_restore(self, resolved: Any) -> Any:
+        """What one drop task of restored overlays hands its worker
+        (``live_compute.DropRestore``): where their Tab cache files are and
+        ``resolved`` (None without a recipe), said once per channel that is
+        computed after all."""
+
+    def cache_finder(self) -> Callable | None:
+        """The worker-thread result-set lookup (`ProjectSession.cache_finder`),
+        None when the cache is switched off."""
 
     def order_inputs(self) -> OrderDropInputs: ...
 

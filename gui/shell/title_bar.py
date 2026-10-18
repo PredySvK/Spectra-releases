@@ -24,7 +24,7 @@ _GLYPH_MAX = ""
 _GLYPH_RESTORE = ""
 _GLYPH_CLOSE = ""
 
-_BUTTON_QSS = """
+_BUTTON_QSS_BASE = """
 QToolButton {
     border: none;
     background: transparent;
@@ -33,10 +33,14 @@ QToolButton {
     color: palette(window-text);
 }
 QToolButton:hover { background: palette(midlight); }
-""" + (
-    f"QToolButton#closeButton:hover {{ background: {APP_TOKENS.title_close_hover};"
-    f" color: {APP_TOKENS.icon_on_accent}; }}"
-)
+"""
+
+
+def _button_qss() -> str:
+    return _BUTTON_QSS_BASE + (
+        f"QToolButton#closeButton:hover {{ background: {APP_TOKENS.title_close_hover};"
+        f" color: {APP_TOKENS.icon_on_accent}; }}"
+    )
 
 
 class DraggableTabBar(QTabBar):
@@ -70,7 +74,7 @@ class WindowControls(QWidget):
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
-        self.setStyleSheet(_BUTTON_QSS)
+        self.setStyleSheet(_button_qss())
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)

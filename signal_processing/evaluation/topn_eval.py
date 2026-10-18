@@ -36,11 +36,11 @@ DEFAULT_MIN_PROMINENCE_DB = 3.0
 DEFAULT_MIN_DISTANCE_FRACTION = 0.05  # of the curve's own X-axis range, used only when min_distance is not given
 
 
-def _amplitude_db(block: NVHDataBlock) -> np.ndarray:
-    """Amplitude in dB, fixed at Linear/RMS regardless of the table's current
-    display switches -- the position of a maximum must
-    not move when the user flips RMS<->Peak or Linear<->Power<->PSD."""
-    values, _unit = block.to_display_values("linear", "rms")
+def _amplitude_db(block: NVHDataBlock, amplitude_mode: str) -> np.ndarray:
+    """Amplitude in dB of the `amplitude_mode` view, always Linear: Format
+    never moves a maximum, Amplitude can -- a spectrum's
+    edge bins are not doubled for Peak."""
+    values, _unit = block.to_display_values("linear", amplitude_mode)
     amplitude = np.asarray(values, dtype=float)
     with np.errstate(divide="ignore", invalid="ignore"):
         db = 20.0 * np.log10(amplitude)
@@ -125,12 +125,13 @@ def extract_topn_maxima(
     n: int = DEFAULT_N,
     min_distance: Optional[float] = None,
     min_prominence_db: float = DEFAULT_MIN_PROMINENCE_DB,
+    amplitude_mode: str = "rms",
 ) -> Tuple[SingleValue, ...]:
     """Extraction on one curve. Returns zero to n rows,
     ranked by height, never padded to n and never a dash row -- a curve with
     no qualifying hump simply contributes no rows to the table (unlike Max,
     which always returns exactly one)."""
-    db = _amplitude_db(block)
+    db = _amplitude_db(block, amplitude_mode)
     x = np.asarray(block.primary_axis.values, dtype=float)
 
     if min_distance is None:

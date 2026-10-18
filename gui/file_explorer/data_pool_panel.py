@@ -56,10 +56,10 @@ SETUP_ROLE = "__setup__"
 # Marks a workbook sheet heading between a measurement and its channels (#639),
 # a 2-tuple for the same reason.
 SHEET_ROLE = "__sheet__"
-
-# A measurement the project still lists but that is not on disk any more.
-MISSING_COLOR = APP_TOKENS.item_missing
-UNREADABLE_COLOR = APP_TOKENS.item_unreadable
+# Marks a folder heading that holds only Unreadable files, and one such file
+# under it. Both are 2-tuples, so neither can be taken for a draggable channel.
+UNREADABLE_FOLDER_ROLE = "__unreadable_folder__"
+UNREADABLE_FILE_ROLE = "__unreadable_file__"
 
 
 class ProtectedTreeWidget(QTreeWidget):
@@ -206,6 +206,11 @@ def _is_channel_payload(user_data) -> bool:
     return bool(user_data) and isinstance(user_data, tuple) and len(user_data) >= 3
 
 
+def _is_unreadable_folder(item) -> bool:
+    data = item.data(0, Qt.ItemDataRole.UserRole)
+    return isinstance(data, tuple) and len(data) == 2 and data[0] == UNREADABLE_FOLDER_ROLE
+
+
 def _channel_payload(items, missing_paths=None) -> list:
     """
     The drop descriptors of a set of tree rows; non-channel rows are skipped.
@@ -312,7 +317,10 @@ class DataPoolPanel(QWidget):
         self.tree.clear()
         self.missing_paths = set()
 
-        if not self.app_context.pool.has_data():
+        pool = self.app_context.pool
+        unreadable_folders = [(directory, pool.unreadable_in(directory))
+                              for directory in pool.pool_directories if pool.unreadable_in(directory)]
+        if not pool.has_data() and not unreadable_folders:
             return
 
         # One existence check per measurement, here, rather than per
@@ -322,7 +330,7 @@ class DataPoolPanel(QWidget):
             if not os.path.isfile(run_index.file_path):
                 self.missing_paths.add(canonical_path(run_index.file_path))
 
-        by_path = self.app_context.project_session.sources_by_path()
+        by_path = self.app_context.project_session.source_location.entries_by_path
         labels_in_order = self.app_context.project_session.project.setup_labels()
         grouped = group_by_setup(
             labels_in_order,
@@ -341,6 +349,9 @@ class DataPoolPanel(QWidget):
 
             for run_index in runs:
                 self._add_run_node(setup_item, run_index, setup_label, expanded)
+
+        for directory, files in unreadable_folders:
+            self._add_unreadable_folder_node(directory, files, expanded)
 
         self._apply_visibility()
 
@@ -369,7 +380,7 @@ class DataPoolPanel(QWidget):
         query = panel.pool_query()
         return visible_pool_channels(
             self.app_context.pool.loaded_runs,
-            self.app_context.project_session.sources_by_path(),
+            self.app_context.project_session.source_location.entries_by_path,
             self.app_context.pool.schema().master,
             query.metadata_values,
             query.channel_identities,
@@ -396,6 +407,15 @@ class DataPoolPanel(QWidget):
 
         for i in range(self.tree.topLevelItemCount()):
             setup_item = self.tree.topLevelItem(i)
+            if _is_unreadable_folder(setup_item):
+                # Information only: the search narrows it, the facet filter (which
+                # speaks about measurements) does not.
+                rows = [setup_item.child(j) for j in range(setup_item.childCount())]
+                folder_matches = not needle or needle in setup_item.text(0).lower()
+                for row in rows:
+                    row.setHidden(not (folder_matches or needle in row.text(0).lower()))
+                setup_item.setHidden(not any(not row.isHidden() for row in rows))
+                continue
             setup_matches = not needle or needle in setup_item.text(0).lower()
             any_run_visible = False
 
@@ -447,6 +467,27 @@ class DataPoolPanel(QWidget):
             if (needle or allowed is not None) and any_run_visible and not setup_matches:
                 setup_item.setExpanded(True)
 
+    def _add_unreadable_folder_node(self, directory, files, expanded):
+        """A grey folder heading with one row per file the last scan could not read."""
+        folder_item = QTreeWidgetItem(self.tree)
+        folder_name = os.path.basename(os.path.normpath(directory)) or directory
+        folder_item.setText(0, f"📁 {folder_name}  ({len(files)} unreadable)")
+        folder_item.setData(0, Qt.ItemDataRole.UserRole, (UNREADABLE_FOLDER_ROLE, directory))
+        folder_item.setForeground(0, QBrush(QColor(APP_TOKENS.item_unreadable)))
+        folder_item.setToolTip(0, f"{directory}\n\nFiles in this folder that could not be read.")
+        if ("unreadable", directory) in expanded:
+            folder_item.setExpanded(True)
+
+        for unreadable in files:
+            file_item = QTreeWidgetItem(folder_item)
+            file_item.setText(0, f"✖ {os.path.basename(unreadable.path)}")
+            file_item.setData(0, Qt.ItemDataRole.UserRole, (UNREADABLE_FILE_ROLE, unreadable))
+            file_item.setForeground(0, QBrush(QColor(APP_TOKENS.item_unreadable)))
+            file_item.setToolTip(0, f"Could not be read:\n{unreadable.path}\n\n{unreadable.reason}\n\n"
+                                    f"It is tried again on the next scan of this folder.")
+            file_item.setFlags(file_item.flags()
+                               & ~Qt.ItemFlag.ItemIsDragEnabled & ~Qt.ItemFlag.ItemIsSelectable)
+
     def _add_run_node(self, setup_item, run_index, setup_label, expanded):
         file_item = QTreeWidgetItem(setup_item)
         is_missing = canonical_path(run_index.file_path) in self.missing_paths
@@ -454,8 +495,8 @@ class DataPoolPanel(QWidget):
         file_item.setText(0, f"⚠ {run_index.file_name}" if is_missing else run_index.file_name)
         file_item.setData(0, Qt.ItemDataRole.UserRole, run_index)
 
-        if is_missing:
-            file_item.setForeground(0, QBrush(QColor(MISSING_COLOR)))
+        if is_missing:  # the project still lists it, but it is not on disk any more
+            file_item.setForeground(0, QBrush(QColor(APP_TOKENS.item_missing)))
             font = file_item.font(0)
             font.setStrikeOut(True)
             file_item.setFont(0, font)
@@ -463,6 +504,16 @@ class DataPoolPanel(QWidget):
                 0,
                 f"Not found on disk:\n{run_index.file_path}\n\n"
                 f"Right-click to locate it. Its metadata and results are still in the project.",
+            )
+
+        elif run_index.lost_parts:  # a Partially read measurement: the healthy channels stay usable
+            file_item.setText(0, f"◐ {run_index.file_name}")
+            lost = "\n".join(
+                f"  {part.describe()}" for part in run_index.lost_parts)
+            file_item.setToolTip(
+                0,
+                f"Incomplete: part of this file could not be read.\n{lost}\n\n"
+                "The channels shown are complete and can be used.",
             )
 
         if (setup_label, run_index.file_name) in expanded:
@@ -506,7 +557,7 @@ class DataPoolPanel(QWidget):
                 channel_item.setToolTip(0, "Imported result. Drag or double-click to open in Order Tracking.")
             elif not is_time_response(channel_meta.func_type):
                 channel_item.setFlags(channel_item.flags() & ~Qt.ItemFlag.ItemIsDragEnabled)
-                channel_item.setForeground(0, QBrush(QColor(UNREADABLE_COLOR)))
+                channel_item.setForeground(0, QBrush(QColor(APP_TOKENS.item_unreadable)))
                 channel_item.setToolTip(
                     0,
                     "Not a time-domain waveform (UNV func_type != 1, e.g. a spectrum "
@@ -522,6 +573,10 @@ class DataPoolPanel(QWidget):
             data = setup_item.data(0, Qt.ItemDataRole.UserRole)
             label = data[1] if isinstance(data, tuple) and len(data) == 2 else setup_item.text(0)
 
+            if _is_unreadable_folder(setup_item):
+                if setup_item.isExpanded():
+                    keys.add(("unreadable", label))
+                continue
             if setup_item.isExpanded():
                 keys.add(("setup", label))
             for j in range(setup_item.childCount()):

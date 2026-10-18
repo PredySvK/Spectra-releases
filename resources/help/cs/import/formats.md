@@ -1,11 +1,12 @@
 # Podporované formáty
 
-Soubor se pozná podle přípony: `.unv`, `.uff`, `.asc`, `.xlsx`, `.txt`, `.csv` (velikost písmen nehraje roli). `.xlsx`, `.txt` a `.csv` jsou příliš běžné, proto jsou měřením jen tehdy, když je rozpoznána jejich hlavička. [`metadata.xlsx`](topic:import/metadata), README nebo poznámky se ignorují.
+Soubor se pozná podle přípony: `.unv`, `.uff`, `.asc`, `.ldsf`, `.xlsx`, `.txt`, `.csv` (velikost písmen nehraje roli). `.xlsx`, `.txt` a `.csv` jsou příliš běžné, proto jsou měřením jen tehdy, když je rozpoznána jejich hlavička. [`metadata.xlsx`](topic:import/metadata), README nebo poznámky se ignorují.
 
 | Přípona | Formát | Obsah | Druh |
 |---|---|---|---|
 | `.unv`, `.uff` | Universal File Format, dataset 58 | [časové průběhy](topic:raw_data/intro) | měřené |
 | `.asc` | Siemens Testlab ASCII | [časové průběhy](topic:raw_data/intro) | měřené |
+| `.ldsf` | záznam Simcenter Testlab | [časové průběhy](topic:raw_data/intro) | měřené |
 | `.txt` | zpracované měření oddělené tabulátory | [křivky řádů](topic:order_tracking/intro) podle otáček | měřené |
 | `.xlsx` | výsledkový sešit MASTA | [křivky řádů](topic:order_tracking/intro) podle otáček | simulované (páruje se přes [Párování kanálů](topic:import/channel_pairing)) |
 | `.csv` | harmonická odezva ANSYS | [křivka](topic:order_tracking/intro) 1. řádu podle otáček | simulované (páruje se přes [Párování kanálů](topic:import/channel_pairing)) |
@@ -40,6 +41,19 @@ Hlavička mezi řádky `BEGIN` a `END`, pak jeden řádek na vzorek, hodnoty odd
 
 První sloupec je časový vektor, pokud se jmenuje `time`, `elap_time`, `time1`, `sec` nebo `s`, nebo má jednotku `s` či `sec`; pak to není kanál. Jinak se čas vytvoří z `START` a `DELTA`. Počet vzorků je počet neprázdných datových řádků. Řádek s jiným počtem sloupců než hlavička je chyba.
 
+## .ldsf
+
+Surový časový záznam uložený programem Simcenter Testlab, čte se bez Testlabu. Jeden proud kanálů se společnou vzorkovací frekvencí.
+
+| Pole | Odkud |
+|---|---|
+| Název kanálu | název kanálu v Testlabu, bez `Time for `, které před něj dává export do UNV |
+| Jednotka | jednotka kanálu |
+| Vzorkovací frekvence, počet bodů | hlavička a index souboru |
+| Začátek času | vždy 0 s |
+
+Čte se jen to, co bylo ověřeno proti vlastnímu UNV exportu Testlabu: verze formátu 13 se vzorky uloženými jako 32bitová čísla s plovoucí čárkou ve fyzikálních jednotkách. Jiný soubor (jiná verze, jiný typ vzorků nebo více proudů) se přeskočí a v Data Poolu se neobjeví. Uzel a směr se zatím nečtou.
+
 ## .txt (zpracované měření)
 
 První řádek: `(rev/s)`, pak buňka `název (jednotka)` pro každý kanál, oddělené tabulátory. Každý další řádek je rychlost v rev/s a jedna hodnota na kanál. Rychlost se převádí na rpm (× 60). Koncovka názvu souboru `_H<n>` (např. `Run_H3.txt`) určuje [řád](topic:order_tracking/orders) křivek.
@@ -56,6 +70,8 @@ První řádek: `(rev/s)`, pak buňka `název (jednotka)` pro každý kanál, od
 | 4 | `Speed (rev/min)` a `Amplitude (<jednotka>)` |
 | 5… | rpm a amplituda (čísla nebo text, desetinná čárka se akceptuje) |
 
+Řádek kanálu, který nejsou dvě čísla (text, chybějící polovina dvojice, prázdný řádek, pod kterým jsou další čísla), se z kanálu vynechá a soubor je v Data Poolu označen ◐. Kanál smí skončit dříve než ostatní; prázdné buňky pod jeho koncem nejsou chybějící data.
+
 Design, scénář, tlumení a zbylé části řádku 2 oddělené čárkami se stanou [surovými metadaty](topic:import/metadata) (*Design*, *Scenario*, *Damping*, *Description 1…*). Řád patří ke [křivce](topic:order_tracking/orders).
 
 ## .csv (harmonická odezva ANSYS)
@@ -67,7 +83,7 @@ Jeden soubor na Design point a uzel, pojmenovaný `DP<n>_Freq_Resp_<kanál>.csv`
 | 1 | `Frequency [Hz],Amplitude [<jednotka>]` |
 | 2… | frekvence a amplituda |
 
-Každý řádek smí být v uvozovkách. Znak `˛` v jednotce se čte jako `²` (`mm/s˛` → `mm/s²`). Řádek, který nejsou dvě čísla, se zahodí; krok frekvence smí být nerovnoměrný.
+Každý řádek smí být v uvozovkách. Znak `˛` v jednotce se čte jako `²` (`mm/s˛` → `mm/s²`). Řádek, který nejsou dvě čísla, se vynechá, stejně jako prázdný řádek, pod kterým jsou další data; soubor je pak v Data Poolu označen ◐ a System Log uvede, kolik řádků se vynechalo. Krok frekvence smí být nerovnoměrný.
 
 - Kanál se jmenuje `<kanál>` beze změny, takže se páruje stejným názvem v [`channel_pairing.xlsx`](topic:import/channel_pairing). Koncovka `_X`, `_Y` nebo `_Z` určuje směr.
 - Křivka je [řád](topic:order_tracking/orders) 1 podle rpm = 60 · frekvence: nevývaha působí na frekvenci otáčení.
@@ -88,7 +104,7 @@ Soubory MASTA, zpracovaného měření a ANSYS nesou hotovou amplitudu a soubor 
 
 - Odpověď se uloží u každého souboru v projektu a neptá se znovu při Refresh ani při otevření projektu. Nové soubory, které se objeví ve sledované složce, se zeptají znovu.
 - Cancel nepřidá do poolu nic. Chybnou odpověď opravíte tak, že soubor z poolu odeberete a přidáte znovu.
-- Časové signály (`.unv`, `.uff`, `.asc`) se nikdy neptají: jejich amplitudu si program počítá sám.
+- Časové signály (`.unv`, `.uff`, `.asc`, `.ldsf`) se nikdy neptají: jejich amplitudu si program počítá sám.
 - Projekt uložený před zavedením otázky otevře křivky beze změny (ANSYS Peak, ostatní RMS).
 
 ## Typ kanálu

@@ -35,7 +35,7 @@ change whenever the checked result sets change), and without remembering
 what was checked independently of the widgets, every rebuild would silently
 reset the user's picks. This is also what makes restore across a reopen
 possible: gui.handlers.filter_routing.restore_filter_state seeds the
-remembered state once from the project's saved ui_state (via
+remembered state once from the project's saved filter state (via
 selection_store.import_global_selections), and every future rebuild
 pre-checks from it same as a live session would.
 
@@ -43,8 +43,8 @@ Remembering more than is on screen is the point, but it is also the trap: a
 narrower scope offers fewer facet values, and the picks left over from the
 wider one used to keep filtering from behind a group box that no longer
 existed. So the panel also records what the last populate_facets() actually
-offered, and every get_selected_* reading narrows the remembered state to
-that -- while _persist_filter_state still writes all of it through
+offered (in the store, FilterSelectionStore.resolve_render), and the mask
+and pool_query read the remembered state only through that -- while _persist_filter_state still writes all of it through
 (selection_store.export_global_selections), so widening the scope again
 brings the old picks back (BUGS.md F1 / F2).
 
@@ -90,8 +90,7 @@ method reads and mutates its `checked_*` fields through, resolving to whichever 
 self._active_profile_id + self._current_dock_id currently name
 (store.active_selection). The store is told
 each card's scope by _add_profile / set_profile_scope / remove_profile; it is
-stateless about which card is active. `_offered_*` stays panel-level -- only one
-selection is ever on screen at once. Which sources a profile's facets are
+stateless about which card is active. Which sources a profile's facets are
 built from -- all_pool_sources() for a Global card's measurement facets (its
 Calculated columns come from the open docks plus the Result Pool, ADR §1.36),
 the focused dock's own traces for Local -- is
@@ -138,14 +137,13 @@ pass): this file keeps the module docstring above, __init__, init_ui and the
 facet forwarders; gui.filter_panel.filter_panel_profiles.ProfileTabsMixin,
 mixed in, carries the profile/tab lifecycle and the "Show all"/"Filter Data
 Pool" switches. The facets themselves -- Configure, populate_facets, every
-per-family `_build_*_group` builder and the get_selected_* readers -- are a
+per-family `_build_*_group` builder and pool_query -- are a
 collaborator, gui.filter_panel.facet_grid.FacetGrid (`self.facet_grid`, #460),
 so the Selection editor can draw the same grid over its own store (ADR
 §1.131). The panel hands it self._selection_store and a key that follows the
 active profile and the focused dock.
 """
 from PySide6.QtCore import Qt, Signal
-from typing import Dict, List
 
 from PySide6.QtWidgets import (
     QCheckBox, QHBoxLayout, QLabel, QPushButton, QTabBar, QVBoxLayout, QWidget,
@@ -153,7 +151,6 @@ from PySide6.QtWidgets import (
 
 from session.trace_filter import BUILTIN_GLOBAL_ID, BUILTIN_LOCAL_ID, FilterProfileRegistry, FilterSelectionStore
 
-from core.models import ChannelIdentity
 from core.project_model import FilterSelection
 from selection.trace_filter import OfferedFacets, PoolQuery, ResolvedFacets
 
@@ -187,16 +184,16 @@ class FilterPanel(ProfileTabsMixin, QWidget):
     # The panel side (a copy of the checked state) is already done by the time
     # this fires; gui.handlers.filter_routing listens for it to carry the other
     # half across -- the stored FilterCardConfig, which lives in the project,
-    # not here -- and to persist the new profile into the project's ui_state.
+    # not here -- and to persist the new profile into the project.
     profile_duplicated = Signal(str, str)
 
     # The user edited the card list -- a rename, delete, scope flip or "+"
     # (issue #400). gui.handlers.filter_routing listens for this to persist the
-    # profiles into the project's ui_state. Never fired by a restore or by a
+    # profiles into the project. Never fired by a restore or by a
     # dock-focus change's §1.37 fallback / restore: those are refreshes, not edits.
     profiles_changed = Signal()
 
-    # The user clicked another card's tab. Remembered in the project's ui_state
+    # The user clicked another card's tab. Remembered in the project
     # so it rides along with the next save, but it is a view choice, not an
     # edit -- it never marks the project unsaved on its own.
     active_profile_chosen = Signal()
@@ -326,26 +323,5 @@ class FilterPanel(ProfileTabsMixin, QWidget):
         else:
             self.label_status.setText("")
 
-    def ensure_channel_checked(self, identity: ChannelIdentity) -> None:
-        self.facet_grid.ensure_channel_checked(identity)
-
     def pool_query(self) -> PoolQuery:
         return self.facet_grid.pool_query()
-
-    def get_selected_metadata_values(self) -> Dict[str, List[str]]:
-        return self.facet_grid.get_selected_metadata_values()
-
-    def get_selected_identity_values(self) -> Dict[str, List[str]]:
-        return self.facet_grid.get_selected_identity_values()
-
-    def get_selected_channel_identities(self) -> List[ChannelIdentity]:
-        return self.facet_grid.get_selected_channel_identities()
-
-    def get_selected_orders(self) -> List[float]:
-        return self.facet_grid.get_selected_orders()
-
-    def get_selected_parameter_set_indices(self) -> List[int]:
-        return self.facet_grid.get_selected_parameter_set_indices()
-
-    def get_selected_result_kinds(self) -> List[str]:
-        return self.facet_grid.get_selected_result_kinds()

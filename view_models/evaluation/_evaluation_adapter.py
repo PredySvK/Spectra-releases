@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
-from core.block_kinds import KIND_ORDER_CUT, KIND_OVERALL_LEVEL, PARAM_F_START, PARAM_F_STOP, PARAM_ORDER
+from core.block_kinds import KIND_ORDER_CUT, KIND_ORDER_RESIDUAL, KIND_OVERALL_LEVEL, PARAM_F_START, PARAM_F_STOP, PARAM_ORDER
 from core.data_block import NVHDataBlock
 from core.evaluation import CurveIdentity
 from core.filter_card_config import (
@@ -45,8 +45,17 @@ def synthetic_trace_for_block(block: NVHDataBlock) -> Trace:
     leaves `parameter_signature` unset -- a spectrogram dock shows exactly one
     spectrogram, so there is never a second
     curve to group it with.
+
+    The block's channel index rides along with its file path, as a curve's
+    meta_ref carries it, so a file with two channels of one identity resolves
+    to this block's own channel, not the first (#426, #692).
     """
     empty = np.zeros(0)
+    meta_ref: Dict[str, Any] = {}
+    if block.source.file_path:
+        meta_ref["file_path"] = block.source.file_path
+    if block.source.channel_index >= 0:
+        meta_ref["channel_index"] = block.source.channel_index
     return Trace(
         x=empty, y=empty, y_raw=empty,
         channel_type=block.channel_type,
@@ -54,7 +63,7 @@ def synthetic_trace_for_block(block: NVHDataBlock) -> Trace:
         label=block.name,
         file_name=block.source.file_name,
         channel_name=block.source.channel_name,
-        meta_ref={"file_path": block.source.file_path} if block.source.file_path else None,
+        meta_ref=meta_ref or None,
         block=block,
     )
 
@@ -195,4 +204,8 @@ def _order_or_band(block: NVHDataBlock) -> str:
             return ""
         stop_text = f"{f_stop:g} Hz" if f_stop is not None else "Full Bandwidth"
         return f"{f_start:g}-{stop_text}"
+    if block.kind == KIND_ORDER_RESIDUAL:
+        # Its band is always the Overall Level default, so the
+        # name alone tells it apart, as in the plot legend.
+        return "Residual"
     return ""

@@ -2,6 +2,7 @@
 
 import dataclasses
 import os
+import contextlib
 import shutil
 import sys
 import tempfile
@@ -74,8 +75,9 @@ def _run(app, build_window, plan, baseline, settings_folder):
     files = resolve_benchmark_files(plan)  # generates the reference signal before the window opens
     window = build_window()
     frame = window.workspace_frame
-    context, jobs = frame.app_context, frame.job_manager
-    context.use_result_cache_lookup = False
+    context, jobs = frame.app_context, frame.job_runner
+    # Isolated settings above: this is never written to the user's own.
+    context.settings_store.apply({"use_result_cache_lookup": False})
     _settle(app, jobs, deadline=None)
     if not frame.project_document.new_project():
         raise RuntimeError("could not start an empty project")
@@ -137,8 +139,7 @@ def _run_case(app, ribbon, workspace, context, jobs, case, indexes, runs_per_cas
             f"ribbon tab {tab} gave mode {context.current_analysis_mode!r}, expected {analysis_mode.name!r}")
     setattr(context, analysis_mode.settings_name, resolve_benchmark_config(case))
     # A comparison tab computes through the channel drop, which finds each file's tacho in the pool.
-    if run_index not in context.pool.loaded_runs:
-        context.pool.loaded_runs.append(run_index)
+    context.pool.add_run(run_index)
     discard_reader_caches()  # else only the first case of a file would read it cold
 
     runs = []
@@ -161,7 +162,7 @@ def _time_one_click(app, workspace, jobs, rows, deadline):
     Raises when a job of the click failed: its short time is no speed-up."""
     seen = {record.job_id for record in jobs.all_records()}
     start = time.perf_counter()
-    with record_benchmark_steps(read_process_rss_mb) as steps:
+    with record_benchmark_steps(read_process_rss_mb) as steps, _failed_computes(workspace) as messages:
         with benchmark_step("create_tab"):
             workspace.open_channels_tab(rows)
         with benchmark_step("gui_wait"):
@@ -174,10 +175,28 @@ def _time_one_click(app, workspace, jobs, rows, deadline):
         return None
     started = [record for record in jobs.all_records() if record.job_id not in seen]
     failed = [record for record in started if record.state is JobState.FAILED or record.errors]
-    if failed or not started:
-        raise RuntimeError("; ".join(f"job {record.label!r} {record.state.value}: {record.errors}"
-                                     for record in failed) or "the click started no job")
+    if failed or messages or not started:
+        raise RuntimeError("; ".join([f"job {record.label!r} {record.state.value}: {record.errors}"
+                                      for record in failed] + messages) or "the click started no job")
     return build_benchmark_run(steps, max(done, app.last_paint) - start)
+
+
+@contextlib.contextmanager
+def _failed_computes(workspace):
+    """The messages of every compute the workspace reported as failed meanwhile.
+    A live compute returns its failure instead of raising: its job ends DONE."""
+    messages = []
+    report = workspace.report_computation_failure
+
+    def recorded(widget_tag, message, **kwargs):
+        messages.append(message)
+        report(widget_tag, message, **kwargs)
+
+    workspace.report_computation_failure = recorded
+    try:
+        yield messages
+    finally:
+        del workspace.report_computation_failure
 
 
 def _settle(app, jobs, deadline) -> bool:

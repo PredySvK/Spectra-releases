@@ -208,7 +208,7 @@ def _run_case(case: Dict[str, Any], analysis: _Analysis, config, path: str, coun
     """Run the case into `case`; True when it timed out and its worker would not stop."""
     discard_reader_caches()  # else only the first case of a file would read it cold
 
-    tracking = TrackingScratch()  # one per case, as SpectralRequests keeps one across clicks
+    tracking = TrackingScratch()  # one per case, as the Workspace keeps one across clicks
 
     def execute():
         return [_time_one_run(analysis, config, path, count, tracking) for _ in range(runs_per_case)]

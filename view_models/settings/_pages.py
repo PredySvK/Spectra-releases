@@ -3,12 +3,17 @@
 from dataclasses import dataclass
 
 from core.axis_projections import X_AXIS_HZ, X_AXIS_NATIVE, X_AXIS_RPM
+from core.settings import SETTING_DEFINITIONS
 from core.units import CANONICAL_UNIT_GROUPS
 
 
 @dataclass(frozen=True)
 class SettingsField:
-    """One draft field. ``key`` is the value's AppContext attribute / QSettings key."""
+    """One draft field. ``key`` is a core.settings key, a panel toggle or a project value.
+
+    A setting that applies after restart says so in its note on its own, and an
+    "integer" field takes its range from its core.settings key.
+    """
 
     key: str
     label: str
@@ -22,6 +27,16 @@ class SettingsField:
     suffix: str = ""
     enabled_when: tuple[tuple[str, object], ...] = ()
     project: bool = False  # lives in the open project, not in the application settings
+
+    def __post_init__(self):
+        definition = SETTING_DEFINITIONS.get(self.key)
+        if definition is not None and definition.applies_after_restart and not self.note:
+            object.__setattr__(self, "note", "Applies after restart.")
+        if self.kind == "integer":
+            if definition is None or definition.minimum is None:
+                raise ValueError(f"integer field {self.key!r} is not an integer setting")
+            object.__setattr__(self, "minimum", definition.minimum)
+            object.__setattr__(self, "maximum", definition.maximum)
 
 
 @dataclass(frozen=True)
@@ -80,13 +95,11 @@ SETTINGS_PAGES: tuple[SettingsPage, ...] = (
                 "theme", "Theme", "choice",
                 (("Dark", "dark"), ("Light", "light")),
                 description="Appearance of the whole application.",
-                note="Applies after restart.",
             ),
             SettingsField(
                 "graph_theme", "Graph theme", "choice",
                 (("Follow theme", "follow"), ("Dark", "dark"), ("Light", "light")),
                 description="Appearance of the graph area, independent of the application theme.",
-                note="Applies after restart.",
             ),
         ),
     ),
@@ -102,7 +115,6 @@ SETTINGS_PAGES: tuple[SettingsPage, ...] = (
             ),
             SettingsField(
                 "perf_manual_factor", "Manual downsampling factor", "integer",
-                minimum=2, maximum=10000,
                 enabled_when=(("perf_downsample_enabled", True), ("perf_auto_mode_active", False)),
             ),
             SettingsField("perf_render_screen_only", "Render screen only", "flag",

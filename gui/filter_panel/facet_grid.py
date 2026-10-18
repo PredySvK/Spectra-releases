@@ -4,8 +4,11 @@
 """
 The facet column grid: the "⚙ Configure…" button over one selection.
 trace_filter.ResolvedFacets drawn as group boxes (checkbox list, multi-select
-button or min..max range, §1.34), the checked state behind them, and the
-get_selected_* readers for the mask/query paths.
+button or min..max range, §1.34), and the pool_query reader for the Data Pool.
+What a click does to the selection is selection.trace_filter's
+write_value_check / write_range_bound, and one render round against the store
+is FilterSelectionStore.resolve_render -- this widget only draws
+and reports `(column key, value, checked)`.
 
 Its own widget (#460, ADR §1.131) so two owners can draw it without a second
 copy of the facet logic: FilterPanel (tabs, profiles, Data Pool switches
@@ -25,7 +28,6 @@ emits `btn_configure.clicked`: opening the dialog, previewing and saving the
 card is the owner's business (gui.handlers.filter_routing for the panel).
 """
 from contextlib import contextmanager
-from dataclasses import replace
 from typing import Any, Callable, Dict, Iterable, List, Literal, Optional, Set, Tuple
 
 from PySide6.QtCore import Qt, Signal
@@ -44,12 +46,12 @@ from core.project_model import FilterSelection
 from io_modules.metadata_schema import parse_value
 from selection.trace_filter import (
     EMPTY_FACET_VALUE, OfferedFacets, PanelRender, PoolQuery, ResolvedFacets,
-    facet_value_availability, format_result_kind, resolve_panel_render, resolve_pool_query,
+    facet_value_availability, format_result_kind, resolve_pool_query, resolve_value_checked,
+    write_range_bound, write_value_check,
 )
 from selection.channel_identity import format_channel_identity
-from selection.source_facets import channel_identity_sort_key
 from view_models.parameter_sets import format_parameter_set_details
-from selection.parameter_sets import ParameterSet, signature_matches_any, signatures_match
+from selection.parameter_sets import ParameterSet
 from session.trace_filter import FilterSelectionStore
 
 from gui.filter_panel.filter_panel_widgets import (
@@ -148,15 +150,10 @@ class FacetGrid(QWidget):
         # exact untouched bound rather than rounding it to the spinbox's decimals (#350).
         self._range_spans: Dict[str, Tuple[Any, Any]] = {}
 
-        # The offering the §1.29 pruning reads through -- Channel / Order /
-        # Result Kind / Parameter Set / Identity -- has one home:
-        # FilterSelectionStore._offered, keyed by the active (profile, dock).
-        # The `_offering` property below is a read-through onto it, not a second
-        # copy: §1.44 left a panel-side copy that could drift from the store and
-        # forced ensure_channel_checked to write both. Metadata is the
-        # exception -- it never feeds the heuristic, only
-        # get_selected_metadata_values' pruning -- so it stays a panel-side dict.
-        self._offered_metadata_values: Dict[str, Set[str]] = {}
+        # The offering -- every gating family, metadata included -- has one
+        # home: FilterSelectionStore._offered, keyed by the active (profile,
+        # dock). The `_offering` property below is a read-through onto it, not
+        # a second copy.
 
         # The "populated for real at least once" set also lives in
         # FilterSelectionStore now, keyed by the same Global->None
@@ -211,8 +208,8 @@ class FacetGrid(QWidget):
         """
         The one FilterSelection the owner's `selection_key` currently resolves
         to (store.active_selection, ADR §1.39) -- the single path from this grid
-        to its checked state. Every build_*/populate/get_selected_* method reads
-        and mutates its `checked_*` fields in place; for FilterPanel a Global
+        to its checked state. The builders read it and every click edits it in
+        place through selection.trace_filter's write_* rules; for FilterPanel a Global
         profile shares one across every dock, a Local one has its own per dock.
         """
         return self._selection_store.active_selection(*self._selection_key())
@@ -232,27 +229,6 @@ class FacetGrid(QWidget):
         return self._selection_store.offered_facets(*self._selection_key()) or OfferedFacets()
 
     _offering = offered_facets
-
-    def ensure_channel_checked(self, identity: ChannelIdentity) -> None:
-        """
-        Programmatically checks a channel facet value -- used when a channel
-        dropped from the File Explorer is added to the comparison, so the
-        filter state reflects it even if the checkbox does not exist yet
-        (the facet is rebuilt afterwards and will pick this up).
-
-        Counts as offered as well as checked: the caller is asserting the
-        identity exists in the current scope, and without that the selection
-        pruning would drop it right back out until the rebuild caught up.
-        """
-        self._sel.checked_channel_identities.add(tuple(identity))
-        offered = self._offering
-        self._selection_store.record_offering(
-            *self._selection_key(),
-            replace(offered, channel_identities=offered.channel_identities | {tuple(identity)}),
-        )
-        checkbox = dict(self._channel_checkboxes).get(identity)
-        if checkbox is not None and not checkbox.isChecked():
-            checkbox.setChecked(True)  # triggers selection_changed via the normal handler
 
     # ---- populating -----------------------------------------------------
 
@@ -299,8 +275,8 @@ class FacetGrid(QWidget):
         tests rely on.
 
         `is_replay` is set only by FilterPanel._replay_last_populate() (a tab
-        switch, not a real change of scope); it is passed straight to
-        resolve_panel_render, which is where the §1.29 default-everything
+        switch, not a real change of scope); it is passed straight through
+        FilterSelectionStore.resolve_render to resolve_panel_render, which is where the §1.29 default-everything
         heuristic needs to know the difference.
 
         Returns that round's PanelRender, so the owner can word its own
@@ -315,31 +291,15 @@ class FacetGrid(QWidget):
         self.last_facets = facets
 
         # Every decision this round -- which boxes in what order, which offered
-        # values to tick, whether to record the offering, the preserved range
-        # bounds -- is resolve_panel_render, a
-        # pure function.
-        # The grid hands it the two lookups it is blind to (both from
-        # FilterSelectionStore, ADR §1.44) and then only renders.
-        active_id, dock_id = self._selection_key()
-        render = resolve_panel_render(
-            facets, self._sel,
-            previously_offered=self._selection_store.offered_facets(active_id, dock_id),
-            already_seen=self._selection_store.has_seen(active_id, dock_id),
-            is_replay=is_replay,
-        )
-        self._selection_store.mark_seen(active_id, dock_id)
-        if render.record_offering:
-            self._selection_store.record_offering(active_id, dock_id, render.offering)
-        # `self._offering` is a read-through onto the store record above (ADR
-        # §1.45). The metadata half of the offering stays panel-side: it never
-        # feeds the heuristic, only get_selected_metadata_values' pruning.
-        self._offered_metadata_values = {
-            key: {v for v in values if v != EMPTY_FACET_VALUE}
-            for key, values in facets.metadata.items()
-        }
+        # values to tick, the preserved range bounds -- and its bookkeeping
+        # against the store (seen mark, offering, the checks landing on the
+        # live FilterSelection) is one store call. The grid
+        # only renders what comes back.
+        render = self._selection_store.resolve_render(
+            *self._selection_key(), facets, is_replay=is_replay)
 
-        # Tear the old widgets down before landing the new checked state, so the
-        # write-back is never interleaved with deleteLater().
+        # Hiding a widget and deleteLater() never fire `toggled`, so the old
+        # controls cannot write into the checks resolve_render just laid.
         while self._facets_layout.count() > 1:
             item = self._facets_layout.takeAt(0)
             widget = item.widget()
@@ -356,14 +316,6 @@ class FacetGrid(QWidget):
         self._range_spans = {}
         self._result_kind_checkboxes = {}
         self._live_controls = {}
-
-        self._sel.checked_channel_identities = render.checked_channel_identities
-        self._sel.checked_orders = render.checked_orders
-        self._sel.checked_result_kinds = render.checked_result_kinds
-        self._sel.checked_parameter_set_signatures = render.checked_parameter_set_signatures
-        self._sel.checked_identity_values = render.checked_identity_values
-        self._sel.checked_metadata_values = render.checked_metadata_values
-        self._sel.checked_empty_buckets = render.checked_empty_buckets
         self._dead_values = render.dead_values
 
         boxes = [
@@ -460,8 +412,7 @@ class FacetGrid(QWidget):
         state, same mask, an empty pick hides everything either way. Which is
         why the controls come back through one dict -- a QCheckBox and a
         checkable QAction answer isChecked()/setChecked()/text() alike, so
-        everything reading them back (including ensure_channel_checked, and the
-        tests) does not care which one it got.
+        everything reading them back (the tests included) does not care which one it got.
 
         Every control is put into its checked state *before* its signal is
         wired, so rebuilding the grid never looks like an edit (see filter_panel.py's module
@@ -625,83 +576,53 @@ class FacetGrid(QWidget):
         return box
 
     def _on_range_changed(self, key: str, side: Literal["lo", "hi"]) -> None:
-        """Store one edited side; the other keeps its exact stored or span value (#350).
+        """Store one edited side; the other keeps its exact stored or span value
+        (#350, write_range_bound).
 
         A date bound is rewritten to YYYY-MM-DD (#402), the form measurements
         store, so a later string compare stays chronological. An unparsable
         date is not stored: the line edit snaps back to the last valid value.
         """
         lo_widget, hi_widget, kind = self._range_widgets[key]
-        current_lo, current_hi = self._sel.checked_ranges.get(key, self._range_spans[key])
+        span = self._range_spans[key]
         widget = lo_widget if side == "lo" else hi_widget
 
         if kind == "date":
             value = parse_value(widget.text(), "date")
             if value is None:
+                current_lo, current_hi = self._sel.checked_ranges.get(key, span)
                 widget.setText(str(current_lo if side == "lo" else current_hi))
                 return
             widget.setText(value)
         else:
             value = widget.value()
 
-        bounds = (value, current_hi) if side == "lo" else (current_lo, value)
-        self._sel.checked_ranges[key] = bounds
+        write_range_bound(self._sel, key, side, value, span)
         self._emit_selection_changed()
 
-    def _toggle_empty_bucket(self, token: str, checked: bool) -> None:
-        """Check / uncheck one gating facet's "(Empty)" row. `token`
-        is the family name for the scalar families (`order`, `result_kind`) or
-        the column key for the keyed ones (Identity / metadata)."""
-        if checked:
-            self._sel.checked_empty_buckets.add(token)
-        else:
-            self._sel.checked_empty_buckets.discard(token)
+    def _value_checks(self, key: str) -> Tuple[Callable[[Any], bool], Callable[[Any, bool], None]]:
+        """Column `key`'s `is_checked` / `on_toggled` pair for _fill_facet_box --
+        both straight onto the selection.trace_filter rules, the "(Empty)" row
+        included."""
+        return (lambda value: resolve_value_checked(self._sel, key, value),
+                lambda value, checked: self._on_value_toggled(key, value, checked))
+
+    def _on_value_toggled(self, key: str, value: Any, checked: bool) -> None:
+        """The one handler every facet control reports a click to."""
+        write_value_check(self._sel, key, value, checked)
         self._emit_selection_changed()
-
-    def _with_empty_row(self, token: str, is_checked: Callable[[Any], bool],
-                        on_toggled: Callable[[Any, bool], None]
-                        ) -> Tuple[Callable[[Any], bool], Callable[[Any, bool], None]]:
-        """Wrap a facet's `is_checked` / `on_toggled` so the EMPTY_FACET_VALUE
-        entry routes to `checked_empty_buckets[token]` instead of the family's
-        own checked collection -- the "(Empty)" row is one checkbox in the same
-        list as every other value."""
-        def checked(value: Any) -> bool:
-            if value == EMPTY_FACET_VALUE:
-                return token in self._sel.checked_empty_buckets
-            return is_checked(value)
-
-        def toggled(value: Any, is_on: bool) -> None:
-            if value == EMPTY_FACET_VALUE:
-                self._toggle_empty_bucket(token, is_on)
-            else:
-                on_toggled(value, is_on)
-
-        return checked, toggled
 
     def _build_metadata_group(self, key: str, label: str, values: List[str],
                               widget: str = WIDGET_CHECKBOX_LIST) -> QGroupBox:
         box = QGroupBox(label)
-        remembered = self._sel.checked_metadata_values.get(key, set())
-        is_checked, on_toggled = self._with_empty_row(
-            key, lambda value: value in remembered,
-            lambda value, checked: self._on_metadata_toggled(key, value, checked),
-        )
         controls = self._fill_facet_box(
             # Categorical text, labelled literally (#405): numeric fields are
             # ranges, so a number-looking value here ('0815') is not a number.
-            key, box, widget, _facet_entries(values, str), is_checked, on_toggled,
+            key, box, widget, _facet_entries(values, str), *self._value_checks(key),
             dead=self._dead_values.get(key),
         )
         self._metadata_checkboxes[key] = list(controls.values())
         return box
-
-    def _on_metadata_toggled(self, key: str, value: str, checked: bool) -> None:
-        bucket = self._sel.checked_metadata_values.setdefault(key, set())
-        if checked:
-            bucket.add(value)
-        else:
-            bucket.discard(value)
-        self._emit_selection_changed()
 
     def _build_identity_value_group(self, key: str, label: str, values: List[str],
                                     widget: str = WIDGET_CHECKBOX_LIST) -> QGroupBox:
@@ -712,25 +633,12 @@ class FacetGrid(QWidget):
         carrying it.
         """
         box = QGroupBox(label)
-        remembered = self._sel.checked_identity_values.get(key, set())
-        is_checked, on_toggled = self._with_empty_row(
-            key, lambda value: value in remembered,
-            lambda value, checked: self._on_identity_value_toggled(key, value, checked),
-        )
         controls = self._fill_facet_box(
-            key, box, widget, [(value, value) for value in values], is_checked, on_toggled,
+            key, box, widget, [(value, value) for value in values], *self._value_checks(key),
             dead=self._dead_values.get(key),
         )
         self._identity_value_checkboxes[key] = dict(controls)
         return box
-
-    def _on_identity_value_toggled(self, key: str, value: str, checked: bool) -> None:
-        bucket = self._sel.checked_identity_values.setdefault(key, set())
-        if checked:
-            bucket.add(value)
-        else:
-            bucket.discard(value)
-        self._emit_selection_changed()
 
     def _build_parameter_set_group(self, parameter_sets: List[ParameterSet],
                                    offers_empty: bool = False) -> QGroupBox:
@@ -746,10 +654,11 @@ class FacetGrid(QWidget):
         dead = self._dead_values.get(COLUMN_PARAMETER_SET, set())
         live: Dict[Any, _Control] = {}
 
+        is_checked, on_toggled = self._value_checks(COLUMN_PARAMETER_SET)
         for ps in parameter_sets:
             cb = QCheckBox(ps.label)
-            cb.setChecked(signature_matches_any(ps.signature, self._sel.checked_parameter_set_signatures))
-            cb.stateChanged.connect(lambda _state, p=ps: self._on_parameter_set_toggled(p))
+            cb.setChecked(is_checked(ps.signature))
+            cb.toggled.connect(lambda checked, p=ps: on_toggled(p.signature, checked))
             cb.setToolTip(format_parameter_set_details(ps.params, ps.kind))
             _style_dead_control(cb, ps.index in dead)
             layout.addWidget(cb)
@@ -760,9 +669,8 @@ class FacetGrid(QWidget):
             # A trace whose settings match no offered set -- one
             # more checkbox in the same list, routed to checked_empty_buckets.
             empty_cb = QCheckBox(EMPTY_FACET_VALUE)
-            empty_cb.setChecked("parameter_set" in self._sel.checked_empty_buckets)
-            empty_cb.toggled.connect(
-                lambda checked: self._toggle_empty_bucket("parameter_set", checked))
+            empty_cb.setChecked(is_checked(EMPTY_FACET_VALUE))
+            empty_cb.toggled.connect(lambda checked: on_toggled(EMPTY_FACET_VALUE, checked))
             _style_dead_control(empty_cb, EMPTY_FACET_VALUE in dead)
             layout.addWidget(empty_cb)
             live[EMPTY_FACET_VALUE] = empty_cb
@@ -770,120 +678,40 @@ class FacetGrid(QWidget):
         self._live_controls[COLUMN_PARAMETER_SET] = live
         return box
 
-    def _on_parameter_set_toggled(self, ps: ParameterSet) -> None:
-        checkbox = self._parameter_set_checkboxes[ps.index]
-        if checkbox.isChecked():
-            self._sel.checked_parameter_set_signatures.add(ps.signature)
-        else:
-            checked = self._sel.checked_parameter_set_signatures
-            checked.difference_update(
-                [signature for signature in checked if signatures_match(signature, ps.signature)])
-        self._emit_selection_changed()
-
     def _build_result_kind_group(self, kinds: List[str],
                                  widget: str = WIDGET_CHECKBOX_LIST) -> QGroupBox:
         box = QGroupBox("Result Kind")
-        checked = set(self._sel.checked_result_kinds)
-        is_checked, on_toggled = self._with_empty_row(
-            "result_kind", lambda kind: kind in checked, self._on_result_kind_toggled,
-        )
         controls = self._fill_facet_box(
             COLUMN_ANALYSIS_TYPE, box, widget, _facet_entries(kinds, format_result_kind),
-            is_checked, on_toggled, dead=self._dead_values.get(COLUMN_ANALYSIS_TYPE),
+            *self._value_checks(COLUMN_ANALYSIS_TYPE), dead=self._dead_values.get(COLUMN_ANALYSIS_TYPE),
         )
         self._result_kind_checkboxes = dict(controls)
         return box
 
-    def _on_result_kind_toggled(self, kind: str, checked: bool) -> None:
-        if checked:
-            self._sel.checked_result_kinds.add(kind)
-        else:
-            self._sel.checked_result_kinds.discard(kind)
-        self._emit_selection_changed()
-
     def _build_channel_group(self, identities: List[ChannelIdentity],
                              widget: str = WIDGET_CHECKBOX_LIST) -> QGroupBox:
         box = QGroupBox("Channel")
-        checked = set(self._sel.checked_channel_identities)
         controls = self._fill_facet_box(
             COLUMN_CHANNEL, box, widget,
             [(identity, format_channel_identity(identity)) for identity in identities],
-            lambda identity: identity in checked, self._on_channel_toggled,
-            dead=self._dead_values.get(COLUMN_CHANNEL),
+            *self._value_checks(COLUMN_CHANNEL), dead=self._dead_values.get(COLUMN_CHANNEL),
         )
         self._channel_checkboxes = list(controls.items())
         return box
 
-    def _on_channel_toggled(self, identity: ChannelIdentity, checked: bool) -> None:
-        if checked:
-            self._sel.checked_channel_identities.add(identity)
-        else:
-            self._sel.checked_channel_identities.discard(identity)
-        self._emit_selection_changed()
-
     def _build_order_group(self, orders: List[float],
                            widget: str = WIDGET_CHECKBOX_LIST) -> QGroupBox:
         box = QGroupBox("Order")
-        checked = set(self._sel.checked_orders)
-        is_checked, on_toggled = self._with_empty_row(
-            "order", lambda order: order in checked, self._on_order_toggled,
-        )
         controls = self._fill_facet_box(
-            COLUMN_ORDER, box, widget, _facet_entries(orders, _format_order), is_checked, on_toggled,
-            dead=self._dead_values.get(COLUMN_ORDER),
+            COLUMN_ORDER, box, widget, _facet_entries(orders, _format_order),
+            *self._value_checks(COLUMN_ORDER), dead=self._dead_values.get(COLUMN_ORDER),
         )
         self._order_checkboxes = dict(controls)
         return box
 
-    def _on_order_toggled(self, order: float, checked: bool) -> None:
-        if checked:
-            self._sel.checked_orders.add(order)
-        else:
-            self._sel.checked_orders.discard(order)
-        self._emit_selection_changed()
-
     # ---- reading the current selection ----------------------------------
-
-    # Everything below reports only what the panel is currently offering --
-    # see filter_panel.py's module docstring for why the remembered state is wider.
 
     def pool_query(self) -> PoolQuery:
         """What "Filter Data Pool" narrows the pool by -- only the columns that
         are a real narrowing of what this card offers (resolve_pool_query)."""
-        return resolve_pool_query(self._sel, self._offering, self._offered_metadata_values)
-
-    def get_selected_metadata_values(self) -> Dict[str, List[str]]:
-        """field key -> the checked values, when they are a real narrowing.
-
-        The batch / Data Pool query path (source_facets.apply_metadata_facets)
-        keeps the pre-§1.56 "a field's selection narrows, it never hides
-        everything" model; the dock mask reads `checked_metadata_values`
-        directly. The asymmetry is deliberate (§1.56, §1.107).
-        """
-        return self.pool_query().metadata_values
-
-    def get_selected_identity_values(self) -> Dict[str, List[str]]:
-        """column key -> checked values, narrowed to what is currently offered
-        (§1.29). A column with nothing checked is omitted."""
-        selected = {}
-        for key, offered in self._offering.identity_values.items():
-            values = self._sel.checked_identity_values.get(key, set()) & offered
-            if values:
-                selected[key] = sorted(values)
-        return selected
-
-    def get_selected_channel_identities(self) -> List[ChannelIdentity]:
-        """Every checked channel still on offer -- a positive list (what a
-        MeasurementSelection stores), not the pool's narrowing (pool_query)."""
-        return sorted(self._sel.checked_channel_identities & self._offering.channel_identities,
-                      key=channel_identity_sort_key)
-
-    def get_selected_orders(self) -> List[float]:
-        return sorted(self._sel.checked_orders & set(self._offering.orders))
-
-    def get_selected_parameter_set_indices(self) -> List[int]:
-        return sorted(ps.index for ps in self._offering.parameter_sets
-                      if signature_matches_any(ps.signature, self._sel.checked_parameter_set_signatures))
-
-    def get_selected_result_kinds(self) -> List[str]:
-        return sorted(self._sel.checked_result_kinds & self._offering.result_kinds)
+        return resolve_pool_query(self._sel, self._offering)

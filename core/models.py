@@ -5,6 +5,7 @@ Features automated dictionary serialization wrappers to enforce strict open-wind
 All internal documentation strings and variable labels are standardly written in English.
 """
 
+from dataclasses import dataclass
 from typing import Dict, Any, List, Optional, Tuple
 from core.block_kinds import KIND_TIME_RESPONSE
 
@@ -119,6 +120,87 @@ class ChannelMetadata:
                 setattr(instance, key, val)
 
         return instance
+
+
+def _first_reason_line(reason: str) -> str:
+    return reason.splitlines()[0] if reason else "unknown reason"
+
+
+@dataclass(frozen=True)
+class UnreadableFile:
+    """A measurement file that is on disk but could not be read by the last scan, and why."""
+    path: str
+    reason: str
+
+    def describe(self) -> str:
+        """`<path>: <first line of the reason>`."""
+        return f"{self.path}: {_first_reason_line(self.reason)}"
+
+
+@dataclass(frozen=True)
+class LostPart:
+    """A part of a measurement file that could not be read, and why.
+
+    `dataset` is the dataset's position in the file; the damaged header that
+    would have named the channel is usually the very thing that was lost.
+    It is None when the loss is not a dataset (rows of a CSV)."""
+    dataset: Optional[int]
+    reason: str
+
+    def describe(self) -> str:
+        """`dataset #<n> (<first line of the reason>)`, or just the reason when no dataset is named."""
+        reason = _first_reason_line(self.reason)
+        return reason if self.dataset is None else f"dataset #{self.dataset} ({reason})"
+
+
+@dataclass(frozen=True)
+class PartiallyReadMeasurement:
+    """A measurement's file and the parts of it that could not be read."""
+    path: str
+    lost_parts: Tuple[LostPart, ...]
+
+    def describe(self) -> str:
+        """`<path>: lost <part>; <part>`."""
+        return f"{self.path}: lost {'; '.join(part.describe() for part in self.lost_parts)}"
+
+
+@dataclass(frozen=True)
+class ReadProblems:
+    """
+    What the latest scan of one Data Pool folder could not read.
+
+    `partially_read` holds only measurements that scan read and the pool
+    admitted; a Missing measurement was not read, so it is never here. Two
+    scans that found the same problems compare equal, which is how a quiet
+    refresh tells whether there is anything new to say.
+    """
+    unreadable: Tuple[UnreadableFile, ...] = ()
+    partially_read: Tuple[PartiallyReadMeasurement, ...] = ()
+
+    @classmethod
+    def from_scan(cls, unreadable, admitted_runs) -> "ReadProblems":
+        """The problems of a scan: its Unreadable files and the admitted runs that lost parts."""
+        return cls(tuple(unreadable),
+                   tuple(PartiallyReadMeasurement(run.file_path, tuple(run.lost_parts))
+                         for run in admitted_runs if run.lost_parts))
+
+    def __bool__(self) -> bool:
+        return bool(self.unreadable or self.partially_read)
+
+    def lines(self, directory: str) -> Tuple[str, ...]:
+        """
+        One line per problem, in the order the log says them: the Unreadable
+        files' summary, one line per Unreadable file, then one line per
+        Partially read measurement.
+        """
+        lines = []
+        if self.unreadable:
+            lines.append(f"{len(self.unreadable)} file(s) in {directory} could not be read.")
+            lines.extend(f"Could not read {item.describe()}" for item in self.unreadable)
+        lines.extend(f"Partially read {item.describe()}" for item in self.partially_read)
+        return tuple(lines)
+
+
 class MeasurementRunIndex:
     """
     Top-level index descriptor holding metadata and channels lists for a single UNV recording sheet file.
@@ -135,6 +217,9 @@ class MeasurementRunIndex:
         # Layer 1: Strong references holding discovered hardware sub-channels metadata
         self.available_channels: Dict[str, ChannelMetadata] = {}
 
+        # What the reader could not read; non-empty makes this a Partially read measurement.
+        self.lost_parts: List[LostPart] = []
+
     def add_channel_metadata(self, unique_label: str, channel_meta: ChannelMetadata):
         """Registers a discovered sub-channel element securely into the active tracking dictionary loop."""
         self.available_channels[unique_label] = channel_meta
@@ -147,7 +232,7 @@ class MeasurementRunIndex:
 
     # Attributes that describe the run's own structure rather than a Level 1
     # fact discovered from the file -- excluded from file_level_facts() below.
-    _STRUCTURAL_ATTRS = {"file_name", "file_path", "metadata", "available_channels"}
+    _STRUCTURAL_ATTRS = {"file_name", "file_path", "metadata", "available_channels", "lost_parts"}
 
     def file_level_facts(self) -> Dict[str, Any]:
         """

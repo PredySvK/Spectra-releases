@@ -7,7 +7,7 @@ from typing import Optional
 
 import numpy as np
 
-from view_models.plot import SpectrogramModel, format_display_unit
+from view_models.plot import SpectrogramModel, format_display_unit, resolve_image_axis_extent
 
 
 @dataclass(frozen=True)
@@ -21,6 +21,23 @@ class SpectrogramPoint:
     y_unit: str = ""
     z_unit: str = ""
     color_scale: str = ""
+
+
+def _cell_under(values: np.ndarray, position: float) -> Optional[int]:
+    """Index of the image cell drawn at ``position`` along one axis, else None.
+
+    The image is an even grid over ``resolve_image_axis_extent``; a descending
+    axis is drawn flipped (the dock reverses it), so index 0 sits at the high end.
+    """
+    low, high = resolve_image_axis_extent(values)
+    if not (low <= position <= high):
+        return None
+    n = values.size
+    cell = int((position - low) / (high - low) * n)
+    cell = min(max(cell, 0), n - 1)
+    if n > 1 and values[0] > values[-1]:
+        cell = n - 1 - cell
+    return cell
 
 
 def resolve_spectrogram_pixel(
@@ -51,31 +68,10 @@ def resolve_spectrogram_pixel(
     freqs_disp = freqs * y_scale
     zvals_disp = zvals * x_scale
 
-    f_min, f_max = float(np.min(freqs_disp)), float(np.max(freqs_disp))
-    n_f = len(freqs_disp)
-    if n_f > 1 and f_max > f_min:
-        step_f = (f_max - f_min) / (n_f - 1)
-        f_lo = f_min - step_f / 2.0
-        f_hi = f_max + step_f / 2.0
-    else:
-        f_lo = f_min - 0.5
-        f_hi = f_max + 0.5
-
-    z_min, z_max = float(np.min(zvals_disp)), float(np.max(zvals_disp))
-    n_z = len(zvals_disp)
-    if n_z > 1 and z_max > z_min:
-        step_z = (z_max - z_min) / (n_z - 1)
-        z_lo = z_min - step_z / 2.0
-        z_hi = z_max + step_z / 2.0
-    else:
-        z_lo = z_min - 0.5
-        z_hi = z_max + 0.5
-
-    if y < f_lo or y > f_hi or x < z_lo or x > z_hi:
+    f_idx = _cell_under(freqs_disp, y)
+    z_idx = _cell_under(zvals_disp, x)
+    if f_idx is None or z_idx is None:
         return None
-
-    f_idx = int(np.argmin(np.abs(freqs_disp - y)))
-    z_idx = int(np.argmin(np.abs(zvals_disp - x)))
     z_val = float(image[f_idx, z_idx])
 
     actual_x_unit = getattr(model, "z_unit", "") if x_unit is None else x_unit
