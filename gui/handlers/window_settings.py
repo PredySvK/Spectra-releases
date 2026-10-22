@@ -163,7 +163,7 @@ class WindowSettingsHandler:
         return (
             (frozenset(key for key in SETTING_DEFINITIONS if key.startswith("perf_")),
              self._react_to_graph_performance),
-            (frozenset(key for key in SETTING_DEFINITIONS if key.startswith("global_unit_")),
+            (frozenset(key for key in SETTING_DEFINITIONS if key.startswith("global_unit_") or key.startswith("prefix_") or key.startswith("decimals_")),
              self._react_to_units),
             (frozenset({"highlight_other_opacity"}), lambda _changed: self.workspace.apply_highlight_opacity()),
             (_RESTART_KEYS, self._react_to_restart_settings),

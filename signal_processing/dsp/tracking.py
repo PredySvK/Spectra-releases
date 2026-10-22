@@ -25,6 +25,7 @@ from scipy.ndimage import uniform_filter1d
 from core.dsp_configs import (
     VALID_SWEEP_DIRECTIONS,
     VALID_TRACKING_MODES,
+    TrackingSweep,
     normalize_dsp_choice,
 )
 
@@ -142,18 +143,9 @@ def _interior_crossings(
     if direction == "up":
         low = np.searchsorted(targets, previous, side="left")     # T >= rpm[i]
         high = np.searchsorted(targets, following, side="left")   # T <  rpm[i+1]
-    elif direction == "down":
+    else:
         low = np.searchsorted(targets, following, side="right")   # T >  rpm[i+1]
         high = np.searchsorted(targets, previous, side="right")   # T <= rpm[i]
-    else:
-        up_targets, up_samples = _interior_crossings(rpm_profile, targets, "up")
-        down_targets, down_samples = _interior_crossings(rpm_profile, targets, "down")
-        pairs = np.unique(
-            np.stack([np.concatenate([up_targets, down_targets]),
-                      np.concatenate([up_samples, down_samples])], axis=1),
-            axis=0,
-        ) if up_targets.size or down_targets.size else np.empty((0, 2), dtype=np.int64)
-        return pairs[:, 0], pairs[:, 1]
 
     counts = np.maximum(high - low, 0)
     pairs_with_crossings = np.flatnonzero(counts > 0)
@@ -193,67 +185,18 @@ def _endpoint_reaches(rpm_profile: np.ndarray, targets: np.ndarray,
     previous, current = rpm_profile[-2], rpm_profile[-1]
     if direction == "up":
         return (current >= targets - tol) & (previous <= targets + tol) & (previous < current)
-    if direction == "down":
-        return (current <= targets + tol) & (previous >= targets - tol) & (previous > current)
-    # "any" tried up first and then down; both can never hold at once, because
-    # each demands the opposite sign of (current - previous).
-    return (_endpoint_reaches(rpm_profile, targets, "up", tol)
-            | _endpoint_reaches(rpm_profile, targets, "down", tol))
-
-
-def _accept_after_hysteresis(rpm_profile: np.ndarray, crossings: np.ndarray,
-                             target: float, direction: str,
-                             hysteresis_rpm: float) -> np.ndarray:
-    """
-    Which of one target's crossings survive the noise guard: a repeat only
-    counts once the speed has genuinely left the target's neighbourhood in
-    between, otherwise a trace dithering across a target fires once per wobble.
-
-    The span between two accepted crossings is reduced once with reduceat
-    rather than re-scanned per crossing. The acceptance itself stays a walk,
-    because whether a crossing is accepted depends on which one was accepted
-    before it -- but it walks over per-segment extremes, not over the samples.
-    """
-    if crossings.size < 2:
-        return crossings
-
-    span_start, span_stop = int(crossings[0]), int(crossings[-1])
-    span = rpm_profile[span_start:span_stop]
-    local_edges = crossings[:-1] - span_start
-
-    if direction == "up":
-        segment_extremes = np.minimum.reduceat(span, local_edges)
-        left_the_band = segment_extremes < (target - hysteresis_rpm)
-    elif direction == "down":
-        segment_extremes = np.maximum.reduceat(span, local_edges)
-        left_the_band = segment_extremes > (target + hysteresis_rpm)
-    else:
-        segment_extremes = np.maximum.reduceat(np.abs(span - target), local_edges)
-        left_the_band = segment_extremes > hysteresis_rpm
-
-    accepted = [crossings[0]]
-    # Running extreme since the last accepted crossing: the span between two
-    # accepted crossings is the union of the segments skipped in between.
-    running = left_the_band[0]
-    for position in range(1, crossings.size):
-        if running:
-            accepted.append(crossings[position])
-            running = left_the_band[position] if position < left_the_band.size else False
-        else:
-            running = running or (left_the_band[position] if position < left_the_band.size else False)
-    return np.asarray(accepted, dtype=crossings.dtype)
+    return (current <= targets + tol) & (previous >= targets - tol) & (previous > current)
 
 
 def generate_tracking_triggers(
         time_vector: np.ndarray, rpm_profile: np.ndarray, fs: float, tracking_mode: str = "rpm",
         start_limit: float = 0.0, stop_limit: float = 100000.0, increment: float = 100.0,
-        direction: str = "up", hysteresis_rpm: float = 10.0
+        direction: str = "up"
 ) -> Tuple[List[float], List[float], List[str]]:
     n_samples = len(rpm_profile)
     if n_samples == 0: return [], [], []
 
-    # "Up", "bogus" and "" used to all land in the bidirectional / rpm branch
-    # silently; an unknown tracking_mode fell to rpm -- audit 02 F7-A / 7.7.
+    # "Up", "bogus" and "" used to land in a fallback branch silently; an unknown tracking_mode fell to rpm -- audit 02 F7-A / 7.7.
     tracking_mode = normalize_dsp_choice(tracking_mode, VALID_TRACKING_MODES, "tracking_mode")
     direction = normalize_dsp_choice(direction, VALID_SWEEP_DIRECTIONS, "direction")
 
@@ -265,6 +208,9 @@ def generate_tracking_triggers(
             return [], [], []
 
         targets = np.arange(t_start, t_stop + 1e-12, abs(increment))
+        # A Tracking range that starts before the record (#807) would put every
+        # target ahead of the first sample on that one sample.
+        targets = targets[targets >= time_vector[0]]
         if targets.size == 0:
             return [], [], []
 
@@ -280,7 +226,7 @@ def generate_tracking_triggers(
             keep = time_vector[indices] <= t_stop
             indices = indices[keep]
 
-        if indices.size and direction in ("up", "down") and n_samples > 1:
+        if indices.size and n_samples > 1:
             # Reject a target whose sample is moving against the requested sweep
             # direction. The old loop instead held the target back and then fired
             # a burst of catch-up triggers once the slope agreed again, which put
@@ -339,26 +285,14 @@ def generate_tracking_triggers(
     if target_index.size == 0:
         return [], [], []
 
-    # Runs even at hysteresis 0: the guard is "did the speed leave the band",
-    # and at zero width that still rejects a repeat crossing whose in-between
-    # samples only ever touched the target exactly. Only targets crossed more
-    # than once can lose anything, and on a clean monotone sweep there are none.
-    group_starts = np.flatnonzero(np.diff(target_index, prepend=-1))
-    group_ends = np.append(group_starts[1:], target_index.size)
-    kept = [
-        _accept_after_hysteresis(rpm_profile, sample_index[start:stop],
-                                 float(targets[target_index[start]]),
-                                 direction, hysteresis_rpm)
-        for start, stop in zip(group_starts, group_ends)
-    ]
-    surviving = np.concatenate(kept)
-    if surviving.size != sample_index.size:
-        keep_counts = np.array([block.size for block in kept])
-        target_index = np.repeat(target_index[group_starts], keep_counts)
-        sample_index = surviving
-
-    if sample_index.size == 0:
-        return [], [], []
+    # One block per target: the first time the speed reaches it (#745). The
+    # crossings are sorted by target and then by sample, so each target's
+    # first entry is its earliest one. A later return to the same speed -- a
+    # plateau wobbling on the target, a plateau that sags before the next ramp,
+    # a dip and recovery -- is a spectrum from another instant at a speed the
+    # axis already has, and repeating it breaks the even rpm axis.
+    first_of_each = np.flatnonzero(np.diff(target_index, prepend=-1))
+    target_index, sample_index = target_index[first_of_each], sample_index[first_of_each]
 
     trigger_values = targets[target_index]
     trigger_indices = _interpolated_crossing_indices(rpm_profile, sample_index, trigger_values)
@@ -396,10 +330,14 @@ class TrackingPlan:
     n_samples: int
     step: float
     direction: str
-    hysteresis_rpm: float
     cleaned_rpm: np.ndarray
     trigger_indices: np.ndarray
     axis_values: np.ndarray
+    start_time: float = 0.0
+    # The sweep the plan was asked for, Tracking range included -- what
+    # `require_tracking_triggers` says when the plan came out empty. None is a
+    # sweep without a range.
+    sweep: Optional[TrackingSweep] = None
 
     def __post_init__(self):
         # Read-only for the same reason NVHDataBlock's values are: one plan is
@@ -416,26 +354,65 @@ class TrackingPlan:
 
 def build_tracking_plan(
         tacho_data: Optional[np.ndarray], n_samples: int, fs: float,
-        step: float, direction: str, hysteresis_rpm: float,
-        tracking_mode: str = "rpm",
+        step: float, direction: str,
+        tracking_mode: str = "rpm", start_time: float = 0.0,
+        rpm_min: Optional[float] = None, rpm_max: Optional[float] = None,
+        time_start: Optional[float] = None, time_end: Optional[float] = None,
 ) -> TrackingPlan:
     """
     Clean the tacho, place the triggers, and sort them into the order the
     result axis needs -- once, for however many channels share this tacho.
 
     Time mode carries a zero rpm profile and sorts by sample index; rpm mode
-    sorts by speed, so a run-down reads left to right like a run-up.
+    sorts by speed, so a run-down reads left to right like a run-up. Rpm mode
+    has one block per target speed, from its first crossing, so its axis is
+    strictly increasing and evenly spaced by construction.
+
+    `start_time` is the time of the first sample. A time-mode axis counts
+    from it, so it reads like the time signal of a recording that does not
+    start at 0 s (#739); rpm mode does not use it.
+
+    `rpm_min` / `rpm_max` are the Tracking range in rpm mode, in positive rpm
+    even for a reverse-rotation run; None is auto -- 0 rpm and the record's top
+    speed, which give exactly the plan without a range. A run-up starts at the
+    last sample at or below the minimum before the top speed, a run-down ends
+    at the first one after it, and targets above the maximum are dropped. The
+    grid stays on multiples of the step. Time mode ignores them.
+
+    `time_start` / `time_end` are the Tracking range in time mode (#807), in
+    the time of the axis -- from `start_time`, not from the first sample.
+    None is auto, the whole record. The first block sits on the start, then
+    every step, so the grid is not on multiples of the step. Rpm
+    mode ignores them.
     """
     tracking_mode = normalize_dsp_choice(tracking_mode, VALID_TRACKING_MODES, "tracking_mode")
     direction = normalize_dsp_choice(direction, VALID_SWEEP_DIRECTIONS, "direction")
+    # generate_tracking_triggers swaps inverted limits, which would put a block
+    # above the maximum; the ribbon refuses this as typed, a workflow block not.
+    if rpm_min is not None and rpm_max is not None and float(rpm_min) >= float(rpm_max):
+        raise ValueError(
+            f"Tracking range minimum ({float(rpm_min):g} rpm) must be below its "
+            f"maximum ({float(rpm_max):g} rpm)."
+        )
+    if time_start is not None and time_end is not None and float(time_start) >= float(time_end):
+        raise ValueError(
+            f"Tracking range start ({float(time_start):g} s) must be before its "
+            f"end ({float(time_end):g} s)."
+        )
 
-    time_vector = np.arange(n_samples) / fs
+    time_vector = start_time + np.arange(n_samples) / fs
 
     if tracking_mode == "time" or tacho_data is None:
         mode = "time"
         cleaned_rpm = np.zeros(n_samples, dtype=np.float64)
         start_limit = float(time_vector[0]) if n_samples else 0.0
         stop_limit = float(time_vector[-1]) if n_samples else 0.0
+        # The Tracking range (#807) replaces either end; a bound past the
+        # record is left to the trigger search, which keeps only its samples.
+        if time_start is not None:
+            start_limit = float(time_start)
+        if time_end is not None:
+            stop_limit = float(time_end)
     else:
         mode = "rpm"
         cleaned_rpm = clean_rpm_profile(tacho_data, fs)
@@ -450,31 +427,43 @@ def build_tracking_plan(
         # Setup1-Sweep1-1 data dips to -406 rpm -- and the smoothing above
         # spreads that rather than removing it. Negative speeds would put the
         # frequency band below DC, where nothing can be measured, so the sweep
-        # starts at zero. Restricting the range properly still belongs in the
-        # UI as explicit start/stop rpm limits, the way Testlab does it.
-        start_limit = max(0.0, float(np.min(cleaned_rpm)))
+        # starts at zero.
+        # The Tracking range (#805) narrows that sweep: the grid starts at the
+        # first multiple of the step at or above the minimum, and stops at the
+        # maximum. Auto (None) is exactly the sweep above.
+        floor_rpm = 0.0 if rpm_min is None else float(rpm_min)
+        start_limit = max(0.0, floor_rpm, float(np.min(cleaned_rpm)))
         stop_limit = float(np.max(cleaned_rpm))
+        if rpm_max is not None:
+            stop_limit = min(stop_limit, float(rpm_max))
 
-    # Standstill noise crosses 0 rpm upward again and again, and the hysteresis
-    # cannot hold it back: Setup1-Sweep1-1 got 21 blocks at 0 rpm, all from the
-    # noise after the run-down (#457). A run-up only counts from the last
-    # sample at or below zero before the top speed, a run-down up to the first
-    # one after it.
+    # Standstill noise crosses 0 rpm upward again and again: Setup1-Sweep1-1
+    # got 21 blocks at 0 rpm, all from the noise after the run-down (#457), and
+    # even one block per target would put the low speeds in the noise before
+    # the run instead of on it. A run-up only counts from the last
+    # sample at or below the minimum (zero on auto) before the top speed, a
+    # run-down up to the first one after it -- so a short spin-up past the
+    # minimum and back before the run is not taken for the run (#805).
     first, last = 0, n_samples
-    if mode == "rpm" and direction in ("up", "down") and n_samples:
+    if mode == "rpm" and n_samples:
         peak = int(np.argmax(cleaned_rpm))
         if direction == "up":
-            at_rest = np.flatnonzero(cleaned_rpm[:peak + 1] <= 0.0)
+            at_rest = np.flatnonzero(cleaned_rpm[:peak + 1] <= floor_rpm)
             first, last = (int(at_rest[-1]) if at_rest.size else 0), peak + 1
         else:
-            at_rest = np.flatnonzero(cleaned_rpm[peak:] <= 0.0)
+            at_rest = np.flatnonzero(cleaned_rpm[peak:] <= floor_rpm)
             first, last = peak, (peak + int(at_rest[0]) + 1 if at_rest.size else n_samples)
 
-    indices, values, _ = generate_tracking_triggers(
-        time_vector=time_vector[first:last], rpm_profile=cleaned_rpm[first:last], fs=fs,
-        tracking_mode=mode, start_limit=start_limit, stop_limit=stop_limit, increment=step,
-        direction=direction, hysteresis_rpm=hysteresis_rpm,
-    )
+    if mode == "time" and start_limit > stop_limit:
+        # A time range wholly before or after the record: generate_tracking_triggers
+        # would swap the limits and place a block between them.
+        indices, values = [], []
+    else:
+        indices, values, _ = generate_tracking_triggers(
+            time_vector=time_vector[first:last], rpm_profile=cleaned_rpm[first:last], fs=fs,
+            tracking_mode=mode, start_limit=start_limit, stop_limit=stop_limit, increment=step,
+            direction=direction,
+        )
 
     trigger_indices = np.asarray(indices, dtype=np.float64) + first
     axis_values = np.asarray(values, dtype=np.float64)
@@ -485,6 +474,45 @@ def build_tracking_plan(
 
     return TrackingPlan(
         mode=mode, fs=fs, n_samples=n_samples, step=step, direction=direction,
-        hysteresis_rpm=hysteresis_rpm, cleaned_rpm=cleaned_rpm,
-        trigger_indices=trigger_indices, axis_values=axis_values,
+        cleaned_rpm=cleaned_rpm,
+        trigger_indices=trigger_indices, axis_values=axis_values, start_time=start_time,
+        sweep=TrackingSweep(mode=tracking_mode, step=step, direction=direction,
+                            rpm_min=rpm_min, rpm_max=rpm_max,
+                            time_start=time_start, time_end=time_end),
+    )
+
+
+def _format_bound(value: Optional[float]) -> str:
+    return "auto" if value is None else f"{float(value):g}"
+
+
+def require_tracking_triggers(plan: TrackingPlan, measurement: str) -> None:
+    """
+    Raises, naming `measurement`, when the plan's Tracking range found no
+    target in it -- min 40 000 rpm on a run to 35 000 rpm (#805), or 40 s on a
+    record that ends at 30 s (#807). An error rather than an empty result, so
+    a batch records the measurement and goes on. A plan
+    without a range leaves the analysis's own "no tracking triggers" message
+    to say it.
+    """
+    if plan.trigger_indices.size or plan.step <= 0 or plan.sweep is None:
+        return
+    sweep = plan.sweep
+    if plan.mode == "time":
+        if sweep.time_start is None and sweep.time_end is None:
+            return
+        first = plan.start_time
+        last = plan.start_time + (plan.n_samples - 1) / plan.fs if plan.n_samples else first
+        raise ValueError(
+            f"No tracking triggers in measurement '{measurement}': it runs "
+            f"{first:g}-{last:g} s, outside the Tracking range "
+            f"{_format_bound(sweep.time_start)}-{_format_bound(sweep.time_end)} s."
+        )
+    if sweep.rpm_min is None and sweep.rpm_max is None:
+        return
+    raise ValueError(
+        f"No tracking triggers in measurement '{measurement}': its speed runs "
+        f"{max(0.0, float(plan.cleaned_rpm.min())):.0f}-{float(plan.cleaned_rpm.max()):.0f} rpm, "
+        f"outside the Tracking range "
+        f"{_format_bound(sweep.rpm_min)}-{_format_bound(sweep.rpm_max)} rpm."
     )

@@ -4,9 +4,38 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping, Protocol
 
-from core.dsp_configs import OrderTrackingConfig, OverallLevelConfig
+from core.dsp_configs import OrderTrackingConfig, OverallLevelConfig, SpectrumConfig
 
 from orchestration.channel_drop._routing import DropFacts
+
+
+@dataclass(frozen=True)
+class SpectrumDropInputs:
+    """What a Spectrum drop's config is resolved from, taken on the GUI thread
+    (``resolve_spectrum_drop_config``)."""
+
+    config: SpectrumConfig
+    config_from_trace: bool
+    base_compute_spec: Mapping[str, Any] | None
+    base_spectrum_format: str = ""
+    base_amplitude_mode: str = ""
+
+
+@dataclass(frozen=True)
+class SpectrogramDropInputs:
+    """What a channel dropped on a spectrogram is paired against, taken on
+    the GUI thread when it lands (``decide_spectrogram_drop``).
+
+    ``restored_measurement_path`` is the file of a spectrogram restored from
+    the Tab cache, which shows its image without the raw channels it was
+    computed from; None for any other. ``run_lookup`` is ``DataPool.run_lookup``.
+    """
+
+    vib_block: Any
+    tacho_block: Any
+    tracking_mode: str
+    restored_measurement_path: str | None
+    run_lookup: Callable[[str], Any]
 
 
 @dataclass(frozen=True)
@@ -33,7 +62,9 @@ class DropTarget(Protocol):
 
     The GUI implements it over one dock; a test implements it with a fake.
     Everything the run reads about the dock or the shell is a method here,
-    so nothing in the run probes attributes it cannot see.
+    so nothing in the run probes attributes it cannot see. The ``draw_*``
+    methods only draw; what is logged around a draw and what is kept is the
+    run's.
     """
 
     facts: DropFacts
@@ -49,7 +80,7 @@ class DropTarget(Protocol):
 
     def serve_result_content(self, descriptor: dict) -> bool: ...
 
-    def spectrum_config(self) -> Any: ...
+    def spectrum_inputs(self) -> SpectrumDropInputs: ...
 
     def restored_config(self, recipe: Mapping[str, Any]) -> Any:
         """The ``live_compute.RestoreConfig`` restored overlays saved with
@@ -71,10 +102,34 @@ class DropTarget(Protocol):
 
     def overall_level_inputs(self) -> OverallLevelDropInputs: ...
 
-    def render_simple(self, rendered, *, is_spec: bool) -> None: ...
+    def drawing(self) -> AbstractContextManager:
+        """Everything drawn inside lands on the dock as one draw (#440)."""
 
-    def render_orders(self, rendered) -> None: ...
+    def draw_time_curve(self, descriptor: dict, block) -> None: ...
 
-    def render_overall_level(self, rendered) -> None: ...
+    def draw_spectrum_curve(self, descriptor: dict, block) -> None: ...
+
+    def draw_order_curves(self, descriptor: dict, channel_name: str, blocks) -> None:
+        """The order cuts of one channel -- and its Overall Level and Residual,
+        which carry no order number -- each as a curve."""
+
+    def draw_overall_level_curve(self, block) -> None: ...
+
+    def plot_model(self) -> Any:
+        """The dock's ``PlotModel`` as drawn so far, None while it holds no curve."""
+
+    def keep(self, descriptor: dict, result) -> None:
+        """Keep the drawn ``result`` of ``descriptor`` in the dock's Tab cache
+       ."""
+
+    def spectrogram_inputs(self) -> SpectrogramDropInputs: ...
+
+    def hold_spectrogram_channels(self, vib_block, tacho_block, dropped) -> None:
+        """Hold the vib/tacho pair; ``dropped`` is the pooled ``(run_index,
+        channel_meta)`` of a dropped vibration channel -- what Refresh, the
+        cache lookup and the saved tab read the channel from -- None for a tacho."""
+
+    def run_spectrogram_compute(self) -> None:
+        """Compute the held pair as the dock's own compute; the tab title follows."""
 
     def refresh_title(self) -> None: ...

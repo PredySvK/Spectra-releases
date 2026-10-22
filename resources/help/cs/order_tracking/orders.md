@@ -28,7 +28,7 @@ Podle Parsevala je součet střední kvadrát, takže $A_n$ je RMS řádu v jedn
 
 Se zaškrtnutým **Overall Level + Residual** dá stejné $P_\text{canon}$ jedním průchodem ještě dvě křivky:
 
-- **OAL**: [Overall Level](topic:overall_level/intro) výchozího pásma, 10 Hz až Nyquist souboru ($F_\text{min}=10$ Hz, Full Bandwidth). Pásmo se zde nedá změnit. Používá [FFT](topic:shared/fft_size), [okno](topic:shared/windows), Step, Sweep ([tracking](topic:shared/tracking)), Hysterezi a Remove DC této záložky.
+- **OAL**: [Overall Level](topic:overall_level/intro) výchozího pásma, 10 Hz až Nyquist souboru ($F_\text{min}=10$ Hz, Full Bandwidth). Pásmo se zde nedá změnit. Používá [FFT](topic:shared/fft_size), [okno](topic:shared/windows), Step, Ramp, Tracking range ([tracking](topic:shared/tracking)) a Remove DC této záložky, takže její body leží na stejných otáčkách jako řády.
 - **Residual**: energie tohoto pásma **mimo** pásma všech vybraných řádů.
 
 Nechť $b_k$ je podíl binu $k$ uvnitř pásma OAL a $m_k$ podíl pokrytý **sjednocením** pásem řádů (oříznutým na pásmo OAL):

@@ -18,27 +18,17 @@ from core.filter_card_config import (
     BUILTIN_COLUMN_GROUPS, BUILTIN_COLUMN_KEYS, COLUMN_ANALYSIS_TYPE,
     COLUMN_CHANNEL, COLUMN_CHANNEL_TYPE, COLUMN_DATA_POOL_LABEL, COLUMN_DIRECTION,
     COLUMN_FILE_NAME, COLUMN_ORDER, COLUMN_PARAMETER_SET, COLUMN_RESULT_SET,
-    FilterCardConfig, FilterColumnConfig, GROUP_EXCEL, GROUP_RAW,
+    FilterCardConfig, FilterColumnConfig,
     LIVE_IDENTITY_FACET_COLUMNS, default_widget_for_kind, renumbered,
 )
 from core.project_model import NVHProject
+from selection.field_offer import schema_field_group
 from selection.source_facets import (
     FieldCardinality, all_pool_sources, build_channel_facet,
     build_order_facet, field_cardinality, filter_field_cardinalities,
 )
 from selection.parameter_sets import build_parameter_sets, parameter_sets_from_traces
 from ._trace_filter import TraceIdentity, global_calculated_facets
-
-_CHANNEL_LAYER = "channel"
-
-
-def schema_field_group(config: Dict[str, Any]) -> str:
-    """
-    Public (ticket #42): FilterFieldSelectionDialog sections its Raw metadata
-    / Excel metadata columns off the same rule this module already used
-    internally to pick a schema field's group.
-    """
-    return GROUP_RAW if config.get("layer") == _CHANNEL_LAYER else GROUP_EXCEL
 
 
 def default_card_for_schema(card_id: str, schema: Dict[str, Dict[str, Any]],
@@ -158,7 +148,8 @@ def build_column_for_key(key: str, schema: Dict[str, Dict[str, Any]]) -> FilterC
     return FilterColumnConfig(key=key, group=group, widget=default_widget_for_kind(kind))
 
 
-def builtin_column_cardinalities(project: NVHProject) -> Dict[str, FieldCardinality]:
+def builtin_column_cardinalities(project: NVHProject, *, sources: Optional[Iterable] = None
+                                 ) -> Dict[str, FieldCardinality]:
     """
     `field_cardinality` for every Identity / Calculated built-in, over the
     whole project (ticket #42) -- Configure Filters shows the same "(N)"
@@ -170,7 +161,7 @@ def builtin_column_cardinalities(project: NVHProject) -> Dict[str, FieldCardinal
     every one of them skips the "unique per measurement" rule
     (`per_measurement=False`) -- only "one value pool-wide" applies.
     """
-    sources = all_pool_sources(project)
+    sources = list(all_pool_sources(project) if sources is None else sources)
     result_sets = project.result_sets
     identities = build_channel_facet(sources)
     return {
@@ -197,7 +188,8 @@ def builtin_column_cardinalities(project: NVHProject) -> Dict[str, FieldCardinal
 
 
 def builtin_column_cardinalities_for_global(project: NVHProject,
-                                            open_dock_identities: List[TraceIdentity]
+                                            open_dock_identities: List[TraceIdentity],
+                                            *, sources: Optional[Iterable] = None
                                             ) -> Dict[str, FieldCardinality]:
     """
     `builtin_column_cardinalities` for a Global card. Identity
@@ -208,7 +200,7 @@ def builtin_column_cardinalities_for_global(project: NVHProject,
     `open_dock_identities` is every open dock's own `TraceIdentity`, resolved
     once by the caller via `identity_for_trace` (ticket #166).
     """
-    cardinalities = builtin_column_cardinalities(project)
+    cardinalities = builtin_column_cardinalities(project, sources=sources)
     orders, kinds, parameter_sets = global_calculated_facets(project, open_dock_identities)
 
     def calculated(values) -> FieldCardinality:
@@ -277,6 +269,6 @@ def local_card_cardinalities(identities: Iterable[TraceIdentity],
             seen.add(source.id)
             dock_sources.append(source)
 
-    schema_cardinalities = filter_field_cardinalities(dock_sources, schema)
+    schema_cardinalities = filter_field_cardinalities(dock_sources, schema, pool_label=pool_label)
     builtin_cardinalities = builtin_column_cardinalities_from_traces(identities_list, pool_label=pool_label)
     return schema_cardinalities, builtin_cardinalities

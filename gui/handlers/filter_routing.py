@@ -47,9 +47,7 @@ from PySide6.QtWidgets import QWidget
 from core.filter_card_config import FilterCardConfig, duplicate as duplicate_card
 from orchestration.trace_filter import build_identity_context, plan_mask_application, save_filter_card
 from selection.trace_filter import (
-    OfferedFacets, builtin_column_cardinalities_for_global,
-    local_card_cardinalities, resolve_card,
-    resolve_panel_facets,
+    OfferedFacets, resolve_card, resolve_card_cardinalities, resolve_panel_facets,
 )
 from session.trace_filter import build_filter_state_snapshot, read_filter_state_snapshot
 from gui.workspace.graph_dock import GraphDock
@@ -259,7 +257,8 @@ class FilterRoutingHandler:
 
     def refresh_data_pool_filter(self) -> None:
         """
-        Redraws the Data Pool tree so it reflects the current filter selection.
+        Re-applies the Data Pool tree's visibility so it reflects the current
+        filter selection; the tree itself is not rebuilt.
 
         The only implementation there is: `MainWindowFrame` carried an identical
         one until #234, and the hop through the frame it existed for is what this
@@ -269,7 +268,7 @@ class FilterRoutingHandler:
         """
         explorer = self.explorer_panel
         if explorer is not None:
-            explorer.pool_panel.rebuild_tree_view()
+            explorer.pool_panel.apply_visibility()
 
     # =========================================================================
     # PANEL
@@ -327,16 +326,6 @@ class FilterRoutingHandler:
         )
 
         panel.populate_facets(facets)
-
-    def _local_card_cardinalities(self, session, schema):
-        """
-        The schema-field and built-in column cardinalities Configure Filters shows
-        for a Local card -- read off the focused dock's own traces and their
-        resolved sources, not the pool. Returns (schema_cardinalities,
-        builtin_cardinalities), both keyed the same way the pool-wide versions are.
-        """
-        identities = _identities_for(self._focused_dock_traces(), session)
-        return local_card_cardinalities(identities, schema)
 
     def refresh_and_apply_for_focused_dock(
             self, *, card_override: FilterCardConfig | None = None) -> None:
@@ -437,8 +426,8 @@ class FilterRoutingHandler:
 
     def toggle_data_pool_filter(self, enabled: bool) -> None:
         """Switches the Data Pool tree's own filter on or off (DataPoolPanel
-        reads the active selection directly -- the rebuild just asks it to
-        redraw); does not change what the Filter panel's facets offer."""
+        reads the active selection directly -- this just asks it to
+        re-apply visibility); does not change what the Filter panel's facets offer."""
         context = self.app_context
         self.refresh_filter_panel()
         self.refresh_data_pool_filter()
@@ -475,7 +464,7 @@ class FilterRoutingHandler:
         Configure Filters: which columns sit on the card you are standing on
        . It configures the active
         profile's card, not the app-wide schema -- Global and Local can carry
-        different columns. `usable_as_filter` still decides what the dialog is
+        different columns. `is_active` still decides what the dialog is
         allowed to list (Metadata and Filter Settings' job), and still feeds the
         batch resolver; this only moves what "on the card" means into the project's
         own `filter_cards`. The dialog also needs the project itself (not just the
@@ -494,26 +483,16 @@ class FilterRoutingHandler:
 
         profile_id = panel.active_profile_id()
 
-        # A Local card offers only what the focused dock draws, so its counts and
-        # "cannot narrow" verdicts are read off that dock's traces, not the pool
-        #. A never-configured card of either scope resolves the same way
-        # now -- `Channel` plus the user's Default pins, no block-kind derivation
-        # and no growing.
-        schema_cardinalities = builtin_cardinalities = None
-        if panel.active_profile_scope() != "global":
-            schema_cardinalities, builtin_cardinalities = self._local_card_cardinalities(
-                session, schema
-            )
-        else:
-            # A Global card keeps the pool-wide schema-field read, but its Calculated
-            # columns count the graph cards plus the Result Pool, not result sets
-            # alone -- the same universe refresh_filter_panel offers
-            # values from, so a "(0)" here means the column really would narrow
-            # nothing.
-            open_dock_identities = _identities_for(self._open_dock_traces(), session)
-            builtin_cardinalities = builtin_column_cardinalities_for_global(
-                session.project, open_dock_identities
-            )
+        # The counts come from the same resolver inputs as the facets, so a "(N)"
+        # cannot drift from the checkboxes it describes.
+        scope = "local" if panel.active_profile_scope() != "global" else "global"
+        cardinalities = resolve_card_cardinalities(
+            scope, schema,
+            project=session.project,
+            pool_sources=all_pool_sources(session.project),
+            focused_identities=_identities_for(self._focused_dock_traces(), session),
+            open_dock_identities=_identities_for(self._open_dock_traces(), session),
+        )
         card = resolve_card(session, profile_id, schema)
 
         # Auto apply (§1.37): while the dialog is open, each edit is previewed on the
@@ -525,11 +504,10 @@ class FilterRoutingHandler:
             self.refresh_and_apply_for_focused_dock(card_override=working_card)
 
         dialog = FilterFieldSelectionDialog(
-            schema, session.project, self.parent_widget,
+            schema, self.parent_widget,
             settings=getattr(context, "settings", None),
             card=card,
-            schema_cardinalities=schema_cardinalities,
-            builtin_cardinalities=builtin_cardinalities,
+            cardinalities=cardinalities,
             on_live_change=_preview_card,
         )
         try:

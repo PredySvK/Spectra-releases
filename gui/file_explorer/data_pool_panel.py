@@ -11,10 +11,10 @@ files are added to it deliberately, they stay until they are removed, and they
 may come from several folders at once.
 
 Three levels, top to bottom: the test setup a measurement belongs to, the
-measurement itself, and its channels. Only the setup level is new -- the
-channel rows carry exactly the payload they always did, which is why the drag
-and drop into graphs, the multi-select behaviour and the unit-fix menu came
-across unchanged.
+measurement itself, and its channels. What the rows are -- their text,
+tooltip and marker -- is decided by the Qt-free Data Pool tree model
+(view_models.data_pool, ADR §1.196); this panel only draws its nodes, and
+every row carries the node it was drawn from.
 
 All internal documentation strings and variable labels are standardly written
 in English.
@@ -40,26 +40,21 @@ from gui.file_explorer.actions.edit_unit import (
     execute_bulk_fix_unit,
     execute_selected_fix_unit,
 )
-from core.units import strip_channel_name_prefix
 from core.channel_drop import build_drop_descriptor
-from core.models import is_time_response, resolve_channel_block_kind
-from core.block_kinds import KIND_ORDER_CUT, KIND_TIME_RESPONSE
 from io_modules.measurement_files import canonical_path
-from view_models.data_pool import UNASSIGNED_SETUP, group_by_setup
+from view_models.data_pool import (
+    MARKER_MISSING,
+    MARKER_UNASSIGNED,
+    MARKER_UNREADABLE,
+    NODE_CHANNEL,
+    NODE_MEASUREMENT,
+    NODE_UNREADABLE_FILE,
+    PoolTree,
+    PoolTreeNode,
+    build_pool_tree,
+    resolve_pool_tree_visibility,
+)
 from gui.appearance import APP_TOKENS
-
-
-# Marks a tree row as a setup heading. A 2-tuple on purpose: every consumer of
-# a channel row's payload already tests for a tuple of at least three, so a
-# heading can never be mistaken for something draggable.
-SETUP_ROLE = "__setup__"
-# Marks a workbook sheet heading between a measurement and its channels (#639),
-# a 2-tuple for the same reason.
-SHEET_ROLE = "__sheet__"
-# Marks a folder heading that holds only Unreadable files, and one such file
-# under it. Both are 2-tuples, so neither can be taken for a draggable channel.
-UNREADABLE_FOLDER_ROLE = "__unreadable_folder__"
-UNREADABLE_FILE_ROLE = "__unreadable_file__"
 
 
 class ProtectedTreeWidget(QTreeWidget):
@@ -125,8 +120,8 @@ class ProtectedTreeWidget(QTreeWidget):
 
         self.explorer_parent.data_pool.add_paths(paths)
 
-    def _missing_paths(self) -> set:
-        return getattr(self.explorer_parent, "missing_paths", set())
+    def _missing_paths(self) -> frozenset:
+        return self.app_context.pool.missing_paths
 
     def mimeData(self, items):
         """The drag payload for the selected rows; Qt calls this to start every drag."""
@@ -168,16 +163,16 @@ class ProtectedTreeWidget(QTreeWidget):
         skipped = 0
         unreadable = 0
         for item in items_to_process:
-            user_data = item.data(0, Qt.ItemDataRole.UserRole)
-            if not _is_channel_payload(user_data):
+            node = _node(item)
+            if node.kind != NODE_CHANNEL:
                 continue
-            if canonical_path(user_data[0].file_path) in missing:
+            if canonical_path(node.run.file_path) in missing:
                 skipped += 1
                 continue
-            if resolve_channel_block_kind(user_data[1]) not in (KIND_TIME_RESPONSE, KIND_ORDER_CUT):
+            if node.marker == MARKER_UNREADABLE:
                 unreadable += 1
                 continue
-            validated_channels_data.append(user_data)
+            validated_channels_data.append(_channel_triple(node))
 
         if skipped:
             self.app_context.log(
@@ -202,13 +197,14 @@ class ProtectedTreeWidget(QTreeWidget):
         self._multi_selection_cache = []
 
 
-def _is_channel_payload(user_data) -> bool:
-    return bool(user_data) and isinstance(user_data, tuple) and len(user_data) >= 3
+def _node(item) -> PoolTreeNode:
+    """The Data Pool tree node a row was drawn from; every row carries one."""
+    return item.data(0, Qt.ItemDataRole.UserRole)
 
 
-def _is_unreadable_folder(item) -> bool:
-    data = item.data(0, Qt.ItemDataRole.UserRole)
-    return isinstance(data, tuple) and len(data) == 2 and data[0] == UNREADABLE_FOLDER_ROLE
+def _channel_triple(node) -> tuple:
+    """(run, channel metadata, unique label): what tabs and the unit-fix actions take."""
+    return node.run, node.channel, node.unique_label
 
 
 def _channel_payload(items, missing_paths=None) -> list:
@@ -223,16 +219,46 @@ def _channel_payload(items, missing_paths=None) -> list:
     missing_paths = missing_paths or set()
     payload_list = []
     for item in items:
-        user_data = item.data(0, Qt.ItemDataRole.UserRole)
-        if not _is_channel_payload(user_data):
+        node = _node(item)
+        if node.kind != NODE_CHANNEL:
             continue
-        run_idx, ch_meta, _ = user_data
-        if canonical_path(run_idx.file_path) in missing_paths:
+        if canonical_path(node.run.file_path) in missing_paths:
             continue
-        if resolve_channel_block_kind(ch_meta) is None:
+        if node.marker == MARKER_UNREADABLE:
             continue
-        payload_list.append(build_drop_descriptor(run_idx, ch_meta))
+        payload_list.append(build_drop_descriptor(node.run, node.channel))
     return payload_list
+
+
+def _add_row(parent, node, expanded: set):
+    """Draws `node` and its children under `parent`, re-opening the open ones by key."""
+    item = QTreeWidgetItem(parent)
+    item.setText(0, node.text)
+    item.setData(0, Qt.ItemDataRole.UserRole, node)
+    if node.tooltip:
+        item.setToolTip(0, node.tooltip)
+    _style_row(item, node)
+    for child in node.children:
+        _add_row(item, child, expanded)
+    if node.key in expanded:
+        item.setExpanded(True)
+
+
+def _style_row(item, node):
+    """A marker kind as colour, strike-out and disabled dragging or selection."""
+    if node.marker == MARKER_MISSING:
+        item.setForeground(0, QBrush(QColor(APP_TOKENS.item_missing)))
+        font = item.font(0)
+        font.setStrikeOut(True)
+        item.setFont(0, font)
+    elif node.marker == MARKER_UNASSIGNED:
+        item.setForeground(0, QBrush(QColor(APP_TOKENS.text_muted)))
+    elif node.marker == MARKER_UNREADABLE:
+        item.setForeground(0, QBrush(QColor(APP_TOKENS.item_unreadable)))
+        if node.kind == NODE_UNREADABLE_FILE:
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsDragEnabled & ~Qt.ItemFlag.ItemIsSelectable)
+        elif node.kind == NODE_CHANNEL:
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsDragEnabled)
 
 
 def _live_items(items) -> list:
@@ -273,12 +299,8 @@ class DataPoolPanel(QWidget):
         # click here opens a tab, and this panel is built well before the thing
         # that owns tabs (#241).
         self.workspace = None
-
-        # Measurements the pool holds that are no longer on disk. Worked out
-        # once per rebuild and kept, because the drag and the double click
-        # both have to consult it and neither is a good moment to stat several
-        # hundred files.
-        self.missing_paths: set = set()
+        # The tree last drawn; search and Filter changes resolve against it.
+        self._pool_tree = PoolTree()
 
         self.init_ui()
 
@@ -315,7 +337,7 @@ class DataPoolPanel(QWidget):
         """
         expanded = self._expanded_keys()
         self.tree.clear()
-        self.missing_paths = set()
+        self._pool_tree = PoolTree()
 
         pool = self.app_context.pool
         unreadable_folders = [(directory, pool.unreadable_in(directory))
@@ -323,50 +345,33 @@ class DataPoolPanel(QWidget):
         if not pool.has_data() and not unreadable_folders:
             return
 
-        # One existence check per measurement, here, rather than per
-        # interaction: a file that vanished has to be visible as such before
-        # the user reaches for it, not only once they do.
-        for run_index in self.app_context.pool.loaded_runs:
-            if not os.path.isfile(run_index.file_path):
-                self.missing_paths.add(canonical_path(run_index.file_path))
-
-        by_path = self.app_context.project_session.source_location.entries_by_path
-        labels_in_order = self.app_context.project_session.project.setup_labels()
-        grouped = group_by_setup(
-            labels_in_order,
-            self.app_context.pool.loaded_runs,
-            by_path,
+        session = self.app_context.project_session
+        self._pool_tree = pool_tree = build_pool_tree(
+            setup_labels=session.project.setup_labels(),
+            runs=pool.loaded_runs,
+            entries_by_path=session.source_location.entries_by_path,
+            unreadable_by_folder=unreadable_folders,
+            # The pool remembers which are missing; its background check is the
+            # only thing that asks the disk.
+            missing_paths=pool.missing_paths,
         )
+        for node in pool_tree.roots:
+            _add_row(self.tree, node, expanded)
 
-        for setup_label, runs in grouped.items():
-            setup_item = QTreeWidgetItem(self.tree)
-            setup_item.setText(0, f"🧪 {setup_label}  ({len(runs)})")
-            setup_item.setData(0, Qt.ItemDataRole.UserRole, (SETUP_ROLE, setup_label))
-            if setup_label == UNASSIGNED_SETUP:
-                setup_item.setForeground(0, QBrush(QColor(APP_TOKENS.text_muted)))
-            if ("setup", setup_label) in expanded:
-                setup_item.setExpanded(True)
-
-            for run_index in runs:
-                self._add_run_node(setup_item, run_index, setup_label, expanded)
-
-        for directory, files in unreadable_folders:
-            self._add_unreadable_folder_node(directory, files, expanded)
-
-        self._apply_visibility()
+        self.apply_visibility()
 
     # ---- searching and filtering --------------------------------------
 
     def _apply_search(self, _text: str = ""):
-        """Slot for the search box; the text is read back in _apply_visibility."""
-        self._apply_visibility()
+        """Slot for the search box; the text is read back in apply_visibility."""
+        self.apply_visibility()
 
     def _facet_filter(self):
         """
         What the Filter panel currently lets through, or None when it is not
         filtering the pool.
 
-        Read here, on every rebuild, rather than pushed in when the user
+        Read here, on every visibility pass, rather than pushed in when the user
         touches a checkbox: a folder added while the filter is on has to come
         in already filtered, and pulling the state at draw time is the only
         version of that which cannot be forgotten at one of the call sites.
@@ -388,250 +393,64 @@ class DataPoolPanel(QWidget):
             selected_identity_values=query.identity_values,
         )
 
-    def _apply_visibility(self):
+    def apply_visibility(self):
         """
-        Hides everything the search text and the filter panel do not reach.
+        Hides the rows the search text and the Filter panel do not reach, and
+        opens the ones a hit is hidden inside, without rebuilding the tree.
 
-        Rows are hidden rather than left out of the rebuild, because both are
+        What to hide is the model's decision (resolve_pool_tree_visibility);
+        rows are hidden rather than left out of the rebuild, because both are
         views of the pool and not changes to it -- clearing the box or the
         filter has to bring everything straight back, and the payload the
         graphs read must not depend on either.
-
-        A measurement matches the search on its own name or on any of its
-        channels, and a setup on any of its measurements: searching for a
-        channel should find the measurement it is in, not an empty heading.
-        The two narrow independently, so a row has to survive both.
         """
-        needle = self.search_box.text().strip().lower()
-        allowed = self._facet_filter()
+        visibility = resolve_pool_tree_visibility(
+            self._pool_tree, self.search_box.text(), self._facet_filter())
+        for item in self._rows():
+            key = _node(item).key
+            item.setHidden(key in visibility.hidden)
+            if key in visibility.expanded:
+                item.setExpanded(True)
 
-        for i in range(self.tree.topLevelItemCount()):
-            setup_item = self.tree.topLevelItem(i)
-            if _is_unreadable_folder(setup_item):
-                # Information only: the search narrows it, the facet filter (which
-                # speaks about measurements) does not.
-                rows = [setup_item.child(j) for j in range(setup_item.childCount())]
-                folder_matches = not needle or needle in setup_item.text(0).lower()
-                for row in rows:
-                    row.setHidden(not (folder_matches or needle in row.text(0).lower()))
-                setup_item.setHidden(not any(not row.isHidden() for row in rows))
-                continue
-            setup_matches = not needle or needle in setup_item.text(0).lower()
-            any_run_visible = False
-
-            for j in range(setup_item.childCount()):
-                run_item = setup_item.child(j)
-                run_index = run_item.data(0, Qt.ItemDataRole.UserRole)
-                allowed_labels = None if allowed is None else allowed.get(run_index.file_path)
-
-                if allowed is not None and allowed_labels is None:
-                    run_item.setHidden(True)
-                    continue
-
-                run_matches = setup_matches or needle in run_item.text(0).lower()
-                any_channel_visible = False
-
-                def show_channel(channel_item, parent_matches):
-                    passes_filter = (
-                        allowed_labels is None
-                        or channel_item.data(0, Qt.ItemDataRole.UserRole)[2] in allowed_labels
-                    )
-                    visible = passes_filter and (parent_matches or needle in channel_item.text(0).lower())
-                    channel_item.setHidden(not visible)
-                    return visible
-
-                for k in range(run_item.childCount()):
-                    child = run_item.child(k)
-                    if _is_channel_payload(child.data(0, Qt.ItemDataRole.UserRole)):
-                        visible = show_channel(child, run_matches)
-                    else:
-                        # A sheet heading: it matches like a measurement does (#639).
-                        sheet_matches = run_matches or needle in child.text(0).lower()
-                        visible = False
-                        for m in range(child.childCount()):
-                            visible = show_channel(child.child(m), sheet_matches) or visible
-                        child.setHidden(not visible)
-                        if (needle or allowed is not None) and visible and not sheet_matches:
-                            child.setExpanded(True)
-                    any_channel_visible = any_channel_visible or visible
-
-                run_visible = any_channel_visible or (run_matches and not run_item.childCount())
-                run_item.setHidden(not run_visible)
-                any_run_visible = any_run_visible or run_visible
-
-                # A hit on a channel is only useful if it can be seen.
-                if (needle or allowed is not None) and any_channel_visible and not run_matches:
-                    run_item.setExpanded(True)
-
-            setup_item.setHidden(not any_run_visible)
-            if (needle or allowed is not None) and any_run_visible and not setup_matches:
-                setup_item.setExpanded(True)
-
-    def _add_unreadable_folder_node(self, directory, files, expanded):
-        """A grey folder heading with one row per file the last scan could not read."""
-        folder_item = QTreeWidgetItem(self.tree)
-        folder_name = os.path.basename(os.path.normpath(directory)) or directory
-        folder_item.setText(0, f"📁 {folder_name}  ({len(files)} unreadable)")
-        folder_item.setData(0, Qt.ItemDataRole.UserRole, (UNREADABLE_FOLDER_ROLE, directory))
-        folder_item.setForeground(0, QBrush(QColor(APP_TOKENS.item_unreadable)))
-        folder_item.setToolTip(0, f"{directory}\n\nFiles in this folder that could not be read.")
-        if ("unreadable", directory) in expanded:
-            folder_item.setExpanded(True)
-
-        for unreadable in files:
-            file_item = QTreeWidgetItem(folder_item)
-            file_item.setText(0, f"✖ {os.path.basename(unreadable.path)}")
-            file_item.setData(0, Qt.ItemDataRole.UserRole, (UNREADABLE_FILE_ROLE, unreadable))
-            file_item.setForeground(0, QBrush(QColor(APP_TOKENS.item_unreadable)))
-            file_item.setToolTip(0, f"Could not be read:\n{unreadable.path}\n\n{unreadable.reason}\n\n"
-                                    f"It is tried again on the next scan of this folder.")
-            file_item.setFlags(file_item.flags()
-                               & ~Qt.ItemFlag.ItemIsDragEnabled & ~Qt.ItemFlag.ItemIsSelectable)
-
-    def _add_run_node(self, setup_item, run_index, setup_label, expanded):
-        file_item = QTreeWidgetItem(setup_item)
-        is_missing = canonical_path(run_index.file_path) in self.missing_paths
-
-        file_item.setText(0, f"⚠ {run_index.file_name}" if is_missing else run_index.file_name)
-        file_item.setData(0, Qt.ItemDataRole.UserRole, run_index)
-
-        if is_missing:  # the project still lists it, but it is not on disk any more
-            file_item.setForeground(0, QBrush(QColor(APP_TOKENS.item_missing)))
-            font = file_item.font(0)
-            font.setStrikeOut(True)
-            file_item.setFont(0, font)
-            file_item.setToolTip(
-                0,
-                f"Not found on disk:\n{run_index.file_path}\n\n"
-                f"Right-click to locate it. Its metadata and results are still in the project.",
-            )
-
-        elif run_index.lost_parts:  # a Partially read measurement: the healthy channels stay usable
-            file_item.setText(0, f"◐ {run_index.file_name}")
-            lost = "\n".join(
-                f"  {part.describe()}" for part in run_index.lost_parts)
-            file_item.setToolTip(
-                0,
-                f"Incomplete: part of this file could not be read.\n{lost}\n\n"
-                "The channels shown are complete and can be used.",
-            )
-
-        if (setup_label, run_index.file_name) in expanded:
-            file_item.setExpanded(True)
-
-        sheet_items = {}
-        for unique_label, channel_meta in run_index.available_channels.items():
-            # A workbook read sheet by sheet groups its channels under each sheet (#639).
-            sheet = getattr(channel_meta, "sheet", None)
-            parent = file_item
-            if sheet:
-                parent = sheet_items.get(sheet)
-                if parent is None:
-                    parent = sheet_items[sheet] = QTreeWidgetItem(file_item)
-                    parent.setText(0, f"📄 {sheet}")
-                    parent.setData(0, Qt.ItemDataRole.UserRole, (SHEET_ROLE, sheet))
-                    if (setup_label, run_index.file_name, sheet) in expanded:
-                        parent.setExpanded(True)
-            channel_item = QTreeWidgetItem(parent)
-
-            icon_prefix = "📊"
-            if channel_meta.type == "tacho":
-                icon_prefix = "🔄"
-            elif channel_meta.type == "voltage":
-                icon_prefix = "⚡"
-            elif channel_meta.type == "microphone":
-                icon_prefix = "🔊"
-            elif channel_meta.type == "general_dynamic":
-                icon_prefix = "📐"
-
-            display_name = strip_channel_name_prefix(channel_meta.name)
-            display_unit = channel_meta.unit if channel_meta.unit else "unassigned"
-
-            channel_item.setText(0, f"{icon_prefix} {display_name} [{display_unit}]")
-            channel_item.setData(0, Qt.ItemDataRole.UserRole, (run_index, channel_meta, unique_label))
-
-            # A non-time-response UNV dataset (func_type != 1) is listed so the
-            # file's contents stay visible, but no reader can turn it into a
-            # waveform -- mark it rather than let a drop fail from inside a plot.
-            if resolve_channel_block_kind(channel_meta) == KIND_ORDER_CUT:
-                channel_item.setToolTip(0, "Imported result. Drag or double-click to open in Order Tracking.")
-            elif not is_time_response(channel_meta.func_type):
-                channel_item.setFlags(channel_item.flags() & ~Qt.ItemFlag.ItemIsDragEnabled)
-                channel_item.setForeground(0, QBrush(QColor(APP_TOKENS.item_unreadable)))
-                channel_item.setToolTip(
-                    0,
-                    "Not a time-domain waveform (UNV func_type != 1, e.g. a spectrum "
-                    "or cross-spectrum). Listed so you can see the file contains it, "
-                    "but it cannot be dropped onto a plot.",
-                )
+    def _rows(self):
+        """Every row of the tree, parents before their children."""
+        pending = [self.tree.topLevelItem(i) for i in range(self.tree.topLevelItemCount())]
+        while pending:
+            item = pending.pop()
+            yield item
+            pending.extend(item.child(j) for j in range(item.childCount()))
 
     def _expanded_keys(self) -> set:
-        """Which setups and measurements are currently open, by name."""
-        keys = set()
-        for i in range(self.tree.topLevelItemCount()):
-            setup_item = self.tree.topLevelItem(i)
-            data = setup_item.data(0, Qt.ItemDataRole.UserRole)
-            label = data[1] if isinstance(data, tuple) and len(data) == 2 else setup_item.text(0)
-
-            if _is_unreadable_folder(setup_item):
-                if setup_item.isExpanded():
-                    keys.add(("unreadable", label))
-                continue
-            if setup_item.isExpanded():
-                keys.add(("setup", label))
-            for j in range(setup_item.childCount()):
-                run_item = setup_item.child(j)
-                if run_item.isExpanded():
-                    # Key by the run's file_name, not the row text: a missing
-                    # measurement's row carries a "⚠ " prefix that _add_run_node
-                    # strips when it looks the key back up, so it never re-opened
-                    # (finding 4.3).
-                    run_data = run_item.data(0, Qt.ItemDataRole.UserRole)
-                    name = run_data.file_name if run_data is not None else run_item.text(0)
-                    keys.add((label, name))
-                    for k in range(run_item.childCount()):
-                        sheet_data = run_item.child(k).data(0, Qt.ItemDataRole.UserRole)
-                        if (isinstance(sheet_data, tuple) and sheet_data[0] == SHEET_ROLE
-                                and run_item.child(k).isExpanded()):
-                            keys.add((label, name, sheet_data[1]))
-        return keys
+        """The expansion keys of the nodes currently open."""
+        return {_node(item).key for item in self._rows() if item.isExpanded()}
 
     # ---- context menu -------------------------------------------------
 
     def slot_show_context_menu(self, position: QPoint):
-        selected_items = self.tree.selectedItems()
-        channel_items = []
-        run_items = []
+        # Nodes, not items: a rebuild during the menu or a dialog deletes the
+        # items, and the actions used to read them back afterwards (finding 4.2).
+        selected = [_node(item) for item in self.tree.selectedItems()]
+        channels = [node for node in selected if node.kind == NODE_CHANNEL]
+        measurements = [node for node in selected if node.kind == NODE_MEASUREMENT]
 
-        for item in selected_items:
-            data = item.data(0, Qt.ItemDataRole.UserRole)
-            if _is_channel_payload(data):
-                channel_items.append(item)
-            elif data is not None and not isinstance(data, tuple):
-                run_items.append(item)
+        if channels:
+            self._show_channel_menu(position, channels)
+        elif measurements:
+            self._show_run_menu(position, [node.run for node in measurements])
 
-        if channel_items:
-            self._show_channel_menu(position, channel_items)
-        elif run_items:
-            self._show_run_menu(position, run_items)
-
-    def _show_channel_menu(self, position: QPoint, channel_items: list):
+    def _show_channel_menu(self, position: QPoint, channels: list):
         menu = QMenu(self)
 
-        if len(channel_items) > 1:
-            # Pulled before menu.exec: a rebuild during the menu or the unit
-            # dialog deletes these items, and execute_selected_fix_unit used to
-            # read them back afterwards (finding 4.2).
-            payloads = [item.data(0, Qt.ItemDataRole.UserRole) for item in channel_items]
-            fix_selected_action = menu.addAction(f"🔧 Fix Unit for all {len(channel_items)} selected channels...")
+        if len(channels) > 1:
+            payloads = [_channel_triple(node) for node in channels]
+            fix_selected_action = menu.addAction(f"🔧 Fix Unit for all {len(channels)} selected channels...")
             selected_action = menu.exec(self.tree.mapToGlobal(position))
 
             if selected_action == fix_selected_action:
                 execute_selected_fix_unit(self.app_context, self, payloads)
             return
 
-        target_item = channel_items[0]
-        run_index, channel_meta, _ = target_item.data(0, Qt.ItemDataRole.UserRole)
+        run_index, channel_meta = channels[0].run, channels[0].channel
 
         fix_action = menu.addAction("🔧 Fix Unit (This Channel Only)...")
         bulk_label = f"📦 Fix Unit for all {channel_meta.type}s in this file..."
@@ -647,12 +466,11 @@ class DataPoolPanel(QWidget):
         elif selected_action == bulk_action:
             execute_bulk_fix_unit(self.app_context, self, run_index, channel_meta.type, channel_meta.unit)
 
-    def _show_run_menu(self, position: QPoint, run_items: list):
+    def _show_run_menu(self, position: QPoint, runs: list):
         from gui.file_explorer.actions.assign_test_setup import execute_assign_test_setup
         from gui.file_explorer.actions.locate_missing_file import execute_locate_missing_file
 
-        runs = [item.data(0, Qt.ItemDataRole.UserRole) for item in run_items]
-        missing = [run for run in runs if canonical_path(run.file_path) in self.missing_paths]
+        missing = [run for run in runs if self.app_context.pool.is_missing(run.file_path)]
 
         menu = QMenu(self)
         locate_action = None

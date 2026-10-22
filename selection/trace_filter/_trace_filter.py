@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from typing import (
-    TYPE_CHECKING, Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Set, Tuple,
+    TYPE_CHECKING, Any, Callable, Dict, FrozenSet, Iterable, List, Mapping, Optional, Set, Tuple,
 )
 
 from core.filter_card_config import (
@@ -40,7 +40,6 @@ from selection.source_facets import (
 )
 from selection.parameter_sets import (
     ParameterSet, build_parameter_sets, orders_equal, parameter_set_for_signature,
-    signature_value_matches,
     parameter_sets_from_traces, signature_matches_any, signatures_match,
 )
 
@@ -99,9 +98,9 @@ class TraceIdentity:
     # The channel's position in its file; tells apart two channels of one file
     # that share a name. None when the curve does not say (#428).
     channel_index: Optional[int] = None
-    # Settings the parameter signature does not carry (order width, rpm step,
-    # DC removal), as the block recorded them. Empty when it recorded none (#428).
-    computation: Mapping[str, Any] = field(default_factory=dict)
+    # The curve recipe the curve's block was stamped with (core.curve_recipe),
+    # None for a curve computed without one (#812).
+    curve_recipe: Optional[Mapping[str, Any]] = None
 
 
 def identities_match(left: TraceIdentity, right: TraceIdentity) -> bool:
@@ -130,12 +129,10 @@ def identities_match(left: TraceIdentity, right: TraceIdentity) -> bool:
         return False
     if not signatures_match(left.parameter_signature, right.parameter_signature):
         return False
-    # Only settings both sides state are compared: a curve from a cache written
-    # before they were recorded cannot be judged on them.
-    return all(
-        signature_value_matches(value, right.computation[key])
-        for key, value in left.computation.items() if key in right.computation
-    )
+    # The signature is the recipe without the order, so it already said
+    # whether the two were computed alike -- when both have a recipe. A curve
+    # without one cannot say what it was computed with (#812).
+    return left.curve_recipe is not None and right.curve_recipe is not None
 
 
 def format_result_kind(kind: str) -> str:
@@ -534,8 +531,9 @@ def _read_metadata_field(identity: TraceIdentity, key: str,
     when the trace has no source or the source has no value for the field."""
     if identity.source is None:
         return None
-    return curve_field_value(identity.source, schema, key, identity.channel_identity,
-                             identity.channel_index)
+    value = curve_field_value(identity.source, schema, key, identity.channel_identity,
+                              identity.channel_index)
+    return None if value in (None, "") else str(value)
 
 
 def _identity_columns_facet() -> Facet:

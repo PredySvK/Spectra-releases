@@ -3,7 +3,6 @@ from core.workflow_graph import Workflow, with_block_replaced
 from signal_processing.workflow import (
     BLOCKS, build_workflow_with_wire, build_workflow_without_wire, resolve_wire_refusal,
 )
-from ._workflow_canvas import build_pinned_workflow
 
 
 def resolve_wire_connect(
@@ -27,7 +26,7 @@ def resolve_wire_connect(
                       if name != port_name})
     if edited.wires == workflow.wires and edited.blocks == workflow.blocks:
         return workflow, ""
-    return build_pinned_workflow(workflow, edited), ""
+    return edited, ""
 
 
 def resolve_wire_targets(workflow: Workflow, source_id: str) -> dict[tuple[str, str], str]:
@@ -45,7 +44,4 @@ def resolve_wire_disconnect(
     """Remove the wire feeding one input, however it names the port."""
     if target_id not in workflow.block_ids:
         return workflow
-    edited = build_workflow_without_wire(workflow, target_id, port_name)
-    if edited is workflow:
-        return workflow
-    return build_pinned_workflow(workflow, edited)
+    return build_workflow_without_wire(workflow, target_id, port_name)

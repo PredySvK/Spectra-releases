@@ -34,30 +34,21 @@ from PySide6.QtWidgets import (
 from core.evaluation import EvaluationConfig, EvaluationTable
 from core.units import UnitPreferences
 from view_models.evaluation import (
-    COLUMNS, has_spectra, parse_orders_text, rows_for_table, table_headers, to_clipboard_string, to_csv_string,
+    COLUMNS, build_xlsx_bytes, has_spectra, parse_orders_text, rows_for_table, table_headers,
+    to_clipboard_string, to_csv_string, to_xlsx_bytes,
 )
 from gui.dialogs.evaluation_column_selection_dialog import EvaluationColumnSelectionDialog
 from gui.workspace.evaluation_adapter import curves_for_evaluation
 from orchestration.dock_tasks import PURPOSE_EVALUATION
-from signal_processing.evaluation.dominant_orders_eval import (
-    DEFAULT_MIN_ORDER_DISTANCE, DEFAULT_ORDER_MAX, DEFAULT_ORDER_MIN, DEFAULT_ORDER_RESOLUTION,
-    DEFAULT_N as DEFAULT_DOMINANT_N,
+from signal_processing.evaluation import (
+    DEFAULT_DOMINANT_N, DEFAULT_MIN_ORDER_DISTANCE, DEFAULT_MIN_PROMINENCE_DB, DEFAULT_N, DEFAULT_ORDER_MAX,
+    DEFAULT_ORDER_MIN, DEFAULT_ORDER_RESOLUTION, DEFAULT_ORDER_WIDTH, EVALUATIONS, evaluate,
 )
-from signal_processing.evaluation.registry import EVALUATIONS
-from signal_processing.evaluation.runner import evaluate
-from signal_processing.evaluation.topn_eval import DEFAULT_MIN_PROMINENCE_DB, DEFAULT_N
-from signal_processing.evaluation.typed_orders_eval import DEFAULT_ORDER_WIDTH
 from gui.appearance import APP_TOKENS
 
 
 _NO_DOCK_MESSAGE = "No graph is open."
 _UNSUPPORTED_MESSAGE = "This dock has no curves Evaluation supports."
-
-
-def _normalize_sort_key(k: Any) -> Any:
-    if isinstance(k, (int, float)):
-        return (float(k),)
-    return k
 
 
 class EvaluationTableItem(QTableWidgetItem):
@@ -68,10 +59,19 @@ class EvaluationTableItem(QTableWidgetItem):
     In both ascending and descending sorts, dash rows and empty cells are always
     placed at the bottom of the table. Numeric values are compared by their float sort_key.
     """
-    def __init__(self, text: str, sort_key: Any = None, is_dash: bool = False):
+    def __init__(
+        self,
+        text: str,
+        sort_key: Any = None,
+        is_dash: bool = False,
+        raw_value: Any = None,
+        number_format: Optional[str] = None,
+    ):
         super().__init__(text)
         self.sort_key = sort_key
         self.is_dash = is_dash
+        self.raw_value = raw_value if raw_value is not None else sort_key
+        self.number_format = number_format
 
     def __lt__(self, other: QTableWidgetItem) -> bool:
         if not isinstance(other, EvaluationTableItem):
@@ -97,9 +97,7 @@ class EvaluationTableItem(QTableWidgetItem):
             try:
                 return self.sort_key < other.sort_key
             except TypeError:
-                if (isinstance(self.sort_key, (int, float, tuple))
-                        and isinstance(other.sort_key, (int, float, tuple))):
-                    return _normalize_sort_key(self.sort_key) < _normalize_sort_key(other.sort_key)
+                # A metadata column can hold numbers in some rows and text in others.
                 return str(self.sort_key) < str(other.sort_key)
         if self.sort_key is not None:
             return True
@@ -343,6 +341,13 @@ class EvaluationPanel(QWidget):
         self.btn_export_csv.clicked.connect(lambda: self.export_csv())
         header.addWidget(self.btn_export_csv)
 
+        self.btn_export_xlsx = QToolButton()
+        self.btn_export_xlsx.setObjectName("ExportXlsxButton")
+        self.btn_export_xlsx.setText("Export XLSX")
+        self.btn_export_xlsx.setToolTip("Export table to XLSX file with headers and formatting")
+        self.btn_export_xlsx.clicked.connect(lambda: self.export_xlsx())
+        header.addWidget(self.btn_export_xlsx)
+
         # Columns selection button (Issue #139)
         self.btn_columns = QToolButton()
         self.btn_columns.setText("Columns\u2026")
@@ -461,14 +466,19 @@ class EvaluationPanel(QWidget):
         self._mark_session_dirty()
         return new_cfg
 
+    def _merged_schema(self) -> dict:
+        """
+        The Data Pool's merged schema, not the one stored in the project: only
+        the merged one drops the Raw metadata fields no channel in the pool
+        carries (#764), so a column offered from the stored one could never
+        hold a value.
+        """
+        pool = getattr(self.app_context, "pool", None)
+        return pool.schema().master if pool is not None else {}
+
     def _open_columns_dialog(self) -> None:
         """Opens the evaluation column selection dialog and updates table view."""
-        session = getattr(self.app_context, "project_session", None)
-        schema = (
-            session.project.metadata_schema
-            if session is not None and hasattr(session, "project") and hasattr(session.project, "metadata_schema")
-            else {}
-        )
+        schema = self._merged_schema()
         settings = getattr(self.app_context, "settings", None)
         cfg = getattr(self._focused_dock, "evaluation_config", None) or EvaluationConfig()
         dlg = EvaluationColumnSelectionDialog(
@@ -709,12 +719,7 @@ class EvaluationPanel(QWidget):
         cfg = getattr(self._focused_dock, "evaluation_config", None)
         selected_cols = cfg.metadata_columns if cfg is not None else ()
 
-        session = getattr(self.app_context, "project_session", None)
-        schema = (
-            session.project.metadata_schema
-            if session is not None and hasattr(session, "project") and hasattr(session.project, "metadata_schema")
-            else {}
-        )
+        schema = self._merged_schema()
 
         headers, active_meta_cols = table_headers(table, selected_cols, schema, spec_format, amp_mode, prefs)
 
@@ -722,11 +727,19 @@ class EvaluationPanel(QWidget):
         self.table.setSortingEnabled(False)
         self.table.setColumnCount(len(headers))
         self.table.setHorizontalHeaderLabels(headers)
-        rows = rows_for_table(table, spec_format, amp_mode, prefs, active_meta_cols, schema)
+        rows = rows_for_table(table, spec_format, amp_mode, prefs, active_meta_cols)
         self.table.setRowCount(len(rows))
         for row_index, row_cells in enumerate(rows):
             for col_index, (text, s_key) in enumerate(zip(row_cells.texts, row_cells.sort_keys)):
-                item = EvaluationTableItem(text, sort_key=s_key, is_dash=row_cells.is_dash)
+                raw_val = row_cells.raw_values[col_index] if row_cells.raw_values is not None else None
+                fmt = row_cells.number_formats[col_index] if row_cells.number_formats is not None else None
+                item = EvaluationTableItem(
+                    text,
+                    sort_key=s_key,
+                    is_dash=row_cells.is_dash,
+                    raw_value=raw_val,
+                    number_format=fmt,
+                )
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 self.table.setItem(row_index, col_index, item)
 
@@ -796,6 +809,66 @@ class EvaluationPanel(QWidget):
             self.app_context.log(f"EVALUATION: Exported table to {file_path}")
         return file_path
 
+    def _export_xlsx_data(self, selected_only: bool = False) -> Tuple[List[str], List[List[Any]], List[List[Optional[str]]]]:
+        """Gathers headers + cell values and number formats from self.table."""
+        headers = [
+            self.table.horizontalHeaderItem(col).text()
+            if self.table.horizontalHeaderItem(col) is not None else ""
+            for col in range(self.table.columnCount())
+        ]
+        if selected_only:
+            rows = sorted(set(idx.row() for idx in self.table.selectedIndexes()))
+            if not rows:
+                rows = list(range(self.table.rowCount()))
+        else:
+            rows = list(range(self.table.rowCount()))
+        grid: List[List[Any]] = []
+        formats: List[List[Optional[str]]] = []
+        for r in rows:
+            row_vals: List[Any] = []
+            row_fmts: List[Optional[str]] = []
+            for c in range(self.table.columnCount()):
+                item = self.table.item(r, c)
+                if item is None or getattr(item, "is_dash", False):
+                    row_vals.append("—")
+                    row_fmts.append(None)
+                else:
+                    raw = getattr(item, "raw_value", None)
+                    if raw is not None and isinstance(raw, (int, float)):
+                        row_vals.append(raw)
+                    else:
+                        row_vals.append(item.text())
+                    row_fmts.append(getattr(item, "number_format", None))
+            grid.append(row_vals)
+            formats.append(row_fmts)
+        return headers, grid, formats
+
+    def export_xlsx(self, file_path: Optional[str] = None) -> Optional[str]:
+        """Exports the table to an XLSX file with headers and numeric formatting."""
+        if not file_path:
+            file_path, _ = QFileDialog.getSaveFileName(
+                self, "Export Evaluation Table to XLSX", "evaluation.xlsx", "Excel Files (*.xlsx);;All Files (*)"
+            )
+        if not file_path:
+            return None
+        headers, grid, formats = self._export_xlsx_data(selected_only=False)
+        try:
+            with open(file_path, "wb") as f:
+                f.write(build_xlsx_bytes(headers, grid, formats))
+        except OSError as error:
+            QMessageBox.warning(
+                self,
+                "Export Evaluation Table Failed",
+                f"Cannot write to '{file_path}':\n{error}\n\n"
+                "The file may be open in another application or the directory is not writable.",
+            )
+            if hasattr(self.app_context, "log"):
+                self.app_context.log(f"ERROR: Failed to export table to {file_path}: {error}")
+            return None
+        if hasattr(self.app_context, "log"):
+            self.app_context.log(f"EVALUATION: Exported table to {file_path}")
+        return file_path
+
     def _show_context_menu(self, pos) -> None:
         if self.table.rowCount() == 0:
             return
@@ -804,6 +877,8 @@ class EvaluationPanel(QWidget):
         act_copy.triggered.connect(self.copy_to_clipboard)
         act_csv = menu.addAction("Export CSV...")
         act_csv.triggered.connect(lambda: self.export_csv())
+        act_xlsx = menu.addAction("Export XLSX...")
+        act_xlsx.triggered.connect(lambda: self.export_xlsx())
         menu.exec(self.table.viewport().mapToGlobal(pos))
 
     # ---- help --------------------------------------------------------------

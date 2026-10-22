@@ -5,7 +5,7 @@ Architecture:
 - View-model floor (Floor 3): How should an evaluation table be shown, without Qt?
 - Table formatting and headers: rows_for_table, table_headers, active_metadata_columns,
   has_spectra, COLUMNS, RowCells.
-- Export formatting: to_clipboard_string, to_csv_string.
+- Export formatting: to_clipboard_string, to_csv_string, build_xlsx_bytes, to_xlsx_bytes.
 - Curve collection: curve_identities_for_traces turns already-selected traces
   into the (block, identity) pairs Evaluation runs over, without a dock.
   synthetic_trace_for_block wraps a single-block dock's content (a
@@ -25,11 +25,13 @@ from ._evaluation_table_view import (
     COLUMNS,
     RowCells,
     active_metadata_columns,
+    build_xlsx_bytes,
     has_spectra,
     rows_for_table,
     table_headers,
     to_clipboard_string,
     to_csv_string,
+    to_xlsx_bytes,
 )
 from ._orders import parse_orders_text
 
@@ -41,6 +43,7 @@ __all__ = [
     "curve_identities_for_traces",
     "build_column_descriptor",
     "build_schema_field_descriptor",
+    "build_xlsx_bytes",
     "has_spectra",
     "parse_orders_text",
     "rows_for_table",
@@ -48,4 +51,5 @@ __all__ = [
     "table_headers",
     "to_clipboard_string",
     "to_csv_string",
+    "to_xlsx_bytes",
 ]

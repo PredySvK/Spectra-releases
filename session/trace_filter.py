@@ -284,7 +284,7 @@ class FilterSelectionStore:
 
     def clear_selections(self) -> None:
         """Drop every checked state and offering/seen mark but keep each
-        card's scope -- the cards themselves outlive a project switch
+        card's scope -- the cards themselves outlive a project swap
         (FilterProfileRegistry.reset_to_builtins), their picks do not."""
         self._global.clear()
         self._local.clear()
@@ -585,7 +585,7 @@ class FilterProfileRegistry:
     def reset_to_builtins(self) -> None:
         """Back to the state FilterPanel.__init__ leaves: only the two builtins,
         nothing checked, the Local builtin active, no per-dock memory. Run on
-        every project switch before a saved state is restored (issue #372) --
+        every project swap before a saved state is restored (issue #372) --
         the cards and picks belong to the outgoing project, so a project with
         nothing saved must not inherit them. Leaves which dock has focus alone:
         that is the workspace's, not the project's."""

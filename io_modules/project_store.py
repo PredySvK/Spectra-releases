@@ -36,8 +36,9 @@ from core.project_model import (
     SourceEntry,
 )
 from io_modules.atomic_write import write_json_atomic
-from io_modules.measurement_files import canonical_path, discover_measurement_files, file_stamp
-from io_modules.scan_cache import scan_cache_basename
+from io_modules.measurement_files import (
+    canonical_path, discover_measurement_files, file_stamp, scan_cache_basename,
+)
 
 # Computed result sets live beside the project file, not inside it.
 CACHE_DIR_NAME = "cache"
@@ -50,6 +51,16 @@ SCAN_CACHE_DIR_NAME = "scan"
 # The Tab cache (curves of the open tabs, ADR §1.178) sits beside the scan
 # caches, in its own subfolder; neither is a result set.
 TAB_CACHE_DIR_NAME = "tabs"
+
+# The workbooks a project keeps beside its file, in its own folder:
+# the channel pairs (#511) and the project-wide Level 2 metadata sheet, the
+# primary source for run metadata of every data root in the project.
+PAIRING_FILE_NAME = "channel_pairing.xlsx"
+PROJECT_METADATA_EXCEL_NAME = "metadata.xlsx"
+PROJECT_WORKBOOK_NAMES = (PROJECT_METADATA_EXCEL_NAME, PAIRING_FILE_NAME)
+
+# Subfolders of the cache folder that are not result sets.
+_CACHE_SUBFOLDER_NAMES = frozenset({SCAN_CACHE_DIR_NAME, TAB_CACHE_DIR_NAME})
 
 # How long an Untitled scan cache file may sit in the shared temp area before a
 # startup sweep removes it.
@@ -125,6 +136,11 @@ def load_project(project_path: str) -> NVHProject:
 
 def project_folder(project_path: str) -> str:
     return os.path.dirname(os.path.abspath(project_path))
+
+
+def names_a_cache_subfolder(label: str) -> bool:
+    """Whether `label` is one of the cache folder's own subfolders, not a result set."""
+    return label.lower() in _CACHE_SUBFOLDER_NAMES
 
 
 def project_files_in(folder: str) -> List[str]:
@@ -225,6 +241,9 @@ def adopt_untitled_scan_caches(project_path: str, data_roots: Sequence[Union[Dat
     Only the caches for this project's data roots are taken: the temp area
     is shared and may hold caches for folders that belong to a different
     session.
+
+    Raises OSError naming the caches it could not move, after moving every
+    other one: losing one costs a re-read of its folder, never data (#775).
     """
     source_folder = untitled_scan_cache_folder()
     if not os.path.isdir(source_folder):
@@ -232,6 +251,7 @@ def adopt_untitled_scan_caches(project_path: str, data_roots: Sequence[Union[Dat
     target_folder = scan_cache_folder(project_path)
     os.makedirs(target_folder, exist_ok=True)
     adopted: List[str] = []
+    failed: List[str] = []
     for root in data_roots:
         if isinstance(root, str):
             resolved = os.path.abspath(root) if os.path.isabs(root) else (
@@ -251,7 +271,11 @@ def adopt_untitled_scan_caches(project_path: str, data_roots: Sequence[Union[Dat
             os.remove(source)
             adopted.append(name)
         except OSError:
-            pass
+            failed.append(name)
+    if failed:
+        raise OSError(
+            f"Scan cache not carried into the project folder ({', '.join(failed)}); "
+            "the next scan re-reads those folders.")
     return adopted
 
 
@@ -404,24 +428,11 @@ def read_file_listing(directory: str) -> Dict[str, Optional[dict]]:
     return {path: file_stamp(path) for path in discover_measurement_files(directory)}
 
 
-def index_root(project: NVHProject, project_path: Optional[str], root: DataRoot) -> IndexReport:
-    """
-    Brings the project's source list in line with what is actually in a folder.
-
-    Reads the folder from disk; index_root_listing() does the matching.
-    """
-    directory = resolve_root(project_path, root)
-    if directory is None:
-        # Nothing to compare against: report every known source as missing
-        # rather than guessing, so the caller can prompt for the folder.
-        return IndexReport(missing=[s for s in project.sources if s.root_id == root.id])
-    return index_root_listing(project, root, directory, read_file_listing(directory))
-
-
 def index_root_listing(project: NVHProject, root: DataRoot, directory: str,
                        file_listing: Mapping[str, Optional[dict]]) -> IndexReport:
     """
-    index_root() over a listing of `directory` already read from disk.
+    Brings the project's source list in line with what is actually in a folder,
+    from a listing of `directory` already read from disk (read_file_listing).
 
     Matching runs in two passes. Path first, which handles every ordinary case.
     Then, for files that no path matched, size and modification time are used to
@@ -485,8 +496,3 @@ def index_root_listing(project: NVHProject, root: DataRoot, directory: str,
 
     report.missing = orphans
     return report
-
-
-def index_all_roots(project: NVHProject, project_path: Optional[str]) -> Dict[str, IndexReport]:
-    """Runs index_root over every root; returns one report per root id."""
-    return {root.id: index_root(project, project_path, root) for root in project.data_roots}

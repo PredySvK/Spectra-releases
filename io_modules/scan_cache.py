@@ -6,26 +6,28 @@ and writing of the JSON file that survives between sessions.
 extensions count, how a path is keyed, what a file's cheap identity is.
 """
 
-import hashlib
 import json
 import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 from core.models import ChannelMetadata, LostPart, MeasurementRunIndex, UnreadableFile
+from core.project_model import DataRoot
 from io_modules.measurement_files import (
     canonical_path,
     discover_measurement_files,
     file_stamp,
     open_measurement_reader,
+    scan_cache_basename,
 )
 from io_modules.metadata_parser import AccMetadataParser, build_normalized_lookup, normalize_file_key
 from io_modules.metadata_schema import generate_baseline_schema_master, resolve_excel_metadata_for_files
+from io_modules.project_store import DirectoryIndex, read_root_directories
 
 
-# Cap on parallel header parses in scan_directory. Measured 2026-09-03 on a
+# Cap on parallel header parses in read_pool_folder. Measured 2026-09-03 on a
 # real 131 MB / 17-channel UNV: 1/2/5 workers = 156/305/749 MB peak and
 # 0.84/1.66/4.11 s -- memory grows ~150 MB/worker and time grows linearly too
 # (the GIL keeps pyuff serialised, so there is no throughput gain). The unbounded
@@ -48,28 +50,13 @@ _SCAN_PARSE_MAX_WORKERS = 4
 # 7: A run remembers the datasets it could not read (#722).
 # 8: An ANSYS CSV remembers the rows it dropped (#723).
 # 9: A MASTA channel remembers its lost rows; a gap inside a column is one (§1.177).
-WORKSPACE_CACHE_FORMAT_VERSION = 9
+# 10: The cached schema only ever gained fields, so an older one still lists Raw
+#     metadata fields no channel carries (#764).
+WORKSPACE_CACHE_FORMAT_VERSION = 10
 
-
-def scan_cache_basename(directory_path: str) -> str:
-    """
-    File name for a folder's scan cache when it lives in a shared cache folder
-    (a project's cache/scan/, or the Untitled temp area) rather than beside the
-    data.
-
-    The folder's own basename is kept for readability ("setup1-a1b2c3d4.json");
-    the short canonical-path hash keeps two roots with the same basename from
-    colliding in one cache folder. Both halves are derived from canonical_path,
-    so the same folder spelled with either separator or any case resolves to
-    exactly one cache file -- the label is lower-cased as a side effect, which
-    is a fair price for that guarantee.
-    """
-    canonical = canonical_path(directory_path)
-    digest = hashlib.sha1(canonical.encode("utf-8")).hexdigest()[:8]
-    raw_base = os.path.basename(canonical.rstrip("/\\")) or "folder"
-    safe_base = "".join(c if c.isalnum() or c in "-_" else "_" for c in raw_base)[:40]
-    return f"{safe_base}-{digest}.json"
-
+# The scan cache's name when it is written beside the data -- only when no
+# cache folder is passed, which production never does.
+WORKSPACE_CACHE_FILE_NAME = ".nvh_workspace_cache.json"
 
 
 def _stamps_match(cached: Optional[dict], current: Optional[dict]) -> bool:
@@ -79,9 +66,8 @@ def _stamps_match(cached: Optional[dict], current: Optional[dict]) -> bool:
             and cached.get("size") == current.get("size"))
 
 
-
 @dataclass
-class CacheLoadResult:
+class _CacheLoadResult:
     """
     What survived a cache read.
 
@@ -102,428 +88,446 @@ class CacheLoadResult:
     problem: Optional[str] = None
 
 
-@dataclass(frozen=True)
-class FolderScan:
+class ScannedDirectory(NamedTuple):
     """
-    What one scan of a folder found.
+    What one scan of a Data Pool folder found, handed from the worker to the
+    GUI thread.
 
-    `unreadable` are the files on disk that could not be read; they are never
-    cached, so the next scan tries them again. `messages` is everything the scan
-    has to say, carried back as data because the scan runs on a worker thread
-    and must not write to the log itself.
+    `index` is the folder's DirectoryIndex, so registering it with the project
+    touches no disk. `unreadable` are the files that could not be read -- never
+    cached, so the next scan tries them again -- and `messages` what the scan
+    has to say; both are carried as data, because the scan runs on a worker
+    and never writes to the log itself.
     """
-    runs: List[MeasurementRunIndex] = field(default_factory=list)
-    schema_master: dict = field(default_factory=dict)
+    runs: list
+    schema: dict
+    index: DirectoryIndex
     unreadable: Tuple[UnreadableFile, ...] = ()
     messages: Tuple[str, ...] = ()
 
 
-class MeasurementScanner:
-    def __init__(self):
-        self.cache_file_name = ".nvh_workspace_cache.json"
+def read_pool_folder(directory_path: str, *, cache_dir: Optional[str] = None,
+                     primary_excel_path: Optional[str] = None,
+                     parent_excel_path: Optional[str] = None,
+                     progress_fn: Optional[Callable[[int, int], None]] = None,
+                     project_path: Optional[str] = None,
+                     roots: Sequence[DataRoot] = ()) -> ScannedDirectory:
+    """
+    Reads a Data Pool folder's measurements. Safe to call off the GUI thread.
 
-    def resolve_metadata_sources(self, directory_path: str,
-                                 primary_excel_path: Optional[str] = None,
-                                 parent_excel_path: Optional[str] = None,
-                                 ) -> Tuple[Optional[str], str, Optional[str]]:
-        """
-        The Excel sheets that can supply run-level metadata for a folder.
+    Touches neither the project nor the pool -- it only returns what the folder
+    says, so the caller can run it on a worker while the window stays
+    responsive and integrate the result afterwards. `roots` are copies taken on
+    the calling thread, not live project objects.
 
-        `primary_excel_path` is the project's own metadata.xlsx, the same for
-        every data root in the project -- passed in by the caller, not derived
-        from `directory_path`. The folder-adjacent Metadata.xlsx is always the
-        fallback now: it fills in files the primary sheet does not know about.
+    `cache_dir` is where the scan cache lives -- a project's cache/scan/ or the
+    Untitled temp area, chosen by the caller who knows the project state
+   . None keeps the legacy behaviour of writing beside the data;
+    production always passes a directory, the None branch only carries the
+    invalidation tests.
 
-        `parent_excel_path` is a second fallback, one level lower priority than
-        the folder-adjacent one: the sheet found at the root folder a caller
-        recursed from to reach `directory_path` (e.g. a dataset root sitting
-        above per-run subfolders). It fills in only what neither the primary
-        nor the folder-local sheet already answered.
-        """
-        fallback = os.path.join(directory_path, "Metadata.xlsx")
-        return primary_excel_path, fallback, parent_excel_path
+    `progress_fn(done, total)` is invoked as stale files are re-parsed, so a
+    caller driving a progress bar over one folder of large files sees it move
+    rather than jump. Must be safe to call from a worker thread.
 
-    def discover_measurement_files(self, directory_path: str) -> List[str]:
-        """Lists every supported measurement file in a directory, case-insensitively."""
-        return discover_measurement_files(directory_path)
+    A file that fails to parse is reported in the result's `unreadable`
+    rather than dropped. It is never cached, so every scan tries it again.
+    """
+    file_listing: dict = {}
+    runs, schema, unreadable, messages = _scan_folder(
+        directory_path, cache_dir, primary_excel_path, parent_excel_path, progress_fn, file_listing)
+    return ScannedDirectory(
+        runs, schema, DirectoryIndex(file_listing, read_root_directories(project_path, roots)),
+        unreadable, messages)
 
-    def scan_directory(self, directory_path: str, primary_excel_path: Optional[str] = None,
-                       cache_dir: Optional[str] = None,
-                       progress_fn: Optional[Callable[[int, int], None]] = None,
-                       parent_excel_path: Optional[str] = None,
-                       file_listing: Optional[dict] = None,
-                       ) -> FolderScan:
-        """
-        `progress_fn(done, total)` is invoked as stale files are re-parsed, so a
-        caller driving a progress bar over one folder of large files sees it
-        move rather than jump. Must be safe to call from a worker thread.
 
-        `file_listing`, when supplied, receives every discovered path and its
-        stamp, including files that fail to parse and cache hits. It lets the
-        caller reconcile source entries without another directory walk.
+def _metadata_sources(directory_path: str, primary_excel_path: Optional[str],
+                      parent_excel_path: Optional[str]) -> Tuple[Optional[str], str, Optional[str]]:
+    """
+    The Excel sheets that can supply run-level metadata for a folder.
 
-        `cache_dir` is where the scan cache lives -- a project's cache/scan/ or
-        the Untitled temp area, chosen by the caller who knows the project state
-       . None keeps the legacy behaviour of writing beside the data;
-        production always passes a directory, the None branch only carries the
-        invalidation tests.
+    `primary_excel_path` is the project's own metadata.xlsx, the same for
+    every data root in the project -- passed in by the caller, not derived
+    from `directory_path`. The folder-adjacent Metadata.xlsx is always the
+    fallback now: it fills in files the primary sheet does not know about.
 
-        A file that fails to parse is reported in the result's `unreadable`
-        rather than dropped. It is never cached, so every scan tries it again.
-        """
-        messages: List[str] = []
+    `parent_excel_path` is a second fallback, one level lower priority than
+    the folder-adjacent one: the sheet found at the root folder a caller
+    recursed from to reach `directory_path` (e.g. a dataset root sitting
+    above per-run subfolders). It fills in only what neither the primary
+    nor the folder-local sheet already answered.
+    """
+    fallback = os.path.join(directory_path, "Metadata.xlsx")
+    return primary_excel_path, fallback, parent_excel_path
 
-        if not os.path.exists(directory_path):
-            return FolderScan()
 
-        discovered_files = self.discover_measurement_files(directory_path)
-        if file_listing is not None:
-            file_listing.update({path: file_stamp(path) for path in discovered_files})
-        if not discovered_files:
-            return FolderScan()
+def _scan_folder(directory_path: str, cache_dir: Optional[str],
+                 primary_excel_path: Optional[str], parent_excel_path: Optional[str],
+                 progress_fn: Optional[Callable[[int, int], None]], file_listing: dict):
+    """
+    `(runs, schema, unreadable, messages)` for one folder, served from the scan
+    cache where the files are unchanged.
 
-        if cache_dir is None:
-            cache_path = os.path.join(directory_path, self.cache_file_name)
-        else:
-            cache_path = os.path.join(cache_dir, scan_cache_basename(directory_path))
-        primary_source, fallback_source, parent_source = self.resolve_metadata_sources(
-            directory_path, primary_excel_path, parent_excel_path)
+    `file_listing` receives every discovered path and its stamp, including
+    files that fail to parse and cache hits, so the caller can reconcile source
+    entries without another directory walk.
+    """
+    messages: List[str] = []
 
-        cached = self.load_workspace_cache(
-            cache_path, discovered_files, primary_source, fallback_source, parent_source)
-        cached_runs = cached.runs
-        if cached.problem:
-            messages.append(cached.problem)
-        # A folder refresh does not know which dataset root the folder was
-        # reached from; the cache does (issue #324).
-        parent_source = cached.parent_source
+    if not os.path.exists(directory_path):
+        return [], {}, (), ()
 
-        # Only files whose stamp no longer matches need re-reading. Re-parsing a
-        # whole folder because one measurement was overwritten is expensive when
-        # a single .unv runs to a hundred megabytes.
-        stale_files = [path for path in discovered_files if path not in cached_runs]
+    discovered_files = discover_measurement_files(directory_path)
+    file_listing.update({path: file_stamp(path) for path in discovered_files})
+    if not discovered_files:
+        return [], {}, (), ()
 
-        if cached_runs and not stale_files and not cached.metadata_is_stale:
-            return FolderScan([cached_runs[path] for path in discovered_files],
-                              cached.schema_master, (), tuple(messages))
+    if cache_dir is None:
+        cache_path = os.path.join(directory_path, WORKSPACE_CACHE_FILE_NAME)
+    else:
+        cache_path = os.path.join(cache_dir, scan_cache_basename(directory_path))
+    primary_source, fallback_source, parent_source = _metadata_sources(
+        directory_path, primary_excel_path, parent_excel_path)
 
-        metadata_lookup = self._build_excel_metadata_lookup(
-            discovered_files, primary_source, parent_source, fallback_source, messages.append)
+    cached = _read_workspace_cache(
+        cache_path, discovered_files, primary_source, fallback_source, parent_source)
+    cached_runs = cached.runs
+    if cached.problem:
+        messages.append(cached.problem)
+    # A folder refresh does not know which dataset root the folder was
+    # reached from; the cache does (issue #324).
+    parent_source = cached.parent_source
 
-        parsed_runs = {}
-        unreadable: List[UnreadableFile] = []
-        if stale_files:
-            total = len(stale_files)
-            if progress_fn is not None:
-                progress_fn(0, total)
-            with ThreadPoolExecutor(max_workers=_SCAN_PARSE_MAX_WORKERS) as executor:
-                for done, (path, run_index, reason) in enumerate(
-                        executor.map(self._parse_outcome, stale_files), start=1):
-                    if run_index:
-                        parsed_runs[run_index.file_path] = run_index
-                    else:
-                        unreadable.append(UnreadableFile(path, reason))
-                    if progress_fn is not None:
-                        progress_fn(done, total)
+    # Only files whose stamp no longer matches need re-reading. Re-parsing a
+    # whole folder because one measurement was overwritten is expensive when
+    # a single .unv runs to a hundred megabytes.
+    stale_files = [path for path in discovered_files if path not in cached_runs]
 
-        indexed_runs = self._index_scanned_runs(
-            discovered_files, parsed_runs, cached_runs, metadata_lookup, cached.metadata_is_stale)
+    if cached_runs and not stale_files and not cached.metadata_is_stale:
+        return ([cached_runs[path] for path in discovered_files],
+                cached.schema_master, (), tuple(messages))
 
-        # Keep whatever the user customised in the metadata editor and add only
-        # fields that are newly discovered. Regenerating from scratch on every
-        # rescan would silently throw away their labels and visibility flags.
-        schema_master = dict(cached.schema_master or {})
-        for key, definition in generate_baseline_schema_master(indexed_runs).items():
-            schema_master.setdefault(key, definition)
+    metadata_lookup = _build_excel_metadata_lookup(
+        discovered_files, primary_source, parent_source, fallback_source, messages.append)
 
-        if cache_dir is not None:
-            os.makedirs(cache_dir, exist_ok=True)
+    parsed_runs = {}
+    unreadable: List[UnreadableFile] = []
+    if stale_files:
+        total = len(stale_files)
+        if progress_fn is not None:
+            progress_fn(0, total)
+        with ThreadPoolExecutor(max_workers=_SCAN_PARSE_MAX_WORKERS) as executor:
+            for done, (path, run_index, reason) in enumerate(
+                    executor.map(_parse_outcome, stale_files), start=1):
+                if run_index:
+                    parsed_runs[run_index.file_path] = run_index
+                else:
+                    unreadable.append(UnreadableFile(path, reason))
+                if progress_fn is not None:
+                    progress_fn(done, total)
 
-        if not self.save_workspace_cache(cache_path, indexed_runs, schema_master,
-                                         primary_source, fallback_source, parent_source):
-            # The in-memory scan is still good and is returned as-is; only the
-            # on-disk cache is stale. Saying so matters because the next start
-            # will silently re-parse the whole folder -- a confusing slowdown
-            # with no other trace if the write failure is swallowed here.
-            messages.append(f"CACHE_IO: Folder index could not be written to {cache_path}; "
-                            f"this folder will be re-parsed in full on the next open.")
-        return FolderScan(indexed_runs, schema_master, tuple(unreadable), tuple(messages))
+    indexed_runs = _index_scanned_runs(
+        discovered_files, parsed_runs, cached_runs, metadata_lookup, cached.metadata_is_stale)
 
-    @staticmethod
-    def _link_run_metadata(run_index: MeasurementRunIndex, metadata_lookup: dict) -> dict:
-        """Matches a run to its Excel row by exact, case-insensitive filename identity."""
-        return metadata_lookup.get(normalize_file_key(run_index.file_name), {})
+    # Keep whatever the user customised in the metadata editor and add only
+    # fields that are newly discovered. Regenerating from scratch on every
+    # rescan would silently throw away their labels and visibility flags.
+    schema_master = dict(cached.schema_master or {})
+    for key, definition in generate_baseline_schema_master(indexed_runs).items():
+        schema_master.setdefault(key, definition)
 
-    @staticmethod
-    def _build_excel_metadata_lookup(discovered_files: List[str], primary_source: Optional[str],
-                                     parent_source: Optional[str], fallback_source: str,
-                                     log_fn: Callable[[str], None]) -> dict:
-        """
-        Layers the project-wide sheet, the dataset-root sheet and the folder-local
-        Metadata.xlsx into one filename -> metadata lookup.
+    if cache_dir is not None:
+        os.makedirs(cache_dir, exist_ok=True)
 
-        Parent sheet first, folder-local fallback on top: a recursed-into child
-        folder inherits whatever the dataset-root sheet says, but its own
-        Metadata.xlsx (if any) wins on a key both define.
-        """
-        primary_lookup = {}
-        if primary_source and os.path.exists(primary_source):
-            primary_lookup = build_normalized_lookup(AccMetadataParser(primary_source).parse_and_link_metadata())
+    if not _write_workspace_cache(cache_path, indexed_runs, schema_master,
+                                  primary_source, fallback_source, parent_source):
+        # The in-memory scan is still good and is returned as-is; only the
+        # on-disk cache is stale. Saying so matters because the next start
+        # will silently re-parse the whole folder -- a confusing slowdown
+        # with no other trace if the write failure is swallowed here.
+        messages.append(f"CACHE_IO: Folder index could not be written to {cache_path}; "
+                        f"this folder will be re-parsed in full on the next open.")
+    return indexed_runs, schema_master, tuple(unreadable), tuple(messages)
 
-        fallback_lookup = {}
-        if parent_source and os.path.exists(parent_source):
-            fallback_lookup.update(
-                build_normalized_lookup(AccMetadataParser(parent_source).parse_and_link_metadata()))
-        if os.path.exists(fallback_source):
-            fallback_lookup.update(
-                build_normalized_lookup(AccMetadataParser(fallback_source).parse_and_link_metadata()))
 
-        return resolve_excel_metadata_for_files(
-            (os.path.basename(path) for path in discovered_files), primary_lookup, fallback_lookup, log_fn,
-        )
+def _link_run_metadata(run_index: MeasurementRunIndex, metadata_lookup: dict) -> dict:
+    """Matches a run to its Excel row by exact, case-insensitive filename identity."""
+    return metadata_lookup.get(normalize_file_key(run_index.file_name), {})
 
-    @classmethod
-    def _index_scanned_runs(cls, discovered_files: List[str], parsed_runs: dict, cached_runs: dict,
-                            metadata_lookup: dict, metadata_is_stale: bool) -> List[MeasurementRunIndex]:
-        """
-        Merges freshly parsed runs with still-valid cached ones, in folder order.
 
-        A cached run already carries its linked metadata; re-link only what was
-        just parsed, or everything when either Excel sheet changed.
-        """
-        indexed_runs: List[MeasurementRunIndex] = []
-        for path in discovered_files:
-            run_index = parsed_runs.get(path) or cached_runs.get(path)
-            if run_index is None:
-                continue
-            if path in parsed_runs or metadata_is_stale:
-                run_index.metadata = cls._link_run_metadata(run_index, metadata_lookup)
-            indexed_runs.append(run_index)
-        return indexed_runs
+def _build_excel_metadata_lookup(discovered_files: List[str], primary_source: Optional[str],
+                                 parent_source: Optional[str], fallback_source: str,
+                                 log_fn: Callable[[str], None]) -> dict:
+    """
+    Layers the project-wide sheet, the dataset-root sheet and the folder-local
+    Metadata.xlsx into one filename -> metadata lookup.
 
-    def _parse_outcome(self, file_path: str):
-        """`(path, run, reason)`: the parsed run, or None and why the file could not be read."""
-        try:
-            run_index = self._parse_single_file_worker(file_path)
-        except Exception as e:
-            return file_path, None, str(e) or type(e).__name__
+    Parent sheet first, folder-local fallback on top: a recursed-into child
+    folder inherits whatever the dataset-root sheet says, but its own
+    Metadata.xlsx (if any) wins on a key both define.
+    """
+    primary_lookup = {}
+    if primary_source and os.path.exists(primary_source):
+        primary_lookup = build_normalized_lookup(AccMetadataParser(primary_source).parse_and_link_metadata())
+
+    fallback_lookup = {}
+    if parent_source and os.path.exists(parent_source):
+        fallback_lookup.update(
+            build_normalized_lookup(AccMetadataParser(parent_source).parse_and_link_metadata()))
+    if os.path.exists(fallback_source):
+        fallback_lookup.update(
+            build_normalized_lookup(AccMetadataParser(fallback_source).parse_and_link_metadata()))
+
+    return resolve_excel_metadata_for_files(
+        (os.path.basename(path) for path in discovered_files), primary_lookup, fallback_lookup, log_fn,
+    )
+
+
+def _index_scanned_runs(discovered_files: List[str], parsed_runs: dict, cached_runs: dict,
+                        metadata_lookup: dict, metadata_is_stale: bool) -> List[MeasurementRunIndex]:
+    """
+    Merges freshly parsed runs with still-valid cached ones, in folder order.
+
+    A cached run already carries its linked metadata; re-link only what was
+    just parsed, or everything when either Excel sheet changed.
+    """
+    indexed_runs: List[MeasurementRunIndex] = []
+    for path in discovered_files:
+        run_index = parsed_runs.get(path) or cached_runs.get(path)
         if run_index is None:
-            return file_path, None, "The file could not be read."
-        return file_path, run_index, ""
+            continue
+        if path in parsed_runs or metadata_is_stale:
+            run_index.metadata = _link_run_metadata(run_index, metadata_lookup)
+        indexed_runs.append(run_index)
+    return indexed_runs
 
-    def _parse_single_file_worker(self, file_path: str) -> MeasurementRunIndex:
-        """
-        Isolated multi-threaded worker routing to the correct parsing engine dynamically.
-        Raises when the file cannot be read; `_parse_outcome` turns that into a reason.
-        """
-        reader = open_measurement_reader(file_path)
 
-        run_index = reader.scan_file_structure()
-        reader.load_channels_on_demand(run_index)
-        return run_index
+def _parse_outcome(file_path: str):
+    """`(path, run, reason)`: the parsed run, or None and why the file could not be read."""
+    try:
+        run_index = _parse_measurement_file(file_path)
+    except Exception as e:
+        return file_path, None, str(e) or type(e).__name__
+    if run_index is None:
+        return file_path, None, "The file could not be read."
+    return file_path, run_index, ""
 
-    def save_workspace_cache(self, cache_path: str, indexed_runs: List[MeasurementRunIndex],
-                             schema_master: dict, primary_source: Optional[str] = None,
-                             fallback_source: Optional[str] = None,
-                             parent_source: Optional[str] = None) -> bool:
-        """
-        Writes the folder index to disk. Returns True on success.
 
-        A failed write is reported, not raised: the cache is derived data and
-        the caller's in-memory scan is unaffected, so the scan must still
-        succeed. But the caller has to know the write failed to warn about the
-        re-parse it now can't avoid on the next open.
-        """
-        import pandas as pd
-        try:
-            runs_data = {}
-            for run in indexed_runs:
-                channels_map = {}
-                for key, meta in run.available_channels.items():
-                    dt = getattr(meta, 'abscissa_inc', 0.0)
-                    calculated_fs = float(1.0 / dt) if dt > 0.0 else 0.0
-                    # Serialization must not mutate the live model -- write the
-                    # derived rate into the exported dict copy only.
-                    channel_dict = meta.to_dict()
-                    channel_dict['sampling_rate'] = calculated_fs
-                    channels_map[key] = channel_dict
+def _parse_measurement_file(file_path: str) -> MeasurementRunIndex:
+    """
+    Isolated multi-threaded worker routing to the correct parsing engine dynamically.
+    Raises when the file cannot be read; `_parse_outcome` turns that into a reason.
+    """
+    reader = open_measurement_reader(file_path)
 
-                clean_metadata = {}
-                if getattr(run, 'metadata', None) and isinstance(run.metadata, dict):
-                    for m_key, m_val in run.metadata.items():
-                        if isinstance(m_val, pd.Timestamp):
-                            clean_metadata[m_key] = m_val.strftime("%Y-%m-%d %H:%M:%S")
-                        elif hasattr(m_val, 'item'):
-                            clean_metadata[m_key] = m_val.item()
-                        else:
-                            clean_metadata[m_key] = m_val
+    run_index = reader.scan_file_structure()
+    reader.load_channels_on_demand(run_index)
+    return run_index
 
-                runs_data[canonical_path(run.file_path)] = {
-                    "file_name": run.file_name,
-                    # Kept alongside the canonical key so the original spelling
-                    # survives for anything that reads it back.
-                    "file_path": run.file_path,
-                    "id1": getattr(run, 'id1', None),
-                    "id2": getattr(run, 'id2', None),
-                    "id3": getattr(run, 'id3', None),
-                    "id4": getattr(run, 'id4', None),
-                    "id5": getattr(run, 'id5', None),
-                    "metadata": clean_metadata,
-                    "channels": channels_map,
-                    "lost_parts": [{"dataset": part.dataset, "reason": part.reason}
-                                   for part in run.lost_parts],
-                    # What this entry was built from. Without it the cache had no
-                    # way to notice a file had been re-measured and kept serving
-                    # the old channel list until it was deleted by hand.
-                    "source_stamp": file_stamp(run.file_path),
-                }
 
-            composite_package = {
-                "_cache_format_version": WORKSPACE_CACHE_FORMAT_VERSION,
-                "_metadata_schema_master": schema_master,
-                "_metadata_source_stamps": {
-                    "primary": file_stamp(primary_source) if primary_source else None,
-                    "fallback": file_stamp(fallback_source) if fallback_source else None,
-                    "parent": file_stamp(parent_source) if parent_source else None,
-                },
-                # The dataset-root sheet is not derivable from the folder, so its
-                # path is kept too: a later rescan that does not pass it (folder
-                # refresh, watcher) must still link against it.
-                "_parent_metadata_source": parent_source,
-                "_workspace_runs_data": runs_data
+def _write_workspace_cache(cache_path: str, indexed_runs: List[MeasurementRunIndex],
+                           schema_master: dict, primary_source: Optional[str] = None,
+                           fallback_source: Optional[str] = None,
+                           parent_source: Optional[str] = None) -> bool:
+    """
+    Writes the folder index to disk. Returns True on success.
+
+    A failed write is reported, not raised: the cache is derived data and
+    the caller's in-memory scan is unaffected, so the scan must still
+    succeed. But the caller has to know the write failed to warn about the
+    re-parse it now can't avoid on the next open.
+    """
+    import pandas as pd
+    try:
+        runs_data = {}
+        for run in indexed_runs:
+            channels_map = {}
+            for key, meta in run.available_channels.items():
+                dt = getattr(meta, 'abscissa_inc', 0.0)
+                calculated_fs = float(1.0 / dt) if dt > 0.0 else 0.0
+                # Serialization must not mutate the live model -- write the
+                # derived rate into the exported dict copy only.
+                channel_dict = meta.to_dict()
+                channel_dict['sampling_rate'] = calculated_fs
+                channels_map[key] = channel_dict
+
+            clean_metadata = {}
+            if getattr(run, 'metadata', None) and isinstance(run.metadata, dict):
+                for m_key, m_val in run.metadata.items():
+                    if isinstance(m_val, pd.Timestamp):
+                        clean_metadata[m_key] = m_val.strftime("%Y-%m-%d %H:%M:%S")
+                    elif hasattr(m_val, 'item'):
+                        clean_metadata[m_key] = m_val.item()
+                    else:
+                        clean_metadata[m_key] = m_val
+
+            runs_data[canonical_path(run.file_path)] = {
+                "file_name": run.file_name,
+                # Kept alongside the canonical key so the original spelling
+                # survives for anything that reads it back.
+                "file_path": run.file_path,
+                "id1": getattr(run, 'id1', None),
+                "id2": getattr(run, 'id2', None),
+                "id3": getattr(run, 'id3', None),
+                "id4": getattr(run, 'id4', None),
+                "id5": getattr(run, 'id5', None),
+                "metadata": clean_metadata,
+                "channels": channels_map,
+                "lost_parts": [{"dataset": part.dataset, "reason": part.reason}
+                               for part in run.lost_parts],
+                # What this entry was built from. Without it the cache had no
+                # way to notice a file had been re-measured and kept serving
+                # the old channel list until it was deleted by hand.
+                "source_stamp": file_stamp(run.file_path),
             }
 
-            # Write-then-replace so a crash mid-write leaves the previous
-            # cache intact instead of a truncated/corrupt JSON file.
-            cache_dir = os.path.dirname(cache_path) or "."
-            fd, tmp_path = tempfile.mkstemp(dir=cache_dir, prefix=".cache_tmp_")
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    json.dump(composite_package, f, indent=4)
-                os.replace(tmp_path, cache_path)
-            except Exception:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-                raise
-            return True
-        except Exception:
-            return False
-
-    def load_workspace_cache(self, cache_path: str, active_files: List[str],
-                             primary_source: Optional[str] = None,
-                             fallback_source: Optional[str] = None,
-                             parent_source: Optional[str] = None) -> CacheLoadResult:
-        """
-        Reads the on-disk index and returns only the parts still valid.
-
-        A run appears in the result only when the file it describes still has the
-        modification time and size it had when cached, so a re-measured file is
-        left out and gets re-parsed while its neighbours are served from cache.
-
-        The Excel sheets are tracked separately from the measurement files:
-        when only one of them has changed, every run needs its metadata
-        re-linked but none of them need re-parsing, which is the difference
-        between a moment and a minute.
-
-        `parent_source=None` means "not known here", not "none": the dataset-root
-        sheet recorded by an earlier scan is adopted and returned in the result.
-        """
-        def _current_stamps(parent: Optional[str]) -> dict:
-            return {
+        composite_package = {
+            "_cache_format_version": WORKSPACE_CACHE_FORMAT_VERSION,
+            "_metadata_schema_master": schema_master,
+            "_metadata_source_stamps": {
                 "primary": file_stamp(primary_source) if primary_source else None,
                 "fallback": file_stamp(fallback_source) if fallback_source else None,
-                "parent": file_stamp(parent) if parent else None,
-            }
+                "parent": file_stamp(parent_source) if parent_source else None,
+            },
+            # The dataset-root sheet is not derivable from the folder, so its
+            # path is kept too: a later rescan that does not pass it (folder
+            # refresh, watcher) must still link against it.
+            "_parent_metadata_source": parent_source,
+            "_workspace_runs_data": runs_data
+        }
 
-        def _cold_miss(**kwargs) -> CacheLoadResult:
-            return CacheLoadResult(metadata_is_stale=any(_current_stamps(parent_source).values()),
-                                   parent_source=parent_source, **kwargs)
-
-        if not os.path.exists(cache_path):
-            return _cold_miss()
-
+        # Write-then-replace so a crash mid-write leaves the previous
+        # cache intact instead of a truncated/corrupt JSON file.
+        cache_dir = os.path.dirname(cache_path) or "."
+        fd, tmp_path = tempfile.mkstemp(dir=cache_dir, prefix=".cache_tmp_")
         try:
-            with open(cache_path, "r", encoding="utf-8") as f:
-                composite_package = json.load(f)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(composite_package, f, indent=4)
+            os.replace(tmp_path, cache_path)
+        except Exception:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            raise
+        return True
+    except Exception:
+        return False
 
-            if (not isinstance(composite_package, dict)
-                    or composite_package.get("_cache_format_version") != WORKSPACE_CACHE_FORMAT_VERSION):
-                # Older/newer entry shape than this build expects -- treat as a
-                # full miss rather than risk feeding an incompatible dict to
-                # ChannelMetadata.from_dict()/MeasurementRunIndex. The next
-                # save_workspace_cache() call re-stamps the current version.
-                return _cold_miss()
-            schema_master = composite_package.get("_metadata_schema_master", {})
-            cached_parent_source = composite_package.get("_parent_metadata_source")
-            cached_stamps = composite_package.get("_metadata_source_stamps") or {}
-            cache_data = composite_package["_workspace_runs_data"]
 
-            if parent_source is None:
-                parent_source = cached_parent_source
-            current_stamps = _current_stamps(parent_source)
+def _read_workspace_cache(cache_path: str, active_files: List[str],
+                          primary_source: Optional[str] = None,
+                          fallback_source: Optional[str] = None,
+                          parent_source: Optional[str] = None) -> _CacheLoadResult:
+    """
+    Reads the on-disk index and returns only the parts still valid.
 
-            def _slot_stale(cached_stamp, current_stamp) -> bool:
-                if cached_stamp is None and current_stamp is None:
-                    return False
-                return not _stamps_match(cached_stamp, current_stamp)
+    A run appears in the result only when the file it describes still has the
+    modification time and size it had when cached, so a re-measured file is
+    left out and gets re-parsed while its neighbours are served from cache.
 
-            # A different dataset-root sheet than the one the runs were linked
-            # against is stale even if its stamp happens to match.
-            parent_moved = (
-                (canonical_path(parent_source) if parent_source else None)
-                != (canonical_path(cached_parent_source) if cached_parent_source else None)
-            )
-            metadata_is_stale = (
-                _slot_stale(cached_stamps.get("primary"), current_stamps["primary"])
-                or _slot_stale(cached_stamps.get("fallback"), current_stamps["fallback"])
-                or _slot_stale(cached_stamps.get("parent"), current_stamps["parent"])
-                or parent_moved
-            )
+    The Excel sheets are tracked separately from the measurement files:
+    when only one of them has changed, every run needs its metadata
+    re-linked but none of them need re-parsing, which is the difference
+    between a moment and a minute.
 
-            # Re-key whatever spelling the file on disk happens to use, so a cache
-            # written through one path form is still found through another.
-            cache_by_key = {canonical_path(key): entry for key, entry in cache_data.items()}
+    `parent_source=None` means "not known here", not "none": the dataset-root
+    sheet recorded by an earlier scan is adopted and returned in the result.
+    """
+    def _current_stamps(parent: Optional[str]) -> dict:
+        return {
+            "primary": file_stamp(primary_source) if primary_source else None,
+            "fallback": file_stamp(fallback_source) if fallback_source else None,
+            "parent": file_stamp(parent) if parent else None,
+        }
 
-            loaded_runs: Dict[str, MeasurementRunIndex] = {}
+    def _cold_miss(**kwargs) -> _CacheLoadResult:
+        return _CacheLoadResult(metadata_is_stale=any(_current_stamps(parent_source).values()),
+                               parent_source=parent_source, **kwargs)
 
-            for file_path in active_files:
-                cached_run = cache_by_key.get(canonical_path(file_path))
-                if not cached_run:
-                    continue
+    if not os.path.exists(cache_path):
+        return _cold_miss()
 
-                if not _stamps_match(cached_run.get("source_stamp"), file_stamp(file_path)):
-                    continue
+    try:
+        with open(cache_path, "r", encoding="utf-8") as f:
+            composite_package = json.load(f)
 
-                run_index = MeasurementRunIndex(cached_run["file_name"], file_path)
-                run_index.metadata = cached_run.get("metadata", {})
+        if (not isinstance(composite_package, dict)
+                or composite_package.get("_cache_format_version") != WORKSPACE_CACHE_FORMAT_VERSION):
+            # Older/newer entry shape than this build expects -- treat as a
+            # full miss rather than risk feeding an incompatible dict to
+            # ChannelMetadata.from_dict()/MeasurementRunIndex. The next
+            # _write_workspace_cache() call re-stamps the current version.
+            return _cold_miss()
+        schema_master = composite_package.get("_metadata_schema_master", {})
+        cached_parent_source = composite_package.get("_parent_metadata_source")
+        cached_stamps = composite_package.get("_metadata_source_stamps") or {}
+        cache_data = composite_package["_workspace_runs_data"]
 
-                # A fresh parse only sets id1..id5 when the reader actually
-                # discovered one (MeasurementRunIndex.__init__ leaves them
-                # unset otherwise, so file_level_facts() omits them). Setting
-                # them here even when cached as None would add the attribute
-                # to __dict__ regardless, making a cache-loaded run disagree
-                # with a fresh parse of the same untouched file and marking
-                # the project dirty on reopen (#317).
-                for id_key in ("id1", "id2", "id3", "id4", "id5"):
-                    id_value = cached_run.get(id_key)
-                    if id_value is not None:
-                        setattr(run_index, id_key, id_value)
+        if parent_source is None:
+            parent_source = cached_parent_source
+        current_stamps = _current_stamps(parent_source)
 
-                for unique_label, ch_dict in cached_run.get("channels", {}).items():
-                    run_index.add_channel_metadata(unique_label, ChannelMetadata.from_dict(ch_dict))
+        def _slot_stale(cached_stamp, current_stamp) -> bool:
+            if cached_stamp is None and current_stamp is None:
+                return False
+            return not _stamps_match(cached_stamp, current_stamp)
 
-                run_index.lost_parts = [LostPart(part["dataset"], part["reason"])
-                                        for part in cached_run.get("lost_parts", [])]
+        # A different dataset-root sheet than the one the runs were linked
+        # against is stale even if its stamp happens to match.
+        parent_moved = (
+            (canonical_path(parent_source) if parent_source else None)
+            != (canonical_path(cached_parent_source) if cached_parent_source else None)
+        )
+        metadata_is_stale = (
+            _slot_stale(cached_stamps.get("primary"), current_stamps["primary"])
+            or _slot_stale(cached_stamps.get("fallback"), current_stamps["fallback"])
+            or _slot_stale(cached_stamps.get("parent"), current_stamps["parent"])
+            or parent_moved
+        )
 
-                loaded_runs[file_path] = run_index
+        # Re-key whatever spelling the file on disk happens to use, so a cache
+        # written through one path form is still found through another.
+        cache_by_key = {canonical_path(key): entry for key, entry in cache_data.items()}
 
-            return CacheLoadResult(
-                runs=loaded_runs,
-                schema_master=schema_master,
-                metadata_is_stale=metadata_is_stale,
-                parent_source=parent_source,
-            )
-        except Exception as e:
-            return CacheLoadResult(
-                metadata_is_stale=True, parent_source=parent_source,
-                problem=f"CACHE_IO: Folder index could not be read ({e}); this folder is re-parsed in full.")
+        loaded_runs: Dict[str, MeasurementRunIndex] = {}
+
+        for file_path in active_files:
+            cached_run = cache_by_key.get(canonical_path(file_path))
+            if not cached_run:
+                continue
+
+            if not _stamps_match(cached_run.get("source_stamp"), file_stamp(file_path)):
+                continue
+
+            run_index = MeasurementRunIndex(cached_run["file_name"], file_path)
+            run_index.metadata = cached_run.get("metadata", {})
+
+            # A fresh parse only sets id1..id5 when the reader actually
+            # discovered one (MeasurementRunIndex.__init__ leaves them
+            # unset otherwise, so file_level_facts() omits them). Setting
+            # them here even when cached as None would add the attribute
+            # to __dict__ regardless, making a cache-loaded run disagree
+            # with a fresh parse of the same untouched file and marking
+            # the project dirty on reopen (#317).
+            for id_key in ("id1", "id2", "id3", "id4", "id5"):
+                id_value = cached_run.get(id_key)
+                if id_value is not None:
+                    setattr(run_index, id_key, id_value)
+
+            for unique_label, ch_dict in cached_run.get("channels", {}).items():
+                run_index.add_channel_metadata(unique_label, ChannelMetadata.from_dict(ch_dict))
+
+            run_index.lost_parts = [LostPart(part["dataset"], part["reason"])
+                                    for part in cached_run.get("lost_parts", [])]
+
+            loaded_runs[file_path] = run_index
+
+        return _CacheLoadResult(
+            runs=loaded_runs,
+            schema_master=schema_master,
+            metadata_is_stale=metadata_is_stale,
+            parent_source=parent_source,
+        )
+    except Exception as e:
+        return _CacheLoadResult(
+            metadata_is_stale=True, parent_source=parent_source,
+            problem=f"CACHE_IO: Folder index could not be read ({e}); this folder is re-parsed in full.")

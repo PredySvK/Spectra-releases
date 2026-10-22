@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from core.block_kinds import spec_for
+from core.curve_recipe import RECIPE_ALGORITHM_VERSION
 from core.project_model import NVHProject, ResultSetRef
 
 if TYPE_CHECKING:
@@ -52,11 +53,16 @@ def shape_signature(kind: str, params: Mapping[str, Any]) -> Tuple:
     Sorted by key, so two dicts built in a different order compare equal. This
     is the generalisation of what FFT_SHAPE_KEYS did for order cuts alone.
     """
+    return _signature_pairs(kind, params, exempt=(RECIPE_ALGORITHM_VERSION,))
+
+
+def _signature_pairs(kind: str, params: Mapping[str, Any], exempt: Tuple[str, ...] = ()) -> Tuple:
+    """`params` as sorted `(key, value)` pairs, without the kind's
+    `cache_exempt_params` and `display_only_params` and without `exempt`."""
     spec = spec_for(kind)
-    exempt = (set(spec.cache_exempt_params) | set(spec.display_only_params)
-              | {"algorithm_version"})
+    left_out = set(spec.cache_exempt_params) | set(spec.display_only_params) | set(exempt)
     return tuple(
-        (key, _hashable(params[key])) for key in sorted(params) if key not in exempt
+        (key, _hashable(params[key])) for key in sorted(params) if key not in left_out
     )
 
 
@@ -66,13 +72,18 @@ Signature = Tuple
 def parameter_signature(kind: str, params: Mapping[str, Any]) -> Signature:
     """
     What makes two computations "the same settings": their kind and its shape
-    params, as one tuple. The kind rides as a `("__kind__", kind)` pair so every
-    element has the same `(key, value)` shape -- callers that compare element by
-    element (selection.trace_filter) can zip without special-casing the
-    head. The one signature shape both a project result set and a bare dock
-    trace emit, so a Global card compares them directly.
+    params plus the algorithm version, as one tuple -- for a curve recipe
+    (core.curve_recipe) and a result set's params alike, the recipe without
+    the order (#812). Unlike the cache, which checks the version against this
+    build's own, two Parameter Sets computed by different math stay apart.
+
+    The kind rides as a `("__kind__", kind)` pair so every element has the same
+    `(key, value)` shape -- callers that compare element by element
+    (selection.trace_filter) can zip without special-casing the head. The one
+    signature shape both a project result set and a bare dock trace emit, so a
+    Global card compares them directly.
     """
-    return (("__kind__", kind),) + shape_signature(kind, params)
+    return (("__kind__", kind),) + _signature_pairs(kind, params)
 
 
 def result_set_signature(result_set: ResultSetRef) -> Signature:

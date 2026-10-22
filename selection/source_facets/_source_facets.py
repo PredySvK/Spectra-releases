@@ -15,11 +15,12 @@ import os
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
-from core.filter_card_config import IDENTITY_BUILTIN_ORDER, COLUMN_RESULT_SET
+from core.filter_card_config import IDENTITY_BUILTIN_ORDER, COLUMN_RESULT_SET, RANGE_KINDS
 from core.block_kinds import KIND_ORDER_CUT
 from core.models import ChannelIdentity
-from core.project_model import NVHProject, ResultSetRef, SourceEntry
+from core.project_model import CHANNEL_LAYER, NVHProject, ResultSetRef, SourceEntry, is_channel_layer
 from selection.channel_identity import split_channel_base_and_direction
+from selection.field_offer import active_schema_fields
 from selection.parameter_sets import orders_equal
 
 # The "(Empty)" bucket row: a gating facet offers this value when at
@@ -44,25 +45,6 @@ def with_empty_row(sorted_values: List[Any], has_missing: bool) -> List[Any]:
     if values and has_missing:
         values.append(EMPTY_FACET_VALUE)
     return values
-
-
-def filterable_schema_fields(schema: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    """
-    Opted-in fields from the metadata schema (Metadata Editor's "Use as Filter").
-
-    Independent of "Active Status" (BUGS.md M1) -- the two checkboxes are
-    unrelated properties in the dialog (visibility vs. filterability) and
-    coupling them meant "Use as Filter" silently did nothing unless the field
-    was also marked active.
-    """
-    return {
-        key: config for key, config in schema.items()
-        if config.get("usable_as_filter", False)
-    }
-
-
-# Kinds filtered by a low..high bound; every other kind is picked from a list.
-RANGED_FIELD_KINDS = ("int", "float", "date")
 
 
 def field_kind(config: Dict[str, Any]) -> str:
@@ -123,10 +105,18 @@ def field_cardinality(values: Iterable[Any], *, per_measurement: bool = True,
 
 
 def schema_field_cardinality(sources: Iterable[SourceEntry], key: str,
-                             config: Dict[str, Any]) -> FieldCardinality:
-    """`field_cardinality` for a metadata schema field -- one value per source."""
-    values = (_field_value(source, key, config.get("layer", "excel")) for source in sources)
-    return field_cardinality((str(value) if value is not None else value for value in values))
+                             config: Dict[str, Any], *, pool_label: str = "the pool"
+                             ) -> FieldCardinality:
+    """`field_cardinality` for a metadata schema field -- one value per source,
+    one per channel for a channel-layer field. Channel values are not one per
+    measurement, so a channel field is never "unique per measurement"."""
+    per_channel = is_channel_layer(config)
+    if per_channel:
+        values = [value for source in sources for value in _channel_values(source, key)]
+    else:
+        values = [_field_value(source, key, config.get("layer", "excel")) for source in sources]
+    return field_cardinality((str(value) if value is not None else value for value in values),
+                             per_measurement=not per_channel, pool_label=pool_label)
 
 
 def filter_field_unusable_reason(sources: Iterable[SourceEntry], key: str,
@@ -136,18 +126,19 @@ def filter_field_unusable_reason(sources: Iterable[SourceEntry], key: str,
 
 
 def filter_field_cardinalities(sources: Iterable[SourceEntry],
-                               schema: Dict[str, Dict[str, Any]]) -> Dict[str, FieldCardinality]:
-    """`schema_field_cardinality` for every `usable_as_filter` schema field, keyed by field."""
+                               schema: Dict[str, Dict[str, Any]], *, pool_label: str = "the pool"
+                               ) -> Dict[str, FieldCardinality]:
+    """`schema_field_cardinality` for every `is_active` schema field, keyed by field."""
     sources = list(sources)
     return {
-        key: schema_field_cardinality(sources, key, config)
-        for key, config in filterable_schema_fields(schema).items()
+        key: schema_field_cardinality(sources, key, config, pool_label=pool_label)
+        for key, config in active_schema_fields(schema).items()
     }
 
 
 def filter_field_unusable_reasons(sources: Iterable[SourceEntry],
                                   schema: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
-    """`filter_field_unusable_reason` for every `usable_as_filter` schema field, keyed by field."""
+    """`filter_field_unusable_reason` for every `is_active` schema field, keyed by field."""
     return {
         key: cardinality.reason
         for key, cardinality in filter_field_cardinalities(sources, schema).items()
@@ -159,7 +150,7 @@ def _narrowed_to(fields: Dict[str, Dict[str, Any]],
                  allowed_keys: Optional[Iterable[str]]) -> Dict[str, Dict[str, Any]]:
     """`fields` restricted to `allowed_keys`, or unchanged when it is None --
     the Filter card's column list narrowing the offering on top of the
-    usable_as_filter gate."""
+    is_active gate."""
     if allowed_keys is None:
         return fields
     allowed = set(allowed_keys)
@@ -169,16 +160,16 @@ def _narrowed_to(fields: Dict[str, Dict[str, Any]],
 def categorical_schema_fields(schema: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     """Opted-in fields whose values are picked from a list (str / enum kinds)."""
     return {
-        key: config for key, config in filterable_schema_fields(schema).items()
-        if field_kind(config) not in RANGED_FIELD_KINDS
+        key: config for key, config in active_schema_fields(schema).items()
+        if field_kind(config) not in RANGE_KINDS
     }
 
 
 def ranged_schema_fields(schema: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     """Opted-in fields filtered by a low..high bound (int / float / date kinds)."""
     return {
-        key: config for key, config in filterable_schema_fields(schema).items()
-        if field_kind(config) in RANGED_FIELD_KINDS
+        key: config for key, config in active_schema_fields(schema).items()
+        if field_kind(config) in RANGE_KINDS
     }
 
 
@@ -192,28 +183,31 @@ def _as_number(value: Any) -> Optional[float]:
     return None if number != number else number  # NaN is no value to compare
 
 
-def channel_summary_value(source: SourceEntry, key: str) -> Optional[Any]:
-    """
-    One representative value for a channel-level field (BUGS.md N1/N2) across
-    a source's channels -- the first channel that actually carries it.
+def _is_blank(value: Any) -> bool:
+    """Whether `value` is no value at all: missing, or an empty cell."""
+    return value in (None, "")
 
-    A real acquisition normally shares one sampling_rate/func_type across every
-    channel, so picking one keeps the existing one-value-per-source facet model
-    intact rather than fanning a single field out into per-channel facets. This
-    does mean a source whose channels genuinely disagree (mixed sample rates in
-    one file) is represented by whichever channel happens to be first -- an
-    accepted simplification, not a claim that the field cannot vary.
-    """
-    for channel_meta in source.channels.values():
-        value = channel_meta.get(key)
-        if value not in (None, ""):
-            return value
-    return None
+
+def _channel_values(source: SourceEntry, key: str) -> List[Any]:
+    """Every channel's own value of a channel-layer field, blanks left out."""
+    values = (facts.get(key) for facts in source.channels.values())
+    return [value for value in values if not _is_blank(value)]
+
+
+def _some_channel_lacks(source: SourceEntry, key: str) -> bool:
+    """Whether `source` lists no channels, or one of them has no value for `key`."""
+    return not source.channels or any(_is_blank(facts.get(key)) for facts in source.channels.values())
+
+
+def _own_channel_value(source: Optional[SourceEntry], key: str, identity: ChannelIdentity,
+                       channel_index: Optional[int] = None) -> Optional[Any]:
+    """The raw value of a channel-layer field on the curve's own source channel,
+    None when the source does not list that channel -- never another channel's."""
+    facts = resolve_source_channel(source, identity, channel_index)
+    return facts.get(key) if facts else None
 
 
 def _raw_field_value(source: SourceEntry, key: str, layer: str) -> Optional[Any]:
-    if layer == "channel":
-        return channel_summary_value(source, key)
     if layer == "excel":
         return source.excel_metadata.get(key)
     return source.file_metadata.get(key)
@@ -221,15 +215,18 @@ def _raw_field_value(source: SourceEntry, key: str, layer: str) -> Optional[Any]
 
 def _text_or_none(value: Any) -> Optional[str]:
     """`value` as the string a facet lists it under, or None when it is blank."""
-    return str(value) if value not in (None, "") else None
+    return None if _is_blank(value) else str(value)
 
 
 def _field_value(source: SourceEntry, key: str, layer: str) -> Optional[Any]:
     """
     The field's typed value (parsed once at ingest, ADR §1.1) when metadata has
     been parsed for it, otherwise the raw cell -- so a project written before
-    parsed_metadata existed still filters, just on strings.
+    parsed_metadata existed still filters, just on strings. One value per file:
+    a channel-layer field has none (it is per channel, ADR §1.184).
     """
+    if layer == CHANNEL_LAYER:
+        return None
     parsed = getattr(source, "parsed_metadata", None) or {}
     if key in parsed:
         return parsed[key]
@@ -285,8 +282,8 @@ def build_metadata_facets(sources: Iterable[SourceEntry],
     build_range_facets.
 
     `allowed_keys`, when given, narrows the offering to those keys on top of
-    the `usable_as_filter` gate -- the Filter card's own column list
-   : `usable_as_filter` decides what *may*
+    the `is_active` gate -- the Filter card's own column list
+   : `is_active` decides what *may*
     appear, the card decides what is *on it*. None keeps the pre-§1.32
     behaviour (every opted-in field), which the batch resolver still relies on.
     """
@@ -296,11 +293,10 @@ def build_metadata_facets(sources: Iterable[SourceEntry],
 
     for source in sources:
         for key, config in fields.items():
-            if config.get("layer") == "channel":
+            if is_channel_layer(config):
                 # Every channel's own value is on offer: a curve is judged by
                 # its channel (curve_field_value), not the file's first one.
-                values = {_text_or_none(facts.get(key)) for facts in source.channels.values()}
-                values.discard(None)
+                values = {str(value) for value in _channel_values(source, key)}
             else:
                 value = _text_or_none(_field_value(source, key, config.get("layer", "excel")))
                 values = {value} if value is not None else set()
@@ -315,35 +311,29 @@ def build_metadata_facets(sources: Iterable[SourceEntry],
     }
 
 
-def source_field_value(source: SourceEntry, schema: Dict[str, Dict[str, Any]],
-                       key: str) -> Optional[str]:
+def curve_field_value(source: SourceEntry, schema: Mapping[str, Dict[str, Any]], key: str,
+                      identity: ChannelIdentity, channel_index: Optional[int] = None) -> Optional[Any]:
     """
-    `source`'s string value for one categorical filter field, or None when the
-    field is not a categorical filter field or the source has no value for it --
-    what selection.trace_filter's metadata gating family reads per trace
-   , the counterpart of TraceIdentity's pre-resolved Identity values.
+    The typed value one curve has for schema field `key`: a number
+    for int/float kinds, ISO text for dates, a string otherwise, None when the
+    curve has no value. Covers every schema field -- whether one is offered as a
+    filter is the Filter's call, not this reader's.
+
+    A channel-layer field is read only off the curve's own source channel; a
+    channel the source does not list, or one without the field, gives None --
+    another channel never stands in. Excel- and file-layer fields are one value
+    per file: typed when parsed metadata exists, the raw cell otherwise.
     """
-    config = categorical_schema_fields(schema).get(key)
-    if config is None:
+    config = schema.get(key)
+    if config is None or key.startswith("__"):
         return None
-    return _text_or_none(_field_value(source, key, config.get("layer", "excel")))
-
-
-def curve_field_value(source: SourceEntry, schema: Dict[str, Dict[str, Any]], key: str,
-                      identity: ChannelIdentity, channel_index: Optional[int] = None) -> Optional[str]:
-    """
-    `source_field_value` for one curve: a channel-layer field (unit, hardware
-    label...) is read off the curve's own source channel, so a file holding an
-    accelerometer and a microphone judges each curve by its own value. A channel
-    the source does not list (or one without the field) falls back to the
-    source-level value; every other field is source-level anyway.
-    """
-    config = categorical_schema_fields(schema).get(key)
-    if config is not None and config.get("layer") == "channel":
-        facts = resolve_source_channel(source, identity, channel_index)
-        if facts is not None and _text_or_none(facts.get(key)) is not None:
-            return _text_or_none(facts.get(key))
-    return source_field_value(source, schema, key)
+    if is_channel_layer(config):
+        raw = _own_channel_value(source, key, identity, channel_index)
+    else:
+        raw = _field_value(source, key, config.get("layer", "excel"))
+    if field_kind(config) in RANGE_KINDS:
+        return _range_value(raw, config)
+    return _text_or_none(raw)
 
 
 def channel_identity_sort_key(identity: ChannelIdentity) -> Tuple[str, bool, str]:
@@ -430,7 +420,7 @@ def apply_metadata_facets(sources: Iterable[SourceEntry], schema: Dict[str, Dict
 
     `fields` names the schema fields to evaluate in place of the Filter panel's
     offer (categorical_schema_fields): a saved query names its own fields and has
-    already checked their kind, so usable_as_filter is not asked.
+    already checked their kind, so is_active is not asked.
     """
     fields = (categorical_schema_fields(schema) if fields is None
               else {key: schema[key] for key in fields if key in schema})
@@ -440,8 +430,17 @@ def apply_metadata_facets(sources: Iterable[SourceEntry], schema: Dict[str, Dict
         for key, wanted in selected_values.items():
             if not wanted or key not in fields:
                 continue
-            value = _field_value(source, key, fields[key].get("layer", "excel"))
-            if (EMPTY_FACET_VALUE if value in (None, "") else str(value)) not in wanted:
+            if is_channel_layer(fields[key]):
+                # A whole file passes when any channel has a selected value, "(Empty)"
+                # when some channel lacks the field; the channels
+                # themselves are judged by apply_column_facets.
+                offered = {str(value) for value in _channel_values(source, key)}
+                if _some_channel_lacks(source, key):
+                    offered.add(EMPTY_FACET_VALUE)
+            else:
+                value = _field_value(source, key, fields[key].get("layer", "excel"))
+                offered = {EMPTY_FACET_VALUE if _is_blank(value) else str(value)}
+            if offered.isdisjoint(wanted):
                 matches = False
                 break
         if matches:
@@ -474,20 +473,16 @@ def build_range_facets(sources: Iterable[SourceEntry],
 
 def _range_value(raw: Any, config: Dict[str, Any]) -> Optional[Any]:
     """`raw` as the comparable value of a ranged field (float, or ISO date text), None when unusable."""
-    if raw in (None, ""):
+    if _is_blank(raw):
         return None
     value = str(raw) if field_kind(config) == "date" else _as_number(raw)
-    return None if value in (None, "") else value
-
-
-def _is_channel_layer(config: Dict[str, Any]) -> bool:
-    return config.get("layer") == "channel"
+    return None if _is_blank(value) else value
 
 
 def _range_values(source: SourceEntry, key: str, config: Dict[str, Any]) -> List[Any]:
     """Every usable value `source` holds for one ranged field -- one per channel
     for a channel-layer field, else the single file-level value."""
-    if _is_channel_layer(config):
+    if is_channel_layer(config):
         raws = [facts.get(key) for facts in source.channels.values()]
     else:
         raws = [_field_value(source, key, config.get("layer", "excel"))]
@@ -502,9 +497,9 @@ def value_in_range(source: SourceEntry, key: str, config: Dict[str, Any],
     Whether `source`'s value for one ranged field falls in `bounds` (inclusive).
 
     A channel-layer field is judged by the curve's own channel when `identity`
-    is given (like curve_field_value, but with no fallback to another channel's
-    value). Without `identity` -- the batch resolver judging a whole file -- the
-    file passes when any of its channels is in range.
+    is given, the same channel curve_field_value reads. Without `identity` -- apply_range_facets judging a whole file -- the
+    file passes when any of its channels is in range; the channels themselves
+    are then judged by apply_column_facets.
 
     Returns None -- rather than False -- when there is no usable value to
     judge, so a caller can decide what "nothing to judge" means: the
@@ -514,32 +509,14 @@ def value_in_range(source: SourceEntry, key: str, config: Dict[str, Any],
     "skry").
     """
     lo, hi = bounds
-    if identity is not None and _is_channel_layer(config):
-        facts = resolve_source_channel(source, identity, channel_index) or {}
-        values = [v for v in [_range_value(facts.get(key), config)] if v is not None]
+    if identity is not None and is_channel_layer(config):
+        value = _range_value(_own_channel_value(source, key, identity, channel_index), config)
+        values = [] if value is None else [value]
     else:
         values = _range_values(source, key, config)
     if not values:
         return None
     return any(lo <= value <= hi for value in values)
-
-
-def curve_range_value(source: SourceEntry, schema: Dict[str, Dict[str, Any]], key: str,
-                      identity: ChannelIdentity, channel_index: Optional[int] = None) -> Optional[Any]:
-    """
-    The value `value_in_range` judges one curve by for a ranged field (float, or
-    ISO date text), None when the field is not ranged or the curve has none: a
-    channel-layer field is read off the curve's own channel (no fallback to
-    another channel), a file-level field off the source.
-    """
-    config = ranged_schema_fields(schema).get(key)
-    if config is None:
-        return None
-    if _is_channel_layer(config):
-        facts = resolve_source_channel(source, identity, channel_index) or {}
-        return _range_value(facts.get(key), config)
-    values = _range_values(source, key, config)
-    return values[0] if values else None
 
 
 def apply_range_facets(sources: Iterable[SourceEntry], schema: Dict[str, Dict[str, Any]],
@@ -680,8 +657,19 @@ def _passes(value: Optional[str], wanted: Optional[set]) -> bool:
     return (EMPTY_FACET_VALUE if value in (None, "") else str(value)) in wanted
 
 
-def _matching_channel_labels(source, schema, column_values, channels):
-    """Judge stored or reader channels by the same Filter column values."""
+def _channel_ranges(schema, ranges):
+    """The channel-layer fields among `ranges`, each with its config and bounds."""
+    return {key: (schema[key], bounds) for key, bounds in (ranges or {}).items()
+            if bounds and key in schema and is_channel_layer(schema[key])}
+
+
+def _matching_channel_labels(source, schema, column_values, channels, channel_ranges=None):
+    """Judge stored or reader channels by the same Filter column values.
+
+    `channel_ranges` (from _channel_ranges) judges each channel by its own value
+    of a channel-layer ranged field; a channel with no usable value fails, since
+    a range is a positive assertion.
+    """
     from core.filter_card_config import (
         COLUMN_CHANNEL, COLUMN_CHANNEL_TYPE, COLUMN_DATA_POOL_LABEL,
         COLUMN_DIRECTION, COLUMN_FILE_NAME,
@@ -695,7 +683,7 @@ def _matching_channel_labels(source, schema, column_values, channels):
     for key, values in wanted.items():
         if key in source_values:
             value = source_values[key]
-        elif key in schema and schema[key].get("layer") != "channel":
+        elif key in schema and not is_channel_layer(schema[key]):
             value = (_field_value(source, key, schema[key].get("layer", "excel"))
                      if source is not None else None)
         else:
@@ -715,44 +703,45 @@ def _matching_channel_labels(source, schema, column_values, channels):
         for key, values in channel_columns.items():
             if key in identity_values:
                 value = identity_values[key]
-            elif key in schema:
-                config = schema[key]
-                facts = (resolve_source_channel(source, identity, index)
-                         if config.get("layer") == "channel" else None)
-                if facts is not None:
-                    value = facts.get(key)
-                elif source is not None:
-                    value = _field_value(source, key, config.get("layer", "excel"))
-                else:
-                    value = None
+            elif key in schema:  # file-level schema fields were judged above
+                value = _own_channel_value(source, key, identity, index)
             else:
                 continue
             if not _passes(value, values):
                 matches = False
                 break
         if matches:
+            matches = all(
+                value_in_range(source, key, config, bounds, identity, index) is True
+                for key, (config, bounds) in (channel_ranges or {}).items())
+        if matches:
             labels.add(label)
     return labels
 
 
 def apply_column_facets(sources: Iterable[SourceEntry], schema: Mapping[str, Any],
-                        column_values: Mapping[str, Iterable[str]]) -> Dict[str, set]:
+                        column_values: Mapping[str, Iterable[str]], *,
+                        ranges: Optional[Mapping[str, Tuple[Any, Any]]] = None) -> Dict[str, set]:
     """Measurement × channel pairs satisfying a column rule.
 
     OR within each column, AND across columns. Missing keys impose nothing;
     empty value sets reject every pair. Schema validity is the caller's concern.
     This is also the predicate used by visible_pool_channels. A matching
     measurement with no matching channel retains its key with an empty set.
+
+    `ranges` maps a ranged field to (lo, hi); a channel-layer one is judged per
+    channel here. File-level ranges are apply_range_facets' job.
     """
     result = {}
     columns = {key: set(values) for key, values in column_values.items()}
+    channel_ranges = _channel_ranges(schema, ranges)
     for source in sources:
         channels = (
             (label, split_channel_base_and_direction(facts.get("name") or label),
              facts.get("type"), facts.get("index"))
             for label, facts in source.channels.items()
         )
-        labels = _matching_channel_labels(source, schema, columns, channels)
+        labels = _matching_channel_labels(source, schema, columns, channels, channel_ranges)
         if labels is not None:
             result[source.id] = labels
     return result
@@ -786,7 +775,8 @@ def visible_pool_channels(runs, entries_by_path, schema: Dict[str, Dict[str, Any
 
     `selected_ranges` maps a numeric/date field to its (lo, hi) and narrows by
     apply_range_facets, so a measurement with no value for the field is hidden
-    like one no metadata filter can judge. `selected_identity_values` maps a
+    like one no metadata filter can judge; a channel-layer field also hides
+    each channel outside the range. `selected_identity_values` maps a
     built-in Identity column (core.filter_card_config COLUMN_*) to the values
     it lets through, EMPTY_FACET_VALUE standing for "has none":
     File name and Data Pool label hide whole measurements, Direction and
@@ -834,7 +824,8 @@ def visible_pool_channels(runs, entries_by_path, schema: Dict[str, Dict[str, Any
             (label, split_channel_base_and_direction(meta.name or ""), meta.type, meta.index)
             for label, meta in run.available_channels.items()
         )
-        labels = _matching_channel_labels(entry, schema, columns, channels)
+        labels = _matching_channel_labels(entry, schema, columns, channels,
+                                          _channel_ranges(schema, active_ranges))
         if labels is not None and wanted_identities:
             labels &= {label for label, meta in run.available_channels.items()
                        if split_channel_base_and_direction(meta.name or "") in wanted_identities}

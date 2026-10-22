@@ -18,7 +18,7 @@ from typing import Dict, Set, TYPE_CHECKING
 
 from core.project_model import ResultSetRef
 from core.workflow_graph import Workflow
-from io_modules.result_cache.cache_layout import result_params_from_block
+from io_modules.result_cache import result_params_from_block
 from signal_processing.workflow import save_block_ids, spec_for
 
 if TYPE_CHECKING:

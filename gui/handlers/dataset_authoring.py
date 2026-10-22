@@ -27,14 +27,12 @@ from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox, QWidget
 from core.jobs import JobState, job_step
 from gui.dialogs.signal_generator_dialog import SignalGeneratorDialog
 from gui.dialogs.signal_preview import SignalPreviewHandler
-from io_modules.signal_generation import write_dataset_sheets
-from io_modules.signal_generation.signal_library import (
+from io_modules.signal_generation import (
     build_dataset,
+    generate_and_export_synthetic,
     list_datasets,
     realize_measurement,
-)
-from io_modules.signal_generation.synthetic_pipeline import (
-    generate_and_export_synthetic,
+    write_dataset_sheets,
 )
 
 __all__ = ["DatasetAuthoringHandler", "EXPORT_SLOT_KEY", "SLOT_KEY"]

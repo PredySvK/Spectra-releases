@@ -57,12 +57,6 @@ PARAM_ORDERS = "orders_to_extract"
 PARAM_F_START = "f_start"
 PARAM_F_STOP = "f_stop"
 
-# The settings a result was computed with that no SpectralProcessing field
-# carries (an order's width, the rpm step, DC removal), as one nested mapping
-# in Provenance.params. Kept out of a curve's compute_spec on purpose: the
-# Parameter Set signature is built from that, and these only serve to tell two
-# curves apart when one is adopted into a result set (#428).
-PARAM_COMPUTATION = "computation"
 META_EFFECTIVE_F_START = "effective_f_start"
 META_EFFECTIVE_F_STOP = "effective_f_stop"
 

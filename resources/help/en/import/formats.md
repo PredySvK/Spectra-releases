@@ -50,9 +50,17 @@ A raw time recording saved by Simcenter Testlab, read without Testlab. One strea
 | Channel name | the channel's name in Testlab, without the `Time for ` that a UNV export puts in front |
 | Unit | the channel's unit |
 | Sampling rate, number of points | the file's header and index |
-| Time start | always 0 s |
+| Time start | the file's time axis (0 s when the file does not store one) |
+| Node, direction | numbered like Testlab's UNV export: points 1.. in sorted order of the part of the name before the last `:`, direction from the `:+X`, `:+Y`, `:+Z` suffix (no suffix: 0) |
 
-Only what has been checked against Testlab's own UNV export is read: format version 13 with samples stored as 32-bit floats in engineering units. Any other file (another version, a different sample type or more than one stream) is skipped and does not appear in the Data Pool. Node and direction are not read yet.
+Only what has been checked against Testlab's own UNV export is read:
+
+| Supported | Samples stored as |
+|---|---|
+| format version 13 (e.g. signals generated in Testlab) | 32-bit floats in engineering units |
+| format version 21 (recordings from a measurement front-end) | 24-bit integers with a scale, converted to the channel's unit (`g`, `rpm`, …) |
+
+Not read yet: other sample types (16-bit or 32-bit integers, 64-bit floats), more than one stream (channels with different sampling rates), other format versions. Such a file is skipped and does not appear in the Data Pool. Sensitivity, range and front-end serial numbers stored in the file are not shown.
 
 ## .txt (processed measurement)
 

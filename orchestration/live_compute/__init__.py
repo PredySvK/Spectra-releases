@@ -9,7 +9,7 @@ channels from disk and running DSP pipelines for live workspace tabs.
 curve's Tab cache file, cache lookup, read, DSP -- in one worker task; `plan_compute_failure` is the one
 table of what a failure does to the tab, by `ComputeOrigin`.
 `resolve_restore_config` is the config a restored tab computes with: its
-saved recipe over the ribbon's.
+saved Curve recipe, the ribbon's only without one.
 
 What does not belong here: Qt widgets or dock manipulation (gui/), plot
 models or curve formatting (view_models/), active project state (session/),
@@ -17,14 +17,6 @@ or core DSP algorithms (signal_processing/) -- orchestration coordinates
 them, it does not implement them.
 """
 
-from orchestration.live_compute._payloads import (
-    read_spectrogram_channels,
-    read_two_channels,
-)
-from orchestration.live_compute._dock_reads import (
-    read_order_channels,
-    read_overall_level_channels,
-)
 from orchestration.live_compute._compute_origin import (
     FAILURE_CLOSE_TAB,
     FAILURE_KEEP_PLOT,
@@ -86,11 +78,7 @@ __all__ = [
     "run_live_compute",
     "run_order_drops",
     "plan_compute_failure",
-    "read_order_channels",
     "read_simple_drops",
     "resolve_cache_finder",
     "resolve_restore_config",
-    "read_overall_level_channels",
-    "read_spectrogram_channels",
-    "read_two_channels",
 ]

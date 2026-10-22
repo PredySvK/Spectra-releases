@@ -18,7 +18,9 @@ from dataclasses import dataclass
 from typing import Callable, Optional, Tuple
 
 from core.workflow_graph import Workflow, resolve_workflow_chains
-from signal_processing.workflow import resolve_block_errors, save_block_ids
+from signal_processing.workflow import (
+    NO_INPUT_BLOCK_MESSAGE, resolve_block_errors, save_block_ids,
+)
 
 ISSUE_MULTIPLE_INPUTS = "multiple_inputs"
 ISSUE_INVALID_GRAPH = "invalid_graph"
@@ -71,7 +73,7 @@ def resolve_chain_readiness(
     if not inputs:
         # After the blocks' own errors, so those are what get outlined first.
         issues.append(ReadinessIssue(
-            ISSUE_INVALID_GRAPH, "A workflow needs at least one input block.", everywhere,
+            ISSUE_INVALID_GRAPH, NO_INPUT_BLOCK_MESSAGE, everywhere,
         ))
         return tuple(issues)
     input_block = chain.block(inputs[0])

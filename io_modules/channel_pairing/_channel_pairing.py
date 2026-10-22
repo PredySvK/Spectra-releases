@@ -7,7 +7,6 @@ from openpyxl import Workbook, load_workbook
 from selection.channel_identity import split_channel_base_and_direction
 from selection.channel_pairing import resolve_channel_pair_rejection
 
-PAIRING_FILE_NAME = "channel_pairing.xlsx"
 _SHEET = "ChannelPairs"
 _HEADER = ("Measured channel", "Simulated channel")
 

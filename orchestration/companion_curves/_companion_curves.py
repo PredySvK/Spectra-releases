@@ -1,8 +1,8 @@
 """Background preparation of ordinary drops for paired order curves."""
 
-from core.block_kinds import KIND_ORDER_CUT, KIND_TIME_RESPONSE, PARAM_ORDER
+from core.block_kinds import PARAM_ORDER
 from core.channel_drop import build_drop_descriptor
-from core.models import resolve_channel_block_kind
+from core.models import READING_IMPORTED_RESULT, READING_UNREADABLE, resolve_channel_reading
 from io_modules.data_accessor import DataAccessor
 from selection.companion_curves import CompanionCurve, resolve_companion_curves
 from session.project import ProjectSession
@@ -33,7 +33,7 @@ def run_companion_curves(project_session, runs, plotted, channel_pairs):
     orders = {curve.order for curve in origins.values() if curve.order is not None}
     available = {}
     for source_id, label, run, meta in channels.values():
-        if resolve_channel_block_kind(meta) not in (KIND_TIME_RESPONSE, KIND_ORDER_CUT):
+        if resolve_channel_reading(meta) == READING_UNREADABLE:
             continue
         for order in orders:
             available[CompanionCurve(source_id, label, order)] = (run, meta, label)
@@ -42,7 +42,7 @@ def run_companion_curves(project_session, runs, plotted, channel_pairs):
     imported_orders = {}
     for curve in possible:
         run, meta, label = available[curve]
-        if resolve_channel_block_kind(meta) == KIND_ORDER_CUT:
+        if resolve_channel_reading(meta) == READING_IMPORTED_RESULT:
             key = (run.file_path, meta.index)
             if key not in imported_orders:
                 try:

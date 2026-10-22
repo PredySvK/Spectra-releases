@@ -1,11 +1,9 @@
 """Project-level access to channel_pairing.xlsx."""
 
 import os
-import shutil
 
-from io_modules.channel_pairing import (
-    PAIRING_FILE_NAME, read_channel_pairing, write_channel_pairing)
-from io_modules.project_store import project_folder
+from io_modules.channel_pairing import read_channel_pairing, write_channel_pairing
+from io_modules.project_store import PAIRING_FILE_NAME, project_folder
 
 
 def resolve_channel_pairing_path(project_path: str) -> str:
@@ -31,13 +29,3 @@ def write_project_channel_pairing(project_path: str, pairs) -> None:
     """Store `pairs`; raises PermissionError while Excel holds the file open."""
     write_channel_pairing(resolve_channel_pairing_path(project_path), pairs)
 
-
-def copy_project_channel_pairing(old_project_path: str, new_project_path: str) -> None:
-    """Take the workbook along on a Save As into another folder.
-
-    No workbook to take, or one already in the new folder, leaves both as they are.
-    """
-    source = resolve_channel_pairing_path(old_project_path)
-    target = resolve_channel_pairing_path(new_project_path)
-    if source != target and os.path.isfile(source) and not os.path.exists(target):
-        shutil.copy2(source, target)

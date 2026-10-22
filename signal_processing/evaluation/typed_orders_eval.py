@@ -32,7 +32,7 @@ import numpy as np
 
 from core.block_kinds import KIND_SPECTROGRAM
 from core.data_block import NVHDataBlock
-from core.evaluation import CurveIdentity, SingleValue
+from core.evaluation import CurveIdentity, CurveOrder, SingleValue
 from signal_processing.dsp.order_cut import order_cut_from_spectrogram
 from signal_processing.evaluation.max_eval import extract_max
 from signal_processing.result_blocks import build_order_cut_block
@@ -64,7 +64,7 @@ def extract_typed_orders(
     (nothing typed yet) gives no rows either."""
     if not orders or not is_rpm_spectrogram(block):
         return ()
-    return order_rows_from_spectrogram(block, identity, orders, order_width, "{:g}")
+    return order_rows_from_spectrogram(block, identity, orders, order_width)
 
 
 def order_rows_from_spectrogram(
@@ -72,13 +72,12 @@ def order_rows_from_spectrogram(
     identity: CurveIdentity,
     orders: Sequence[float],
     order_width: float,
-    order_format: str,
 ) -> Tuple[SingleValue, ...]:
     """The one value path from an rpm spectrogram and a list of orders to
     table rows, one per order in the given sequence. Typed orders and
     Dominant orders (#142) both end here, which is what makes a Dominant
     order's value equal the Typed orders row for the same order by
-    construction. `order_format` only shapes the Order / Band label."""
+    construction."""
     z_axis = block.axes[1]
     frequencies = np.asarray(block.axes[0].values, dtype=np.float64)
     rpm_axis = np.asarray(z_axis.values, dtype=np.float64)
@@ -95,17 +94,16 @@ def order_rows_from_spectrogram(
 
     rows = []
     for order in orders:
-        # Name, unit and computation record match Order Tracking's own block (#669);
-        # only the step differs, because this cut comes from the spectrogram.
+        # Name and unit match Order Tracking's own block (#669); only the
+        # step differs, because this cut comes from the spectrogram.
         cut_block = build_order_cut_block(
             block, rpm_axis, float(order), order_cuts[float(order)],
             window_type=window_type, fft_size=fft_size, step="evaluation_typed_orders",
-            computation={"order_width": float(order_width)},
         )
         # Order width has no home of its own on the table (ADR "Order width
-        # is visible in the table"), so it rides in the same cell as the order.
+        # is visible in the table"), so it rides with the order.
         row_identity = replace(
-            identity, order_or_band=f"Order {order_format.format(order)} (±{float(order_width):g})",
+            identity, order_or_band=CurveOrder(float(order), float(order_width)),
         )
         rows.append(extract_max(cut_block, row_identity))
     return tuple(rows)

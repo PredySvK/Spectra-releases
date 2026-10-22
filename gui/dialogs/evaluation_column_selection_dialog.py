@@ -12,9 +12,9 @@ Offers fields from four distinct groups:
 4. Calculated metadata: Analysis type, Order, Parameter set
    (core.filter_card_config.CALCULATED_BUILTIN_ORDER).
 
-Strict active-only rule (Issue #6, ADR §1.64 point 10):
-Only schema fields with `is_active == True` (or defaulted True, not False) are
-offered. Fields disabled in the Metadata Editor MUST NOT be offered.
+Strict active-only rule:
+Only schema fields with Active Status on (`is_active`) are offered.
+Fields switched off in Metadata and Filter Settings MUST NOT be offered.
 
 Dialog geometry is remembered between invocations via dialog_state.
 """
@@ -29,13 +29,8 @@ from PySide6.QtWidgets import (
     QScrollArea, QVBoxLayout, QWidget,
 )
 
-from core.filter_card_config import (
-    CALCULATED_BUILTIN_ORDER,
-    GROUP_RAW, IDENTITY_BUILTIN_ORDER,
-)
 from gui.dialogs.dialog_state import remember_dialog_geometry
-from selection.trace_filter import schema_field_group
-from view_models.evaluation import build_column_descriptor, build_schema_field_descriptor
+from selection.field_offer import OfferedField, build_field_offer
 from gui.appearance import APP_TOKENS
 
 
@@ -55,36 +50,9 @@ class EvaluationColumnSelectionDialog(QDialog):
         self._schema = schema
         self._checkboxes: Dict[str, QCheckBox] = {}
 
-        # Collect available fields per group
-        # 1. Identity
-        identity_fields = [(key, build_column_descriptor(key, schema).label) for key in IDENTITY_BUILTIN_ORDER]
-
-        # 2. Raw & 3. Excel (strictly active only)
-        raw_fields: List[Tuple[str, str]] = []
-        excel_fields: List[Tuple[str, str]] = []
-
-        for key, field_cfg in schema.items():
-            # Active-only rule (Issue #6, ADR §1.64 point 10), shared with the table.
-            descriptor = build_schema_field_descriptor(key, field_cfg)
-            if not descriptor.is_active:
-                continue
-
-            label = descriptor.label
-            group = schema_field_group(dict(field_cfg))
-            if group == GROUP_RAW:
-                raw_fields.append((key, label))
-            else:
-                excel_fields.append((key, label))
-
-        # Sort schema fields alphabetically by label
-        raw_fields.sort(key=lambda item: item[1].casefold())
-        excel_fields.sort(key=lambda item: item[1].casefold())
-
-        # 4. Calculated
-        calculated_fields = [(key, build_column_descriptor(key, schema).label) for key in CALCULATED_BUILTIN_ORDER]
-
-        # Valid keys that are offered
-        valid_offered_keys = {k for k, _ in identity_fields + raw_fields + excel_fields + calculated_fields}
+        # One Field offer, shared with the table and every other offer.
+        offer = build_field_offer(schema)
+        valid_offered_keys = set(offer.keys())
 
         # Initialize selected keys, preserving input order and pruning unoffered keys
         self._selected_keys: List[str] = [k for k in selected_columns if k in valid_offered_keys]
@@ -103,10 +71,10 @@ class EvaluationColumnSelectionDialog(QDialog):
         content_layout.setSpacing(8)
 
         # Add section groups
-        content_layout.addWidget(self._build_group("Identity", identity_fields))
-        content_layout.addWidget(self._build_group("Raw metadata", raw_fields))
-        content_layout.addWidget(self._build_group("Excel metadata", excel_fields))
-        content_layout.addWidget(self._build_group("Calculated metadata", calculated_fields))
+        content_layout.addWidget(self._build_group("Identity", offer.identity))
+        content_layout.addWidget(self._build_group("Raw metadata", offer.raw))
+        content_layout.addWidget(self._build_group("Excel metadata", offer.excel))
+        content_layout.addWidget(self._build_group("Calculated metadata", offer.calculated))
         content_layout.addStretch()
 
         scroll.setWidget(scroll_content)
@@ -123,7 +91,7 @@ class EvaluationColumnSelectionDialog(QDialog):
 
         remember_dialog_geometry(self, settings, "evaluation_column_selection", default_size=(450, 550))
 
-    def _build_group(self, title: str, fields: List[Tuple[str, str]]) -> QGroupBox:
+    def _build_group(self, title: str, fields: Sequence[OfferedField]) -> QGroupBox:
         box = QGroupBox(title, self)
         box_layout = QVBoxLayout(box)
         box_layout.setContentsMargins(6, 6, 6, 6)

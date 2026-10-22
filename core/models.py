@@ -47,6 +47,22 @@ def resolve_channel_block_kind(channel: 'ChannelMetadata') -> Optional[str]:
     )
 
 
+# How a channel is read -- the one answer callers ask instead of combining func_type
+# and block_kind themselves. Computations take only a waveform; showing and storing
+# take a waveform or an Imported result.
+READING_WAVEFORM = "waveform"
+READING_IMPORTED_RESULT = "imported_result"
+READING_UNREADABLE = "unreadable"
+
+
+def resolve_channel_reading(channel: 'ChannelMetadata') -> str:
+    """READING_WAVEFORM, READING_IMPORTED_RESULT or READING_UNREADABLE for `channel`."""
+    block_kind = resolve_channel_block_kind(channel)
+    if block_kind is None:
+        return READING_UNREADABLE
+    return READING_WAVEFORM if block_kind == KIND_TIME_RESPONSE else READING_IMPORTED_RESULT
+
+
 class ChannelMetadata:
     """
     Data descriptor storing physical sensor tracking properties and sampling criteria.
@@ -224,9 +240,10 @@ class MeasurementRunIndex:
         """Registers a discovered sub-channel element securely into the active tracking dictionary loop."""
         self.available_channels[unique_label] = channel_meta
 
-    def readable_channels(self) -> List[ChannelMetadata]:
-        """The channels a reader can turn into a waveform. The rest stay in
-        available_channels so the file's contents remain visible."""
+    def computable_channels(self) -> List[ChannelMetadata]:
+        """The channels a computation can start from: the waveforms. An Imported result
+        is shown and stored but never computed from, and an unreadable channel stays
+        in available_channels so the file's contents remain visible."""
         return [meta for meta in self.available_channels.values()
                 if is_time_response(meta.func_type)]
 

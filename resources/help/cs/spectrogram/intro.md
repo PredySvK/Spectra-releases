@@ -8,8 +8,8 @@ Tento modul vytváří časově-frekvenční nebo RPM-frekvenční mapu signálu
 
 Blok o $N$ vzorcích je umístěn **se středem v každém triggeru**; neexistuje nastavení překryvu ani průměrování. Rozestup triggerů (*Step*) rozhoduje, zda se sousední bloky překrývají, nebo mezi nimi zůstanou mezery. Triggery vznikají podle [Tacho trackingu](topic:shared/tracking) (viz též [Order Tracking](topic:order_tracking/intro) pro tatáž data čtená jako řády):
 
-- **RPM Tracked:** trigger v každém násobku kroku v RPM (výchozí **50 RPM**), kde tacho tuto hodnotu protne ve zvoleném směru (Up nebo Down; Any se odmítne, protože rozjezd s doběhem protíná každé otáčky dvakrát). Osa je RPM.
-- **Free Run (Time):** trigger každých Step sekund od začátku záznamu (výchozí **0,05 s**). Osa je čas. Tacho není potřeba.
+- **RPM Tracked:** trigger v každém násobku kroku v RPM (výchozí **50 RPM**), kde tacho tuto hodnotu protne ve zvoleném směru (Up nebo Down). Osa je RPM.
+- **Free Run (Time):** trigger každých Step sekund od začátku záznamu (výchozí **0,05 s**), nebo od *Start [s]* do *End [s]*, když je nastaven [Tracking range](topic:shared/tracking). Osa je čas. Tacho není potřeba.
 
 ## Výpočet jednoho bloku
 
@@ -35,7 +35,7 @@ Pro celý blok je $g_i=1$. Protože trigger leží vždy uvnitř záznamu, je bl
 | Formát / Amplituda / Barevná škála | Linear / RMS / Linear |
 | Režim trackingu | RPM Tracked |
 | Step | 50 RPM (časový režim: 0,05 s) |
-| Směr / Hystereze | Up / 10 RPM |
+| Směr | Up |
 | Remove DC Offset | zapnuto (viz [Spektrum](topic:spectrum/intro)) |
 
 Záznam musí mít alespoň $N$ vzorků. Data mapy pocházejí z [surového signálu](topic:raw_data/intro) kanálu.

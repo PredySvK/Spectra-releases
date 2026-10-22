@@ -46,15 +46,15 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFileDialog, QMessageBox, QProgressDialog
 
 from core.jobs import job_step
-from core.project_model import PROJECT_EXTENSION, PROJECT_FORMAT_VERSION
+from core.project_model import PROJECT_EXTENSION, PROJECT_FORMAT_VERSION, NVHProject
 from gui.project_claim import ProjectClaim, activate_holder
 from gui.dialogs.metadata_editor_dialog import MetadataEditorDialog
 from io_modules.measurement_files import SUPPORTED_EXTENSIONS, holds_measurement_suffix
-from io_modules.project_store import ProjectFormatError
-from orchestration.channel_pairing import (
-    copy_project_channel_pairing, read_project_channel_pairing)
+from orchestration.channel_pairing import read_project_channel_pairing
 from orchestration.data_pool import save_metadata_schema
-from orchestration.result_sets import run_result_set_copy
+from orchestration.project_swap import run_project_swap
+from orchestration.recent_projects import run_recent_project_check
+from orchestration.project_folder import run_save_as
 
 PROJECT_FILTER = f"NVH Project (*{PROJECT_EXTENSION});;All Files (*.*)"
 
@@ -65,6 +65,8 @@ _NAME_FILTER = f"Supported NVH Files ({' '.join(SUPPORTED_EXTENSIONS)});;All Fil
 # One read of channel_pairing.xlsx per purpose ("open", "editor"): a
 # newer job for the same purpose supersedes the older, the other purposes' stay.
 _PAIRING_SLOT = "project_document.channel_pairing"
+# The ribbon's recent-project check; a refresh supersedes the one still running.
+_RIBBON_RECENT_SLOT = "project_document.recent_check"
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +102,15 @@ def ask_for_project_path(app_context, parent_widget) -> str:
     return chosen
 
 
+def _report_save_failure(app_context, parent_widget, error) -> None:
+    """Tells the user a save failed and logs it; the one wording every save path shares."""
+    QMessageBox.critical(
+        parent_widget, "Cannot save project",
+        f"The project was not saved.\n\n{error}",
+    )
+    app_context.log(f"PROJECT: Save failed: {error}")
+
+
 def ensure_project_saved(app_context, parent_widget) -> bool:
     """
     Guarantees the open project has a file, asking for one if it does not --
@@ -118,11 +129,7 @@ def ensure_project_saved(app_context, parent_widget) -> bool:
         return session.ensure_saved(
             lambda: ask_for_project_path(app_context, parent_widget))
     except (OSError, ValueError) as error:
-        QMessageBox.critical(
-            parent_widget, "Cannot save project",
-            f"The project was not saved.\n\n{error}",
-        )
-        app_context.log(f"PROJECT: Save failed: {error}")
+        _report_save_failure(app_context, parent_widget, error)
         return False
 
 
@@ -174,6 +181,8 @@ class ProjectDocumentHandler:
         self.show_x_axis_unit = show_x_axis_unit
         # Reads channel_pairing.xlsx off the GUI thread.
         self.job_runner = job_runner
+        # The Save As copy's progress dialog while it runs (show_copy_progress).
+        self._copy_progress = None
         # Marks the open project as taken for other Spectra processes (#546).
         self.claim = ProjectClaim()
         self.claim.activation_requested.connect(self._raise_window)
@@ -248,7 +257,12 @@ class ProjectDocumentHandler:
             self.set_titlebar_text(title)
 
         if self.project_ribbon_tab is not None:
-            self.project_ribbon_tab.populate_recent(context.recent_projects())
+            recent = context.recent_projects()
+            self.project_ribbon_tab.populate_recent(recent)
+            run_recent_project_check(
+                self.job_runner, recent, slot_key=_RIBBON_RECENT_SLOT,
+                on_checked=self.project_ribbon_tab.mark_recent_checked,
+            )
 
         if self.show_x_axis_unit is not None:
             self.show_x_axis_unit(session.x_axis_unit)
@@ -285,7 +299,7 @@ class ProjectDocumentHandler:
         context.remember_project(context.project_session.path)
         # What an Untitled project held of its Tab cache has a folder now (#731).
         if self.workspace is not None:
-            self.workspace.write_held_tab_cache_files()
+            self.workspace.tab_cache_files.write_held()
         self.refresh_project_ui()
 
     def bind_run_finished(self, workflow_runner) -> None:
@@ -304,40 +318,17 @@ class ProjectDocumentHandler:
         if self.show_workspace is not None:
             self.show_workspace()
 
-    def _reset_workspace(self) -> None:
-        """Closes the outgoing project's analysis tabs when a project is swapped."""
-        if self.workspace is not None:
-            self.workspace.close_all_tabs()
-
-    def load_directory_into_workspace(self, path: str) -> None:
-        """Replace the pool with one folder and ingest it in the background."""
-        self.live_order_results.reset()
-        if not self.app_context.pool.reset_pool_to_directory(path):
-            return
-        self.explorer_panel.rebuild_tree_view()
-        self.explorer_panel.reveal_in_browser(path)
-        self.data_pool.add_paths([path])
-
     def load_project_pool(self) -> None:
         """Restore the stored pool snapshot, then refresh its roots in the background."""
         context = self.app_context
-        self.live_order_results.reset()
-
-        # Any running scan belonged to the project just closed. The refresh
-        # below supersedes it in the usual case, but there may be no roots.
-        self.data_pool.cancel()
-
         recovered = context.restore_pool_from_project()
         self.explorer_panel.rebuild_tree_view()
         if recovered:
             context.log(f"POOL: Restored {recovered} measurement(s) from the project.")
 
-        gone = len(self.explorer_panel.pool_panel.missing_paths)
-        if gone:
-            context.log(
-                f"WARNING: {gone} measurement(s) are not on disk where the project "
-                f"expects them. They are marked in the Data Pool; right-click one to locate it."
-            )
+        # Which of them are not on disk is found on a worker; the tree marks
+        # them and the log counts them when it lands.
+        self.data_pool.check_missing_after_project_open()
 
         directories = context.project_session.resolved_directories()
         if directories:
@@ -347,39 +338,22 @@ class ProjectDocumentHandler:
         """Open a dropped project file or start a project from a dropped folder."""
         if path.lower().endswith(PROJECT_EXTENSION):
             self.open_project(path)
-        elif os.path.isdir(path) and self.new_project():
-            self.load_directory_into_workspace(path)
+        elif os.path.isdir(path):
+            self._start_untitled_project(data_folder=path)
 
     # =========================================================================
     # DOCUMENT COMMANDS
     # =========================================================================
 
     def new_project(self) -> bool:
+        # No parameters: a button's clicked(bool) would otherwise land in one.
+        return self._start_untitled_project()
+
+    def _start_untitled_project(self, data_folder: Optional[str] = None) -> bool:
+        """New, or a dropped `data_folder` that joins the new project's Data Pool (#772)."""
         if not self.confirm_discarding_unsaved("starting a new project"):
             return False
-
-        context = self.app_context
-
-        # The pool is the open project's working set, so it goes with the project.
-        # Left standing, it showed the previous project's measurements against a
-        # project that has no entry for any of them -- no test setup, no metadata,
-        # no unit corrections -- and a Save As would have written that empty
-        # project beside a full-looking tree.
-        self.data_pool.cancel()
-        self.live_order_results.reset()
-        context.pool.clear_pool()
-        self._reset_workspace()
-
-        context.project_session.new_project()
-        # Nothing saved yet, so this only clears out the previous project's
-        # filter cards and picks (issue #372).
-        if self.filter_routing is not None:
-            self.filter_routing.restore_filter_state()
-        context.log("PROJECT: Started a new untitled project.")
-        self.explorer_panel.rebuild_tree_view()
-        self.refresh_project_ui()
-        self._enter_workspace()
-        return True
+        return run_project_swap(self, data_folder=data_folder)
 
     def open_project(self, project_path: str = "") -> bool:
         """
@@ -406,55 +380,97 @@ class ProjectDocumentHandler:
                         f"Spectra window; switched to it.")
             return False
 
-        try:
-            # Load the stored project only; the data folders are re-read in the
-            # background by load_project_pool below (audit 02, S6/6.1 --
-            # index_all_roots on the GUI thread froze the window on open, worst on
-            # the slow/network drives it most needs to stay responsive for). The
-            # tree is drawn from the stored snapshot at once and the background
-            # scan reconciles it folder by folder, marking the project unsaved if
-            # disk moved on; missing files are reported by load_project_pool.
-            session = context.project_session
-            session.load_project_file(project_path)
-        except (OSError, ValueError, ProjectFormatError) as error:
-            QMessageBox.critical(
-                self.parent_widget, "Cannot open project",
-                f"{os.path.basename(project_path)} could not be opened.\n\n{error}",
-            )
-            context.log(f"PROJECT: Failed to open {project_path}: {error}")
-            return False
+        # Only the stored project is read here; the data folders are re-read in
+        # the background by load_project_pool (audit 02, S6/6.1 -- indexing them
+        # on the GUI thread froze the window on open, worst on the slow/network
+        # drives it most needs to stay responsive for).
+        return run_project_swap(self, project_path)
 
+    # =========================================================================
+    # PROJECT SWAP STEPS (orchestration.project_swap.ProjectSwapSteps)
+    # =========================================================================
+
+    def read_project_file(self, project_path: str) -> NVHProject:
+        return self.app_context.project_session.read_project_file(project_path)
+
+    def report_unreadable(self, project_path: str, error: Exception) -> None:
+        QMessageBox.critical(
+            self.parent_widget, "Cannot open project",
+            f"{os.path.basename(project_path)} could not be opened.\n\n{error}",
+        )
+        self.app_context.log(f"PROJECT: Failed to open {project_path}: {error}")
+
+    def cancel_scan(self) -> None:
+        # Any running scan belongs to the outgoing project. A restored pool's
+        # refresh would supersede it, but there may be no roots to refresh.
+        self.data_pool.cancel()
+
+    def reset_live_order_results(self) -> None:
+        if self.live_order_results is not None:
+            self.live_order_results.reset()
+
+    def close_analysis_tabs(self) -> None:
+        # Never marks the project dirty (#640): the tabs belong to the outgoing one.
+        if self.workspace is not None:
+            self.workspace.close_all_tabs()
+
+    def empty_data_pool(self) -> None:
+        # The pool is the open project's working set, so it goes with the project.
+        # Left standing, it showed the previous project's measurements against a
+        # project that has no entry for any of them -- no test setup, no metadata,
+        # no unit corrections -- and a Save As would have written that empty
+        # project beside a full-looking tree.
+        self.app_context.pool.clear_pool()
+
+    def install_project(self, project_path: Optional[str], project: Optional[NVHProject]) -> None:
+        context = self.app_context
+        session = context.project_session
+        if project_path is None:
+            session.new_project()
+            context.log("PROJECT: Started a new untitled project.")
+            return
+        session.install_project_file(project_path, project)
         context.remember_project(project_path)
         self._read_channel_pairing("open", self._keep_channel_pairs)
-        self._reset_workspace()
         context.log(
             f"PROJECT: Opened '{session.project.name}' "
             f"({len(session.project.sources)} measurements)."
         )
-        # Restores the project's Data Pool -- every folder, not just the first
-        # one: the pool spans as many as the user added, and loading only one
-        # used to leave the rest of a multi-root project looking like it had
-        # lost its data. load_project_pool shows the stored snapshot before
-        # the folders are re-read.
+
+    def restore_data_pool(self) -> None:
+        # Every folder, not just the first one: the pool spans as many as the
+        # user added. The stored snapshot shows at once; the background scan
+        # reconciles it folder by folder, marking the project unsaved if disk
+        # moved on. A new project has an empty snapshot.
         self.load_project_pool()
 
+    def restore_filter_state(self) -> None:
+        # For a new project this only clears out the previous project's filter
+        # cards and picks (issue #372).
         if self.filter_routing is not None:
             self.filter_routing.restore_filter_state()
 
-        if self.workspace is not None:
-            self.workspace.restore_open_tabs()
+    def restore_open_tabs(self) -> None:
+        if self.workspace is None:
+            return
+        self.workspace.restore_open_tabs()
+        # A restored dock takes back its saved id (§1.94), so a custom Local
+        # filter card whose owner did not come back -- its recipe was
+        # skipped -- is orphaned;
+        # discard it now that every restored shell is up (§1.37).
+        if self.filter_panel is not None:
+            self.filter_panel.prune_orphan_dock_cards(self.workspace.open_dock_ids())
 
-            # A restored dock takes back its saved id (§1.94), so a custom Local
-            # filter card whose owner did not come back -- its recipe was
-            # skipped -- is orphaned;
-            # discard it now that every restored shell is up (§1.37).
-            if self.filter_panel is not None:
-                self.filter_panel.prune_orphan_dock_cards(self.workspace.open_dock_ids())
+    def add_data_folder(self, folder: str) -> None:
+        # The new project's pool is empty, so the folder is all of it.
+        self.explorer_panel.reveal_in_browser(folder)
+        self.data_pool.add_paths([folder])
 
+    def refresh_window(self, project_path: Optional[str]) -> None:
         self.refresh_project_ui()
         self._enter_workspace()
-        self._warn_if_older_format(session.project.format_version)
-        return True
+        if project_path is not None:
+            self._warn_if_older_format(self.app_context.project_session.project.format_version)
 
     def _warn_if_older_format(self, file_version: int) -> None:
         """Say so when the project was written by an older format.
@@ -486,11 +502,7 @@ class ProjectDocumentHandler:
         try:
             session.save()
         except (OSError, ValueError) as error:
-            QMessageBox.critical(
-                self.parent_widget, "Cannot save project",
-                f"The project was not saved.\n\n{error}",
-            )
-            context.log(f"PROJECT: Save failed: {error}")
+            _report_save_failure(context, self.parent_widget, error)
             return False
 
         context.log(f"PROJECT: Saved {session.path}")
@@ -498,46 +510,29 @@ class ProjectDocumentHandler:
 
     def save_project_as(self) -> bool:
         """
-        Saves under a new path. Into another folder, the result sets go along
-       : the user chooses to copy them or to leave them out, and
-        the copy runs on a background job behind a modal progress dialog --
-        the project is written only once it has finished.
+        Saves under a new path through the one Save As order:
+        into another folder the Project folder goes along -- the result sets
+        if the user keeps them, the scan caches, the Tab cache and the
+        project's workbooks -- all or nothing.
 
         Returns True when the project was saved by the time this returns; a
         copy still running returns False and reports through the log and the
         window when it ends.
         """
-        context = self.app_context
-        session = context.project_session
-        chosen = ask_for_project_path(context, self.parent_widget)
+        chosen = ask_for_project_path(self.app_context, self.parent_widget)
         if not chosen:
             return False
+        return run_save_as(self, self.app_context.project_session, self.job_runner, chosen)
 
-        old_path = session.path
+    # ---- the window's side of a Save As (SaveAsSteps) ----------------------
+
+    def finish_tab_cache_writes(self) -> None:
         # A Tab cache write still running would be named by the new project
         # but missed by the copy: let them land first.
         if self.workspace is not None:
             self.workspace.finish_tab_cache_writes()
-        try:
-            plan = session.build_result_set_copy(chosen)
-            if plan.relabels:
-                keep = self._ask_result_set_copy(plan)
-                if keep is None:
-                    return False
-                if not keep:
-                    plan = session.build_result_set_copy(chosen, keep_result_sets=False)
-            if not plan.copies:
-                session.save_as(chosen, result_set_copy=plan)
-        except (OSError, ValueError) as error:
-            self._report_save_failure(error)
-            return False
 
-        if plan.copies:
-            return self._save_as_with_copy(plan, old_path)
-        self._after_save_as(old_path, chosen)
-        return True
-
-    def _ask_result_set_copy(self, plan) -> Optional[bool]:
+    def ask_keep_result_sets(self, plan) -> Optional[bool]:
         """True to copy the result sets, False to leave them out, None to cancel."""
         box = QMessageBox(self.parent_widget)
         box.setIcon(QMessageBox.Icon.Question)
@@ -562,10 +557,9 @@ class ProjectDocumentHandler:
             return False
         return None
 
-    def _save_as_with_copy(self, plan, old_path) -> bool:
-        """Runs the copy behind a modal progress dialog, then the save."""
-        context = self.app_context
-        dialog = QProgressDialog("Copying results…", "Cancel", 0, 100, self.parent_widget)
+    def show_copy_progress(self, job_id: int) -> None:
+        """Modal progress over the copy; Cancel cancels the job."""
+        dialog = QProgressDialog("Copying the project folder…", "Cancel", 0, 100, self.parent_widget)
         dialog.setWindowTitle("Save Project As")
         # Modal on purpose: the project must not change while its copy is made,
         # which is the whole lock -- no snapshot needed.
@@ -573,60 +567,37 @@ class ProjectDocumentHandler:
         dialog.setMinimumDuration(0)
         dialog.setAutoClose(False)
         dialog.setAutoReset(False)
-        state = {"job_id": None, "outcome": None}
 
-        def changed(job_id):
-            if job_id != state["job_id"]:
+        def changed(changed_id):
+            if changed_id != job_id:
                 return
             record = self.job_runner.record(job_id)
             if record is not None:
                 dialog.setValue(record.percent)
 
         job_changed = getattr(self.job_runner, "job_changed", None)
-
-        def done(outcome):
-            state["outcome"] = outcome
-            if job_changed is not None:
-                job_changed.disconnect(changed)
-            dialog.close()
-            if outcome.saved:
-                self._after_save_as(old_path, plan.project_path)
-            elif outcome.cancelled:
-                context.log("PROJECT: Save As cancelled; the project was not saved.")
-            else:
-                self._report_save_failure(outcome.error or "The results could not be copied.")
-
-        def cancel():
-            if state["job_id"] is not None and state["outcome"] is None:
-                self.job_runner.cancel(state["job_id"])
-
         if job_changed is not None:
             job_changed.connect(changed)
-        dialog.canceled.connect(cancel)
+        dialog.canceled.connect(lambda: self.job_runner.cancel(job_id))
+        self._copy_progress = (dialog, job_changed, changed)
         dialog.show()
-        state["job_id"] = run_result_set_copy(
-            self.job_runner, context.project_session, plan, on_done=done)
-        outcome = state["outcome"]
-        return bool(outcome is not None and outcome.saved)
 
-    def _report_save_failure(self, error) -> None:
-        QMessageBox.critical(
-            self.parent_widget, "Cannot save project",
-            f"The project was not saved.\n\n{error}",
-        )
-        self.app_context.log(f"PROJECT: Save failed: {error}")
+    def close_copy_progress(self) -> None:
+        progress, self._copy_progress = self._copy_progress, None
+        if progress is None:
+            return
+        dialog, job_changed, changed = progress
+        if job_changed is not None:
+            job_changed.disconnect(changed)
+        # close() emits canceled; the job is over, so nothing is left to cancel.
+        dialog.canceled.disconnect()
+        dialog.close()
 
-    def _after_save_as(self, old_path, chosen) -> None:
-        context = self.app_context
-        if old_path:
-            # The pairs live beside the project file, so a new folder needs the workbook too.
-            # Copied on the GUI thread (§1.137): a background copy raced the editor's
-            # read, which created an empty workbook first and made the copy skip.
-            try:
-                copy_project_channel_pairing(old_path, chosen)
-            except OSError as error:
-                context.log(f"WARNING: Channel pairing not copied to the new folder: {error}")
-        context.log(f"PROJECT: Saved {chosen}")
+    def report_save_failure(self, error) -> None:
+        _report_save_failure(self.app_context, self.parent_widget, error)
+
+    def log(self, message: str) -> None:
+        self.app_context.log(message)
 
     def open_recent_project(self) -> bool:
         """Opens whatever the recent drop-down is pointing at."""

@@ -61,16 +61,10 @@ class MainWindowFrame(QWidget):
 
         # Wire scan-cache adoption to QtJobRunner so the GUI thread does not copy
         # files synchronously during save_as (audit 02 finding 6.3 / #82).
-        from io_modules.project_store import adopt_untitled_scan_caches
+        from orchestration.project_folder import run_untitled_scan_cache_carry
         self.app_context.project_session.set_cache_adopter(
-            lambda path, roots: self.job_runner.submit(
-                "Adopt scan caches",
-                fn=adopt_untitled_scan_caches,
-                args=(path, roots),
-                lane="interactive",
-                quiet=True,
-            )
-        )
+            lambda path, roots: run_untitled_scan_cache_carry(
+                self.job_runner, path, roots, on_warning=self.app_context.log))
 
 
         # Created before init_ui for the same reason: BatchRunHandler is wired

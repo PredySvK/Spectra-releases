@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from io_modules.result_cache.cache_naming import sanitize_result_set_label
+from io_modules.result_cache import sanitize_result_set_label
 
 LabelKind = Literal["empty", "unusable", "changed", "unchanged"]
 

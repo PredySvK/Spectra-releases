@@ -30,7 +30,7 @@ LOCATE_FILTER = (
 )
 
 
-def execute_locate_missing_file(app_context, explorer_widget, run_index, data_pool=None) -> bool:
+def execute_locate_missing_file(app_context, explorer_widget, run_index, data_pool) -> bool:
     """Asks where a missing measurement went and re-points the project at it."""
     session = app_context.project_session
     entry = session.source_location.entry_for_run(run_index)
@@ -67,12 +67,12 @@ def execute_locate_missing_file(app_context, explorer_widget, run_index, data_po
     # lives in is re-read; that is also what pulls in a whole folder's worth of
     # files if the data moved wholesale.
     app_context.pool.remove_pool_runs([run_index.file_path])
+    # The user just picked the file, so it exists: its marker goes now, not
+    # after a check on a worker.
+    app_context.pool.drop_missing_paths([run_index.file_path])
 
-    if data_pool is not None:
-        data_pool.add_paths([chosen])
-    else:
-        app_context.add_pool_directory(os.path.dirname(chosen), only_files={chosen})
-        explorer_widget.rebuild_tree_view()
+    explorer_widget.rebuild_tree_view()
+    data_pool.add_paths([chosen])
 
     return True
 

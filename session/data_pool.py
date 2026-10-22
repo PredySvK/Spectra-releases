@@ -24,28 +24,25 @@ the code moved 1:1 out of AppContext.
 
 import os
 from dataclasses import dataclass, field, replace
-from typing import Any, Dict, List, Mapping, NamedTuple, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple, Union
 
 from core.models import ChannelMetadata, MeasurementRunIndex, ReadProblems, UnreadableFile
-from core.project_model import NVHProject, SourceEntry
-from io_modules.metadata_schema import NUMERIC_KINDS, infer_field_kind, resolve_schema_field
+from core.project_model import NVHProject, SourceEntry, is_channel_layer
+from core.schema_conflict import LAYER_CONFLICT, TYPE_CONFLICT, SchemaConflict
+from io_modules.metadata_schema import NUMERIC_KINDS, infer_field_kind, parse_value, resolve_schema_field
 from io_modules.measurement_files import canonical_path
-from io_modules.scan_cache import MeasurementScanner
+from io_modules.scan_cache import ScannedDirectory
 from session.project import (
-    ACKNOWLEDGED_KEY, ProjectSession, correct_entry_channel, correct_run_channel,
+    ProjectSession, correct_entry_channel, correct_run_channel,
 )
 from io_modules.project_store import (
-    DirectoryIndex,
+    PROJECT_METADATA_EXCEL_NAME,
     project_folder,
     read_root_directories,
     resolve_root,
     scan_cache_folder,
     untitled_scan_cache_folder,
 )
-
-# The project-wide Level 2 Excel sheet, primary source for run metadata --
-# one file for every data root in the project, living beside the .nvhproject.
-PROJECT_METADATA_EXCEL_NAME = "metadata.xlsx"
 
 
 @dataclass(frozen=True)
@@ -55,48 +52,14 @@ class MergedSchema:
     baseline: dict = field(default_factory=dict)
 
 
-# The same field name meaning two different things in two data folders. Both
-# kinds are merged rather than refused -- a union that loses a column would
-# hide data the user just added -- but the user is told, because a facet built
-# out of a collision reads as one field and behaves like two.
-LAYER_CONFLICT = "layer"        # spreadsheet column here, measurement-file fact there
-TYPE_CONFLICT = "value_type"    # numbers here, free text there
-
-
-@dataclass
-class SchemaConflict:
-    """
-    One field name that two data folders disagree about.
-
-    `detail` maps each folder to what it says about the field, so the dialog
-    can name the folders rather than asking the user to guess which of their
-    Excel sheets is the odd one out.
-    """
-    key: str
-    kind: str
-    detail: Dict[str, str] = field(default_factory=dict)
-
-    def describe(self) -> str:
-        parts = ", ".join(f"{where}: {what}" for where, what in self.detail.items())
-        if self.kind == LAYER_CONFLICT:
-            return f"'{self.key}' is a spreadsheet column in one folder and a file header field in another ({parts})."
-        return f"'{self.key}' holds different kinds of value per folder ({parts})."
-
-
-def unacknowledged(project_or_context: Any,
+def unacknowledged(acknowledged: Iterable[str],
                    conflicts: List[SchemaConflict]) -> List[SchemaConflict]:
-    """The conflicts the user has not already been shown for these fields."""
-    if hasattr(project_or_context, "project_session"):
-        view_state = getattr(project_or_context.project_session.project, "view_state", {})
-    elif hasattr(project_or_context, "project"):
-        view_state = getattr(project_or_context.project, "view_state", {})
-    elif hasattr(project_or_context, "view_state"):
-        view_state = project_or_context.view_state
-    elif isinstance(project_or_context, dict):
-        view_state = project_or_context
-    else:
-        view_state = {}
-    seen = set(view_state.get(ACKNOWLEDGED_KEY) or [])
+    """
+    The conflicts the user has not already been shown for these fields.
+
+    `acknowledged` is ProjectSession.acknowledged_schema_conflicts.
+    """
+    seen = set(acknowledged)
     return [conflict for conflict in conflicts if conflict.key not in seen]
 
 
@@ -142,6 +105,28 @@ def merge_schema_baselines(baselines_by_root: Dict[str, Dict[str, Any]]) -> Dict
         for key, definition in baseline.items():
             merged.setdefault(key, dict(definition))
     return merged
+
+
+def resolve_relevant_schema(baseline: Dict[str, Any],
+                            runs: List[MeasurementRunIndex]) -> Dict[str, Any]:
+    """
+    The baseline without the Raw metadata fields no channel in `runs` carries.
+
+    A folder baseline lists every Raw metadata field some reader knows of, so a
+    pool of `.unv` files would offer MASTA's Design and ANSYS's Design point --
+    facets that can never match anything. A channel-layer field stays only if
+    at least one channel has a non-blank value for it, blank meaning what it
+    means when the value is parsed. Which reader the field "belongs" to plays
+    no part. Excel metadata fields pass untouched: they are built from the
+    columns the sheet actually has.
+    """
+    carried = set()
+    for run in runs:
+        for meta in (getattr(run, "available_channels", None) or {}).values():
+            carried.update(key for key, value in vars(meta).items()
+                           if parse_value(value, "str") is not None)
+    return {key: definition for key, definition in baseline.items()
+            if not is_channel_layer(definition) or key in carried}
 
 
 def collect_metadata_value_types(indexed_runs: List[MeasurementRunIndex]) -> Dict[str, str]:
@@ -235,21 +220,10 @@ class IntegrateResult:
     # from what its previous scan found; a quiet refresh logs it only then.
     read_problems: ReadProblems = ReadProblems()
     read_problems_changed: bool = True
-
-
-class ScannedDirectory(NamedTuple):
-    """
-    What `DataPool.scan_pool_directory` hands to the GUI thread.
-
-    `unreadable` are the folder's files that could not be read, and `messages`
-    what the scan has to say -- both carried as data, because the scan runs on
-    a worker and never writes to the log itself.
-    """
-    runs: list
-    schema: dict
-    index: DirectoryIndex
-    unreadable: Tuple[UnreadableFile, ...] = ()
-    messages: Tuple[str, ...] = ()
+    # The file paths this integration brought into the pool, as the scan
+    # spelled them: in the pool now, not before. A run already in the pool
+    # and merely re-scanned is not among them.
+    entered: Tuple[str, ...] = ()
 
 
 def run_from_entry(entry: SourceEntry, directory: str) -> Optional[MeasurementRunIndex]:
@@ -427,11 +401,8 @@ def resolve_traces(pairs: List[Tuple[str, str]],
 class DataPool:
     def __init__(self, project_session: ProjectSession):
         # A stable reference: AppContext.__init__ makes it once and never
-        # reassigns it (ProjectSession.open_project mutates in place).
+        # reassigns it (opening a project installs into it in place).
         self.project_session = project_session
-
-        # The only consumer is scan_pool_directory.
-        self.scanner = MeasurementScanner()
 
         # Every measurement currently in the Data Pool, from every folder that
         # has been added to it. Deliberately one flat list of runs: what a run
@@ -461,6 +432,12 @@ class DataPool:
         # its entry wholesale.
         self._read_problems: Dict[str, ReadProblems] = {}
 
+        # Canonical paths of the pool's Missing measurements, as the latest
+        # background check found them. Remembered here so a redraw,
+        # a drag or a double click never asks the disk; a subset of the runs'
+        # paths at all times, so a removed measurement leaves it with its run.
+        self._missing: frozenset = frozenset()
+
         # Lazily derived on first access and cached until the pool's membership,
         # baselines, or project schema change.
         self._merged_schema: Optional[MergedSchema] = None
@@ -474,6 +451,30 @@ class DataPool:
         self._runs = tuple(runs)
         self._runs_by_path = None
         self._merged_schema = None
+        if self._missing:
+            self._missing = self._missing & self.source_lookup().keys()
+
+    @property
+    def missing_paths(self) -> frozenset:
+        """Canonical paths of the pool's Missing measurements."""
+        return self._missing
+
+    def is_missing(self, path: str) -> bool:
+        """Whether the measurement at `path` (any spelling) is a Missing measurement."""
+        return canonical_path(path) in self._missing
+
+    def set_missing_paths(self, paths) -> None:
+        """
+        Replaces the Missing measurements with what a finished check found.
+
+        A path the pool does not hold is left out: the check reads a snapshot
+        of the runs, and one removed meanwhile must not come back as a marker.
+        """
+        self._missing = frozenset(canonical_path(path) for path in paths) & self.source_lookup().keys()
+
+    def drop_missing_paths(self, paths) -> None:
+        """Clears the marker of measurements known to be on disk again (Locate missing file)."""
+        self._missing = self._missing - {canonical_path(path) for path in paths}
 
     def add_run(self, run: MeasurementRunIndex) -> None:
         """Adds one run that is not in the pool yet (no folder bookkeeping)."""
@@ -521,7 +522,10 @@ class DataPool:
         return os.path.join(project_folder(self.project_session.path), PROJECT_METADATA_EXCEL_NAME)
 
     def prepare_scan_inputs(self) -> dict:
-        """Prepare session-derived scan inputs while the caller is on the GUI thread."""
+        """
+        What read_pool_folder needs from the project, taken while the caller is
+        on the GUI thread so the worker receives plain data.
+        """
         session = self.project_session
         return {
             "cache_dir": (scan_cache_folder(session.path) if session.has_file
@@ -533,56 +537,21 @@ class DataPool:
 
     # ---- the data pool -------------------------------------------------
 
-    def scan_pool_directory(self, directory_path: str, cache_dir: str,
-                            primary_excel_path: Optional[str], progress_fn=None,
-                            parent_excel_path=None, project_path=None, roots=()):
-        """
-        Reads a folder's measurement structure. Safe to call off the GUI thread.
-
-        Returns a ScannedDirectory: runs, metadata schema, the folder's
-        DirectoryIndex, its Unreadable files and the scan's messages. `roots`
-        are copies taken on the calling thread, not live project objects.
-
-        Deliberately touches neither the project nor the pool: it only returns
-        what the folder says, so the caller can run it in a QThreadPool worker
-        while the window stays responsive and integrate the result afterwards
-        (see integrate_scanned_directory). There is no log hook for the same
-        reason -- the log panel is a Qt widget and must not be written to from
-        a worker thread; the scan's messages come back in the result.
-
-        `progress_fn(done, total)`, when passed, is called as the folder's
-        stale files are re-parsed one by one, so a folder of large files is not
-        a single 0-to-100 jump in the ingest dialog. It only needs to be
-        thread-safe -- the QtJobRunner hands in one that emits a queued signal.
-        """
-        file_listing = {}
-        scan = self.scanner.scan_directory(
-            directory_path,
-            primary_excel_path=primary_excel_path,
-            cache_dir=cache_dir,
-            progress_fn=progress_fn,
-            parent_excel_path=parent_excel_path,
-            file_listing=file_listing,
-        )
-        return ScannedDirectory(
-            scan.runs, scan.schema_master,
-            DirectoryIndex(file_listing, read_root_directories(project_path, roots)),
-            scan.unreadable, scan.messages)
-
-    def integrate_scanned_directory(self, directory_path: str, runs_list, schema_master: dict,
+    def integrate_scanned_directory(self, directory_path: str, scanned: ScannedDirectory, *,
                                     only_files=None, admit_unknown: bool = False,
-                                    *, index: DirectoryIndex,
                                     source_amplitudes: Optional[Mapping[str, str]] = None,
-                                    unreadable: Tuple[UnreadableFile, ...] = (),
                                     ) -> IntegrateResult:
         """
         Folds a scanned folder into the pool. Must run on the GUI thread.
 
-        `index` is the DirectoryIndex the worker scan returned, so nothing here
-        touches the disk.
+        `scanned` is the whole result of the worker's read_pool_folder, its
+        DirectoryIndex included, so nothing here touches the disk. The keyword
+        arguments are what this integration asks of it -- the scan itself
+        always covers the whole folder.
 
         Everything here mutates the project, so it is kept apart from the scan
-        above rather than being done in the worker. Returns an IntegrateResult:
+        (io_modules.scan_cache.read_pool_folder) rather than being done in the
+        worker. Returns an IntegrateResult:
         how many runs the pool actually gained (a folder already in the pool
         adds nothing and is re-scanned in place instead of duplicated), whether
         this was a folder new to the pool, and the counts the shell logs.
@@ -601,9 +570,8 @@ class DataPool:
         just answered for it; it is written onto the file's source entry, over
         any earlier answer, before the project's answers are laid over the runs.
 
-        `unreadable` are the folder's files the scan could not read. They replace
-        what the folder's previous scan left, are never admitted to the pool and
-        never reach the project.
+        The scan's Unreadable files replace what the folder's previous scan
+        left, are never admitted to the pool and never reach the project.
 
         `admit_unknown` is what makes a refresh useful: a measurement written
         into the folder since the last scan joins the pool, while one the user
@@ -613,6 +581,7 @@ class DataPool:
         """
         if not directory_path:
             return IntegrateResult(0, False, directory_path, 0, 0)
+        runs_list, schema_master, index = scanned.runs, scanned.schema, scanned.index
 
         # A folder already in the pool keeps the spelling it was first added
         # under, so the settings, the project root and the tree all name it
@@ -682,10 +651,11 @@ class DataPool:
         gained = len(incoming) - len(already_here)
 
         # A measurement the pool holds whose file is no longer on disk stays in
-        # the pool, marked missing by the tree. Dropping it here was the one
-        # path that made "Locate missing file..." unreachable for exactly the
-        # files it exists for: the row vanished without a word, and came back
-        # struck through only after the project was reopened.
+        # the pool, a Missing measurement once the check after this scan has
+        # run. Dropping it here was the one path that made
+        # "Locate missing file..." unreachable for exactly the files it exists
+        # for: the row vanished without a word, and came back struck through
+        # only after the project was reopened.
         present_paths = {canonical_path(path) for path in index.file_listing}
         vanished = [run for run in self.loaded_runs
                     if canonical_path(os.path.dirname(run.file_path)) == key
@@ -697,7 +667,7 @@ class DataPool:
 
         # Only what this scan read and the pool admitted: a vanished run was
         # not read, a run outside `incoming` is not in the pool.
-        read_problems = ReadProblems.from_scan(unreadable, incoming.values())
+        read_problems = ReadProblems.from_scan(scanned.unreadable, incoming.values())
         read_problems_changed = read_problems != self._read_problems.get(key, ReadProblems())
         if read_problems:
             self._read_problems[key] = read_problems
@@ -741,6 +711,8 @@ class DataPool:
             metadata_synced=synced,
             read_problems=read_problems,
             read_problems_changed=read_problems_changed,
+            entered=tuple(run.file_path for path, run in incoming.items()
+                          if path not in already_here),
         )
 
     def _forget_pool_directory(self, key: str) -> None:
@@ -769,18 +741,6 @@ class DataPool:
         """
         return {canonical_path(directory): directory for directory in self.pool_directories}
 
-    def add_pool_directory(self, directory_path: str, only_files=None,
-                           admit_unknown: bool = False) -> IntegrateResult:
-        """Scans a folder and adds it to the pool, keeping what is already there."""
-        if not directory_path or not os.path.exists(directory_path):
-            return IntegrateResult(0, False, directory_path or "", 0, 0)
-        scan_inputs = self.prepare_scan_inputs()
-        scan = self.scan_pool_directory(directory_path, **scan_inputs)
-        return self.integrate_scanned_directory(
-            directory_path, scan.runs, scan.schema, only_files, admit_unknown,
-            index=scan.index, unreadable=scan.unreadable
-        )
-
     def remove_pool_directory(self, directory_path: str) -> int:
         """
         Drops a folder's measurements from the pool.
@@ -798,9 +758,8 @@ class DataPool:
             return 0
 
         before = len(self.loaded_runs)
-        # Cleared per source path rather than per loaded run, the same way
-        # reset_pool_to_directory does it: a folder can hold files the user
-        # never admitted, and those carry in_pool too. Left True, the next
+        # Cleared per source path rather than per loaded run: a folder can hold
+        # files the user never admitted, and those carry in_pool too. Left True, the next
         # refresh of this folder would admit them back.
         leaving = [path for path in self.project_session.source_location.entries_by_path
                    if canonical_path(os.path.dirname(path)) == key]
@@ -842,6 +801,7 @@ class DataPool:
         self.pool_directories = []
         self._schema_baselines = {}
         self._read_problems = {}
+        self._missing = frozenset()
         self._merged_schema = None
 
     def restore_pool_from_project(self) -> List[str]:
@@ -891,13 +851,18 @@ class DataPool:
         Done wholesale rather than incrementally because removing a folder has
         to take its columns with it, which an accumulating merge cannot do.
         """
-        baseline = merge_schema_baselines(self._schema_baselines)
+        # Relevance is judged against the runs in the pool, not per folder: a
+        # folder baseline (and the folder cache it comes from) only ever gains
+        # fields, so it may still list one no remaining run carries.
+        relevant_baselines = {key: resolve_relevant_schema(base, self.loaded_runs)
+                              for key, base in self._schema_baselines.items()}
+        baseline = merge_schema_baselines(relevant_baselines)
         master = merge_schema_master(
             baseline, self.project_session.project.metadata_schema
         )
 
         value_types = {}
-        for key in self._schema_baselines:
+        for key in relevant_baselines:
             runs_here = [run for run in self.loaded_runs
                          if canonical_path(os.path.dirname(run.file_path)) == key]
             value_types[key] = collect_metadata_value_types(runs_here)
@@ -907,7 +872,7 @@ class DataPool:
         # back at them in a spelling it does not have on disk.
         spellings = self.pool_keys()
         conflicts = detect_schema_conflicts(
-            {spellings.get(key, key): base for key, base in self._schema_baselines.items()},
+            {spellings.get(key, key): base for key, base in relevant_baselines.items()},
             {spellings.get(key, key): types for key, types in value_types.items()},
         )
 
@@ -924,34 +889,6 @@ class DataPool:
         """
         self.project_session.set_metadata_schema(finalized_schema)
         self._merged_schema = None
-
-    def reset_pool_to_directory(self, directory_path: str) -> bool:
-        """
-        Empties the pool in preparation for one folder becoming the whole of it.
-
-        Deliberately stops short of reading that folder: the scan belongs on a
-        background worker (gui.handlers.data_pool), and
-        doing it here meant the two callers that mean "start over from this
-        folder" -- startup restore and spawning a second window -- parsed every
-        UNV header on the GUI thread with nothing on screen. Returns whether
-        the path is usable, so the caller knows whether to queue the scan.
-        """
-        if not directory_path or not os.path.exists(directory_path):
-            return False
-
-        # "Start over" is transactional: every folder being dropped must also
-        # lose its recorded pool membership now, in the same step. Otherwise the
-        # project keeps saying those files are pooled until the new folder's scan
-        # happens to overwrite it, and a save in between -- or the next project
-        # open -- would drag them all back in. Cleared per source path rather
-        # than per loaded run: a folder can hold files the user never admitted,
-        # and those carry in_pool too.
-        dropping = set(self.pool_keys())
-        stale = [path for path in self.project_session.source_location.entries_by_path
-                 if canonical_path(os.path.dirname(path)) in dropping]
-        self.project_session.set_pool_membership(stale, False)
-        self.clear_pool()
-        return True
 
     def has_data(self) -> bool:
         return len(self.loaded_runs) > 0

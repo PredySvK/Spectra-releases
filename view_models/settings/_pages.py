@@ -3,8 +3,9 @@
 from dataclasses import dataclass
 
 from core.axis_projections import X_AXIS_HZ, X_AXIS_NATIVE, X_AXIS_RPM
-from core.settings import SETTING_DEFINITIONS
-from core.units import CANONICAL_UNIT_GROUPS
+from core.settings import DECIMALS_CHOICES, SETTING_DEFINITIONS
+from core.units import DISPLAY_BASE_UNIT_GROUPS
+from view_models.display_prefix import resolve_display_prefix_setting_choices
 
 
 @dataclass(frozen=True)
@@ -49,8 +50,18 @@ class SettingsPage:
 
 
 def _unit_field(key: str, label: str, domain: int) -> SettingsField:
-    units = CANONICAL_UNIT_GROUPS[domain]
+    units = DISPLAY_BASE_UNIT_GROUPS[domain]
     return SettingsField(key, label, "choice", tuple((unit, unit) for unit in units), group="Application")
+
+
+def _prefix_field(key: str, label: str, default_unit: str) -> SettingsField:
+    choices = resolve_display_prefix_setting_choices(default_unit)
+    return SettingsField(key, label, "choice", choices, group="Application")
+
+
+def _decimals_field(key: str, label: str) -> SettingsField:
+    choices = tuple((c.capitalize() if c == "auto" else c, c) for c in DECIMALS_CHOICES)
+    return SettingsField(key, label, "choice", choices, group="Application")
 
 
 SETTINGS_PAGES: tuple[SettingsPage, ...] = (
@@ -71,9 +82,21 @@ SETTINGS_PAGES: tuple[SettingsPage, ...] = (
         ("Units",),
         (
             _unit_field("global_unit_acceleration", "Acceleration", 0),
+            _prefix_field("prefix_acceleration", "Acceleration prefix", "g"),
+            _decimals_field("decimals_acceleration", "Acceleration decimals"),
             _unit_field("global_unit_pressure", "Pressure", 1),
+            _prefix_field("prefix_pressure", "Pressure prefix", "Pa"),
+            _decimals_field("decimals_pressure", "Pressure decimals"),
             _unit_field("global_unit_voltage", "Voltage", 2),
+            _prefix_field("prefix_voltage", "Voltage prefix", "V"),
+            _decimals_field("decimals_voltage", "Voltage decimals"),
             _unit_field("global_unit_speed", "Speed", 3),
+            _prefix_field("prefix_speed", "Speed prefix", "rpm"),
+            _decimals_field("decimals_speed", "Speed decimals"),
+            _prefix_field("prefix_frequency", "Frequency", "Hz"),
+            _decimals_field("decimals_frequency", "Frequency decimals"),
+            _prefix_field("prefix_time", "Time", "s"),
+            _decimals_field("decimals_time", "Time decimals"),
             SettingsField(
                 "x_axis_unit",
                 "X axis unit",

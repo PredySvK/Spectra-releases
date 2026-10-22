@@ -9,13 +9,10 @@ ARCHITECTURE_DECISIONS §1.6).
 The button used to be a whole inline section -- channel-type combo,
 All/Selected switch, a "Choose..." dialog, plus a second "Input Data..."
 button -- crammed into the ribbon's fixed height, where the lower half was
-clipped off. All of that moved into the dialog. What stays here is:
-
-  * the button and a one-line status label under it, and
-  * the channel scope as *values*, read back from QSettings (the dialog is
-    what writes them). `batch_run.py` still asks this object
-    `get_save_channel_types()` / `is_save_mode_all_channels()` /
-    `selected_channel_identities()`; it just no longer holds live widgets.
+clipped off. All of that moved into the dialog, and the dialog's answer goes
+to the batch as a value (#770). What stays here is the button, a one-line
+status label under it, and the helpers the dialog uses to remember its last
+choice in QSettings.
 
 `settings_prefix` ("order" / "spec1d" / "spec2d") keys the QSettings entries so
 each tab keeps its own remembered choice -- under the key it already used,
@@ -24,22 +21,12 @@ because a renamed key silently resets a preference set months ago.
 Lives beside ribbon_widgets.py because it is the same sort of thing: a shared
 building block of the ribbon.
 """
-from typing import Optional, Set
+from typing import Optional
 
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from gui.ribbon.ribbon_widgets import _STACK_SIZE, make_ribbon_button
 
-# What the "Channels:" choice maps to, both for filtering and for detecting an
-# "all channels" selection. One dictionary, not one per tab.
-SAVE_CHANNEL_TYPE_OPTIONS = {
-    "Acceleration": {"accelerometer"},
-    "Sound": {"microphone"},
-    "Acceleration + Sound": {"accelerometer", "microphone"},
-}
-
-_DEFAULT_CHANNEL_TYPE = "Acceleration"
-_FALLBACK_TYPES = {"accelerometer"}
 _IDENTITY_SEP = "\x1f"  # base <sep> direction, inside one QSettings list entry
 
 
@@ -59,12 +46,7 @@ def identities_from_settings(raw) -> set:
 
 
 def read_selected_identities(settings, settings_prefix) -> set:
-    """Load the batch channel-identity scope from QSettings.
-
-    One home: the same read lived on the ribbon button and in the Compute
-    Result Set dialog, comment and all, and a logic change in one copy (the
-    one-item-list collapse below) would have silently skipped the other.
-    """
+    """Load the remembered batch channel-identity pick from QSettings."""
     if not settings:
         return set()
     raw = settings.value(f"{settings_prefix}_save_selected_identities", [])
@@ -75,8 +57,7 @@ def read_selected_identities(settings, settings_prefix) -> set:
 
 class ComputeResultSetButton(QWidget):
     """
-    The ribbon's "Compute Result Set..." button plus its status line, and the
-    batch's channel scope as QSettings-backed values.
+    The ribbon's "Compute Result Set..." button plus its status line.
 
     A plain QWidget wrapper so the tab can give it stretch 0 in its group and
     have it keep its natural width.
@@ -109,26 +90,6 @@ class ComputeResultSetButton(QWidget):
         self.status.hide()  # shown only while it has text, so the button stacks flush under Refresh
         column.addWidget(self.status)
 
-    # ---- what BatchRunHandler asks ----------------------------------
-
-    def get_save_channel_types(self) -> Set[str]:
-        return set(SAVE_CHANNEL_TYPE_OPTIONS.get(
-            self._get_val("save_channel_type", _DEFAULT_CHANNEL_TYPE), _FALLBACK_TYPES
-        ))
-
-    def is_save_mode_all_channels(self) -> bool:
-        return self._get_val("save_channel_mode", "all") != "selected"
-
-    def selected_channel_identities(self) -> set:
-        return read_selected_identities(self.settings, self._settings_prefix)
-
     def set_status(self, text: str) -> None:
         self.status.setText(text)
         self.status.setVisible(bool(text))
-
-    # ---- QSettings -------------------------------------------------------
-
-    def _get_val(self, suffix: str, default):
-        if self.settings:
-            return str(self.settings.value(f"{self._settings_prefix}_{suffix}", default))
-        return default

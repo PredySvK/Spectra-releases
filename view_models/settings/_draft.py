@@ -2,6 +2,7 @@
 
 from typing import Any
 
+from core.settings import SETTING_DEFINITIONS
 from ._pages import SETTINGS_IMMEDIATE_KEYS, SETTINGS_PROJECT_KEYS, SettingsPage
 
 
@@ -9,14 +10,22 @@ class SettingsDraft:
     """Last applied values plus the user's unapplied edits."""
 
     def __init__(self, values: dict[str, Any]):
-        self._applied = dict(values)
-        self._edited = dict(values)
+        base = {key: defn.default for key, defn in SETTING_DEFINITIONS.items()}
+        base.update(values)
+        self._applied = dict(base)
+        self._edited = dict(base)
 
     def value(self, key: str) -> Any:
         return self._edited[key]
 
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._edited.get(key, default)
+
     def set_value(self, key: str, value: Any) -> None:
         self._edited[key] = value
+        if key == "global_unit_acceleration" and value == "g":
+            if self._edited.get("prefix_acceleration") in ("k", "M"):
+                self._edited["prefix_acceleration"] = "none"
 
     @property
     def dirty_keys(self) -> set[str]:

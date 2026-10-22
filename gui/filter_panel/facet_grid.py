@@ -32,7 +32,7 @@ from typing import Any, Callable, Dict, Iterable, List, Literal, Optional, Set, 
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QPushButton,
+    QCheckBox, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QScrollArea, QSizePolicy, QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -50,6 +50,7 @@ from selection.trace_filter import (
     write_range_bound, write_value_check,
 )
 from selection.channel_identity import format_channel_identity
+from selection.field_offer import resolve_field_label
 from view_models.parameter_sets import format_parameter_set_details
 from selection.parameter_sets import ParameterSet
 from session.trace_filter import FilterSelectionStore
@@ -87,7 +88,7 @@ class FacetGrid(QWidget):
 
         self.btn_configure = QPushButton("⚙ Configure Filters…")
         self.btn_configure.setToolTip(
-            "Toggle which fields already marked \"Use as Filter\" in Metadata and Filter Settings "
+            "Toggle which fields with \"Active Status\" ticked in Metadata and Filter Settings "
             "(and whether Channel) show up as filters here."
         )
         outer.addWidget(self.btn_configure)
@@ -357,14 +358,14 @@ class FacetGrid(QWidget):
                 key, BUILTIN_COLUMN_LABELS[key], (facets.identity or {})[key], widget)
         if key in facets.metadata:
             return lambda widget: self._build_metadata_group(
-                key, schema.get(key, {}).get("custom_label", key), facets.metadata[key], widget)
+                key, resolve_field_label(key, schema), facets.metadata[key], widget)
 
         # A range field: resolve_panel_render already resolved its bounds -- the
         # user's own (FilterSelection.checked_ranges) where they moved one, the
         # freshly computed span otherwise.
         span = (facets.ranges or {}).get(key, render.range_bounds[key])
         return lambda _widget: self._build_range_group(
-            key, schema.get(key, {}).get("custom_label", key), render.range_bounds[key],
+            key, resolve_field_label(key, schema), render.range_bounds[key],
             schema.get(key, {}).get("kind", "float"), span=span)
 
     def _widget_for_column(self, card: Optional[FilterCardConfig], key: str,
@@ -382,21 +383,36 @@ class FacetGrid(QWidget):
 
     def _insert_facet_grid(self, boxes: List[QGroupBox], column_count: int) -> None:
         """
-        Lays the finished facet boxes into `column_count` columns, filled row
-        by row so that reading them left to right, top to bottom is reading
-        `card.ordered_columns` in order.
+        Lays the finished facet boxes into `column_count` independent vertical
+        stacks (#831), so a tall box never leaves a gap under the short ones
+        beside it. Taken in `card.ordered_columns` order, each box goes into
+        the currently shortest stack, the leftmost on a tie: the shortest
+        stack never gets shorter, so an earlier box never starts lower than a
+        later one -- the card's order still decides what is nearer the top.
+        Runs only on a full rebuild, so a checkbox click or a resize never
+        moves a box.
         """
         if not boxes:
             return
+        spacing = 6
         host = QWidget()
-        grid = QGridLayout(host)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setSpacing(6)
-        for position, box in enumerate(boxes):
-            grid.addWidget(box, position // column_count, position % column_count,
-                           alignment=Qt.AlignmentFlag.AlignTop)
-        for column in range(column_count):
-            grid.setColumnStretch(column, 1)
+        row = QHBoxLayout(host)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(spacing)
+        stacks: List[QVBoxLayout] = []
+        for _ in range(column_count):
+            stack = QVBoxLayout()
+            stack.setContentsMargins(0, 0, 0, 0)
+            stack.setSpacing(spacing)
+            row.addLayout(stack, stretch=1)
+            stacks.append(stack)
+        heights = [0] * column_count
+        for box in boxes:
+            column = heights.index(min(heights))
+            stacks[column].addWidget(box)
+            heights[column] += box.sizeHint().height() + spacing
+        for stack in stacks:
+            stack.addStretch()
         self._facets_layout.insertWidget(self._facets_layout.count() - 1, host)
 
     # ---- one facet, drawn as a checkbox list or a multi-select -----------

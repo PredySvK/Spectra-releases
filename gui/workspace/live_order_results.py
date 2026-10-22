@@ -73,8 +73,8 @@ class LiveOrderResults(QObject):
         The key now carries the source file's size/mtime, so a re-measured file
         no longer needs this to avoid a stale hit; what this still does is drop
         results for files that are leaving the pool entirely. Called wherever a
-        workspace directory or a project is (re)loaded -- see
-        ProjectDocumentHandler.load_directory_into_workspace and load_project_pool.
+        project is (re)loaded, a dropped data folder included -- see the
+        project swap (orchestration.project_swap).
         In-flight jobs are cancelled through their slots. QtJobRunner drops
         results from cancelled jobs, and the memo forgetting their tags also
         protects the direct-handler path used by tests.

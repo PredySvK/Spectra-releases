@@ -21,14 +21,15 @@ widget (the dock does not know them, so they are not its attributes):
 - *compute origin* -- why the compute in flight was started (fresh open,
   restore, refresh); a failure does to the tab what
   `live_compute.plan_compute_failure` says for that origin.
-- *tab cache file* -- the name of the base curve's Tab cache file, which
-  Save writes into the base `TraceSpec`, and one per dropped channel, which
-  Save writes into that overlay's `TraceSpec`.
+
+The names of the Tab cache files a tab's curves save are not kept here: `capture` takes them
+from the workspace's `tab_cache.TabCacheFiles`, and `restore` fills it with
+the names the saved traces carry.
 """
 
 import weakref
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
 
 from core.jobs import job_step
 from gui.workspace.graph_dock import GraphDock
@@ -42,6 +43,7 @@ from orchestration.live_compute import (
 from orchestration.open_tabs import (
     build_base_trace_spec, build_overlay_trace_specs, build_tab_spec,
 )
+from orchestration.tab_cache import TabCacheCurve
 from session.data_pool import DeadLink
 from session.open_tabs import TabSpec, TraceSpec, build_restore_plan
 from session.project import channel_label_for
@@ -54,9 +56,6 @@ class _DockOpenState:
     # The tab text a restored tab had before its compute failed, given back
     # once a later compute lands.
     tab_text_before_failure: Optional[str] = None
-    tab_cache_file: Optional[str] = None
-    # A dropped channel's Tab cache file, by `build_channel_key(file_path, channel_index)`.
-    overlay_tab_cache_files: Dict[Tuple[str, int], str] = field(default_factory=dict)
 
 
 class OpenTabs:
@@ -79,30 +78,8 @@ class OpenTabs:
         return self._state(dock).restored_spec
 
     def mark_restored(self, dock, spec: TabSpec) -> None:
-        state = self._state(dock)
-        state.restored_spec = spec
-        base = next((t for t in spec.traces if t.is_base), None)
-        state.tab_cache_file = base.tab_cache_file if base is not None else None
-
-    def tab_cache_file(self, dock) -> Optional[str]:
-        """The name of `dock`'s base-curve Tab cache file; None when it has none."""
-        return self._state(dock).tab_cache_file
-
-    def set_tab_cache_file(self, dock, name: Optional[str]) -> None:
-        self._state(dock).tab_cache_file = name
-
-    def overlay_tab_cache_file(self, dock, channel_key: Tuple[str, int]) -> Optional[str]:
-        """The name of the Tab cache file of the channel dropped on `dock`
-        (`channel_key` from `build_channel_key`); None when it has none."""
-        return self._state(dock).overlay_tab_cache_files.get(channel_key)
-
-    def set_overlay_tab_cache_file(self, dock, channel_key: Tuple[str, int],
-                                   name: Optional[str]) -> None:
-        names = self._state(dock).overlay_tab_cache_files
-        if name:
-            names[channel_key] = name
-        else:
-            names.pop(channel_key, None)
+        self._state(dock).restored_spec = spec
+        self._ws.tab_cache_files.restore_tab(dock.dock_id, spec.traces)
 
     def origin_in_flight(self, dock) -> Optional[ComputeOrigin]:
         """Why the compute in flight for `dock` was started; None when none is."""
@@ -223,7 +200,7 @@ class OpenTabs:
             channel_name=channel_label_for(dock.run_index, dock.channel_meta),
             compute_spec=compute_spec,
             is_base=True,
-            tab_cache_file=self.tab_cache_file(dock),
+            tab_cache_file=self._ws.tab_cache_files.name(TabCacheCurve(dock.dock_id)),
         )
 
     def _overlay_trace_specs(self, dock) -> List[TraceSpec]:
@@ -235,7 +212,7 @@ class OpenTabs:
         if not isinstance(dock, GraphDock):
             return []
         return build_overlay_trace_specs(dock.curves, self._ws.app_context.pool.loaded_runs,
-                                         self._state(dock).overlay_tab_cache_files)
+                                         self._ws.tab_cache_files.dropped_channel_names(dock.dock_id))
 
     def capture(self) -> List[Dict[str, Any]]:
         """
@@ -316,7 +293,7 @@ class OpenTabs:
         project's own stored snapshot before this can run (see
         ProjectDocumentHandler.load_project_pool). Same call site as
         `FilterRoutingHandler.restore_filter_state`
-        (ProjectDocumentHandler.open_project).
+        (orchestration.project_swap).
         """
         ws = self._ws
         raw_specs = ws.app_context.project_session.project.open_tabs

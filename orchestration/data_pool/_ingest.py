@@ -35,15 +35,18 @@ from io_modules.pool_ingest_plan import discover_selection_tree
 from io_modules.measurement_files import (
     canonical_path, discover_measurement_files, resolve_imported_result_reader, is_measurement_file,
 )
+from orchestration.data_pool._missing_measurement_check import MissingMeasurementCheck
 from orchestration.data_pool._selection_plan import (
-    build_ingest_folder_map, derive_auto_tags, find_parent_metadata_files,
+    build_ingest_folder_map, find_parent_metadata_files,
 )
+from orchestration.data_pool._test_setup import resolve_test_setups
 from io_modules.project_store import read_root_directories
 from orchestration.data_pool._source_amplitude import (
     SourceAmplitudeAsker, plan_source_amplitude_questions, resolve_file_amplitudes,
 )
 from orchestration.jobs import JobRunner
-from session.data_pool import IntegrateResult, ScannedDirectory
+from io_modules.scan_cache import ScannedDirectory, read_pool_folder
+from session.data_pool import IntegrateResult
 from session.project import apply_setup_label
 from session.source_location import build_source_location
 
@@ -66,7 +69,6 @@ class IngestPlan:
 
     directories: Tuple[str, ...] = ()
     only_files: Dict[str, Optional[set]] = field(default_factory=dict)
-    auto_tag: Dict[str, str] = field(default_factory=dict)
     parent_excel: Dict[str, str] = field(default_factory=dict)
     skipped_files: Tuple[str, ...] = ()
     imported_files: Dict[str, Tuple[str, ...]] = field(default_factory=dict)
@@ -98,7 +100,6 @@ def plan_pool_ingest(paths, folder_files: Optional[dict] = None) -> IngestPlan:
     return IngestPlan(
         directories=tuple(folder_files.keys()),
         only_files=dict(folder_files),
-        auto_tag=derive_auto_tags(tree),
         parent_excel=find_parent_metadata_files(tree),
         skipped_files=tuple(path for path in paths
                             if os.path.isfile(path) and not is_measurement_file(path)),
@@ -182,10 +183,18 @@ class PoolIngestUseCase:
     its own is the supersede that `slot_key` already performs.
     """
 
-    def __init__(self, pool, session, runner: JobRunner):
+    def __init__(self, pool, session, runner: JobRunner, *,
+                 missing_check: Optional[MissingMeasurementCheck] = None,
+                 read_folder: Optional[Callable[..., ScannedDirectory]] = None):
         self._pool = pool
         self._session = session
         self._runner = runner
+        # What each step runs on a worker: the folder read itself. A test hands
+        # in its own so the run can be followed without a disk.
+        self._read_folder = read_folder or read_pool_folder
+        # Started after every ingest that finished, so a file deleted while the
+        # application runs is marked once the next scan of its folder lands.
+        self._missing_check = missing_check
         self._runs = 0
         self._active_run: Optional[int] = None
         self._job_id: Optional[int] = None
@@ -368,7 +377,7 @@ class PoolIngestUseCase:
         scan_inputs = self._pool.prepare_scan_inputs()
         steps = [
             job_step(os.path.basename(directory) or directory,
-                     self._pool.scan_pool_directory, directory,
+                     self._read_folder, directory,
                      **scan_inputs,
                      parent_excel_path=plan.parent_excel.get(directory))
             for directory in state["directories"]
@@ -403,17 +412,15 @@ class PoolIngestUseCase:
         if answered:
             extra["source_amplitudes"] = answered
         result = self._pool.integrate_scanned_directory(
-            directory, scanned.runs, scanned.schema, only_files, admit_unknown=state["admit_unknown"],
-            index=scanned.index, unreadable=scanned.unreadable, **extra
+            directory, scanned, only_files=only_files, admit_unknown=state["admit_unknown"], **extra
         )
 
         wanted = (only_files if only_files is not None
                   else {canonical_path(run.file_path) for run in scanned.runs})
         state["added_paths"].extend(wanted)
 
-        tag = plan.auto_tag.get(directory)
-        if tag and wanted:
-            apply_setup_label(self._session, wanted, tag)
+        if result.entered:
+            self._assign_test_setups(result.entered)
 
         # A quiet refresh repeats the list only when it changed, so a recorder
         # still writing a file does not flood the log on every watcher tick.
@@ -423,6 +430,22 @@ class PoolIngestUseCase:
         self._report(state, FolderReport(
             directory=directory, integrated=result,
             log_messages=lines + tuple(scanned.messages)))
+
+    def _assign_test_setups(self, entered) -> None:
+        """
+        Files each measurement that just entered the pool without a Test setup
+        under the one ADR §1.207 resolves. Only what entered: a measurement
+        already in the pool keeps whatever it carries, Unassigned included.
+        """
+        session = self._session
+        setup_by_path = {path: entry.setup_label
+                         for path, entry in session.source_location.entries_by_path.items()}
+        resolved = resolve_test_setups(entered, setup_by_path, session.project.setup_labels())
+        paths_by_setup: Dict[str, list] = {}
+        for path, label in resolved.items():
+            paths_by_setup.setdefault(label, []).append(path)
+        for label, paths in paths_by_setup.items():
+            apply_setup_label(session, paths, label)
 
     def _on_failed(self, state: dict, message: str, index: int) -> None:
         directory = state["directories"][index]
@@ -443,6 +466,8 @@ class PoolIngestUseCase:
         if record.state is not JobState.DONE:
             self._finish(state, IngestOutcome(state=record.state))
             return
+        if self._missing_check is not None:
+            self._missing_check.start()
 
         quiet = state["quiet"]
         skipped = tuple(f"POOL: Skipped {path}: not a measurement file."

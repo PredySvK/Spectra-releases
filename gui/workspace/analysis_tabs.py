@@ -58,14 +58,12 @@ from core.block_kinds import KIND_ORDER_CUT
 from core.channel_drop import TAB_CACHE_KEY
 from gui.workspace.graph_dock import GraphDock
 from gui.workspace.spectrogram_dock import SpectrogramDock
-from io_modules.tab_cache import build_tab_cache_name, write_tab_cache_file
 from orchestration import live_compute, tab_cache
-from orchestration.dock_tasks import PURPOSE_COMPUTE, PURPOSE_TAB_CACHE
+from orchestration.dock_tasks import PURPOSE_COMPUTE
 from orchestration.live_compute import ComputeOrigin, build_cache_hit_line, resolve_cache_finder
 from selection.channel_identity import build_channel_key
 from selection.tacho import tacho_missing
 from session.data_pool import ResolvedTrace
-from session.tab_cache import build_referenced_tab_cache_names
 from view_models.analysis_kinds import (
     ANALYSIS_ORDERS,
     ANALYSIS_OVERALL_LEVEL,
@@ -303,7 +301,7 @@ class AnalysisTabsMixin:
             config, restore_line = self._restore_config(dock, kind)
             compute_notices = (restore_line,)
             tab_cache_path = tab_cache.resolve_tab_cache_read_path(
-                self._project_path(), self.open_tabs.tab_cache_file(dock))
+                self._project_path(), self.tab_cache_files.name(tab_cache.TabCacheCurve(dock.dock_id)))
 
         if hasattr(dock, "plot_widget"):
             dock.plot_widget.setTitle(entry.refresh_title if origin is ComputeOrigin.REFRESH else "⏳ Loading...")
@@ -334,18 +332,21 @@ class AnalysisTabsMixin:
 
     def resolve_restore_config(self, kind: str, recipe) -> "live_compute.RestoreConfig":
         """
-        The config a restored curve on a `kind` tab computes with: `recipe`
-        laid over the ribbon's config of that kind. The base
-        curve and every restored dropped channel resolve it here.
+        The config a restored curve on a `kind` tab computes with: its Curve
+        recipe `recipe`; the ribbon's config of that kind fills in only the
+        display fields and an order tab's order list (ADR §1.178, §1.204
+        point 5). The base curve and
+        every restored dropped channel resolve it here.
         """
         ribbon_config = getattr(self.app_context, resolve_analysis_mode_of_kind(kind).settings_name)
         return live_compute.resolve_restore_config(recipe, ribbon_config)
 
     def _restore_config(self, dock, kind: str):
         """
-        A restored tab computes with its base curve's saved recipe, the
-        ribbon filling in only what the recipe does not carry -- and one log
-        line says which values those were; it is logged
+        A restored tab computes with its base curve's saved Curve recipe --
+        or the ribbon, when the project saved no Curve recipe -- and one log
+        line says which
+       ; it is logged
         only if the curve is computed, not read from the Tab cache. A Refresh
         or a fresh open never comes here: they compute with the ribbon.
         Returns `(config, line)`.
@@ -374,22 +375,12 @@ class AnalysisTabsMixin:
             self._write_tab_cache(dock, result, origin)
 
     def _write_tab_cache(self, dock, result, origin: ComputeOrigin) -> None:
-        """
-        Keeps the base curve in the Tab cache. The name is the dock's at once,
-        so a Save made while the write is still running already points at it.
-        """
-        channel_name = getattr(dock.channel_meta, "name", "") or ""
-
-        def forget(name: str) -> None:
-            if self.open_tabs.tab_cache_file(dock) == name:
-                self.open_tabs.set_tab_cache_file(dock, None)
-
-        name = self.write_tab_cache_file(
-            dock, key="base", channel_name=channel_name, blocks=result.blocks,
-            recipe=_base_recipe(dock),
-            saved_name=self.open_tabs.tab_cache_file(dock) if origin is ComputeOrigin.RESTORE else None,
-            on_failed=forget)
-        self.open_tabs.set_tab_cache_file(dock, name)
+        """Keeps the base curve in the Tab cache (`TabCacheFiles.keep`)."""
+        curve = tab_cache.TabCacheCurve(dock.dock_id)
+        self.tab_cache_files.keep(
+            curve, channel_name=getattr(dock.channel_meta, "name", "") or "",
+            blocks=result.blocks, recipe=_base_recipe(dock),
+            saved_name=self.tab_cache_files.name(curve) if origin is ComputeOrigin.RESTORE else None)
 
     def keep_dropped_channel(self, dock, descriptor, result) -> None:
         """
@@ -400,91 +391,12 @@ class AnalysisTabsMixin:
         once the curve is drawn; a curve from a loaded result set never comes
         here and keeps being read from its set.
         """
-        open_tabs = self.open_tabs
         channel_key = build_channel_key(descriptor["file_path"], descriptor["channel_index"])
-        saved_name = descriptor.get(TAB_CACHE_KEY)
-        if result.from_tab_cache:
-            open_tabs.set_overlay_tab_cache_file(dock, channel_key, saved_name)
-            return
-
-        def forget(name: str) -> None:
-            if open_tabs.overlay_tab_cache_file(dock, channel_key) == name:
-                open_tabs.set_overlay_tab_cache_file(dock, channel_key, None)
-
-        name = self.write_tab_cache_file(
-            dock, key=("dropped", channel_key),
+        self.tab_cache_files.keep(
+            tab_cache.TabCacheCurve(dock.dock_id, channel_key),
             channel_name=descriptor.get("channel_name", ""), blocks=result.blocks,
             recipe=_overlay_recipe(dock, channel_key),
-            saved_name=saved_name, on_failed=forget)
-        open_tabs.set_overlay_tab_cache_file(dock, channel_key, name)
-
-    def write_tab_cache_file(self, dock, *, key, channel_name: str, blocks, recipe,
-                             saved_name=None, on_failed=None) -> str:
-        """
-        The one way any curve of a computed tab goes into the Tab cache (base,
-        spectrogram, dropped channel); returns the name its `TraceSpec` saves.
-
-        With a project folder the file is written on a dock task now. An
-        Untitled project has none: the result is held in memory under `key`
-        ("this curve of this tab" -- a newer result under the same key
-        replaces it) and written after the first Save
-        (`write_held_tab_cache_files`). `on_failed(name)` runs when the write
-        fails, so the owner stops naming a file that is not there.
-        """
-        write = tab_cache.plan_tab_cache_write(
-            self._project_path(), dock.dock_id, channel_name, saved_name=saved_name)
-        if write is None:
-            # The shape a written file's name has, so the first Save already names it.
-            name = build_tab_cache_name(dock.dock_id, channel_name)
-            self.held_tab_cache_writes.hold(key, tab_cache.HeldTabCacheWrite(
-                dock_id=dock.dock_id, name=name, channel_name=channel_name,
-                blocks=tuple(blocks), recipe=recipe, on_failed=on_failed))
-            return name
-        self._start_tab_cache_write(dock.dock_id, write, channel_name, blocks, recipe, on_failed)
-        return write.name
-
-    def write_held_tab_cache_files(self) -> None:
-        """
-        After a Save: what the project held while it was Untitled goes to
-        disk now, on dock tasks -- only the curves the saved project names.
-        """
-        session = getattr(self.app_context, "project_session", None)
-        project_path = self._project_path()
-        if not project_path or not len(self.held_tab_cache_writes):
-            return
-        names = build_referenced_tab_cache_names(session.project.open_tabs)
-        for held in self.held_tab_cache_writes.take(names):
-            if self.find_dock_by_id(held.dock_id) is None:
-                continue
-            write = tab_cache.plan_tab_cache_write(
-                project_path, held.dock_id, held.channel_name, saved_name=held.name)
-            if write is not None:
-                self._start_tab_cache_write(held.dock_id, write, held.channel_name,
-                                            held.blocks, held.recipe, held.on_failed)
-
-    def _start_tab_cache_write(self, dock_id: str, write, channel_name: str, blocks, recipe,
-                               on_failed) -> None:
-        self.dock_tasks.run(
-            dock_id, write_tab_cache_file, write.path, tuple(blocks), recipe,
-            purpose=PURPOSE_TAB_CACHE,
-            on_error=lambda message: self._tab_cache_write_failed(
-                channel_name, write.name, message, on_failed),
-        )
-
-    def _tab_cache_write_failed(self, channel_name: str, name: str, message: str, on_failed) -> None:
-        """
-        The curve stops naming the file that was not written; when a Save
-        already named it, the saved project is now behind and is marked so --
-        the next Save drops the name instead of keeping a missing file.
-        """
-        if on_failed is not None:
-            on_failed(name)
-        session = getattr(self.app_context, "project_session", None)
-        if session is not None and name in build_referenced_tab_cache_names(session.project.open_tabs):
-            session.mark_view_changed()
-        self.app_context.log(
-            f"WARNING: tab cache for {channel_name} not written "
-            f"({message}); the tab will be computed again when the project is reopened.")
+            from_tab_cache=result.from_tab_cache, saved_name=descriptor.get(TAB_CACHE_KEY))
 
     def _project_path(self):
         """The project file's path; None while the project is Untitled."""

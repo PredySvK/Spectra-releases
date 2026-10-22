@@ -9,6 +9,7 @@ else does.
 """
 
 import functools
+import hashlib
 import glob
 import logging
 import os
@@ -198,9 +199,39 @@ def canonical_path(file_path: str) -> str:
     return os.path.normcase(os.path.abspath(file_path))
 
 
+def scan_cache_basename(directory_path: str) -> str:
+    """
+    File name for a folder's scan cache when it lives in a shared cache folder
+    (a project's cache/scan/, or the Untitled temp area) rather than beside the
+    data.
+
+    The folder's own basename is kept for readability ("setup1-a1b2c3d4.json");
+    the short canonical-path hash keeps two roots with the same basename from
+    colliding in one cache folder. Both halves are derived from canonical_path,
+    so the same folder spelled with either separator or any case resolves to
+    exactly one cache file -- the label is lower-cased as a side effect, which
+    is a fair price for that guarantee.
+    """
+    canonical = canonical_path(directory_path)
+    digest = hashlib.sha1(canonical.encode("utf-8")).hexdigest()[:8]
+    raw_base = os.path.basename(canonical.rstrip("/\\")) or "folder"
+    safe_base = "".join(c if c.isalnum() or c in "-_" else "_" for c in raw_base)[:40]
+    return f"{safe_base}-{digest}.json"
+
+
 def file_exists(file_path: str) -> bool:
     """Whether a path currently points at a file on disk."""
     return os.path.isfile(file_path)
+
+
+def find_missing_files(file_paths) -> tuple:
+    """
+    The paths among `file_paths` that are not a file on disk, in the order given.
+
+    One stat per path, so its time grows with the number of measurements and
+    with how slow the drive is: callers run it on a worker.
+    """
+    return tuple(path for path in file_paths if not os.path.isfile(path))
 
 
 def file_stamp(file_path: str) -> Optional[dict]:
@@ -223,14 +254,13 @@ def discover_measurement_files(directory_path: str) -> List[str]:
     """
     Lists every supported measurement file in a directory, case-insensitively.
 
-    Module-level rather than a method because the project indexer needs the same
-    answer without owning a MeasurementScanner; MeasurementScanner keeps a thin
-    delegate so existing callers are unaffected.
+    Here rather than in scan_cache because the project indexer needs the same
+    answer without scanning anything.
 
     The directory is glob-escaped because only the extension is meant to be a
     pattern. A perfectly ordinary folder name like "Run [2024]" was otherwise
     read by glob as a character class and matched nothing at all -- the folder
-    came back empty here, which made index_root() report every measurement in
+    came back empty here, which made the index pass report every measurement in
     it as missing and emptied it out of the Data Pool.
     """
     escaped_directory = glob.escape(directory_path)

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from core.project_model import SourceEntry
+from selection.field_offer import resolve_field_label
 from selection.trace_filter import (
     OfferedFacets, TraceIdentity, missing_range_value_fields, trace_matches,
 )
@@ -85,7 +86,7 @@ def plan_mask_application(
         [identity(trace) for trace in traces], schema, offered_ranges
     )
     messages = tuple(
-        f"WARNING: Filter '{schema.get(field, {}).get('custom_label', field)}' -- some curves on this graph have no value for it and are shown anyway."
+        f"WARNING: Filter '{resolve_field_label(field, schema)}' -- some curves on this graph have no value for it and are shown anyway."
         for field in missing
     )
     return MaskApplicationPlan(key=key, predicate=predicate, messages=messages)

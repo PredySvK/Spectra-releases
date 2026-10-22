@@ -29,8 +29,9 @@ from typing import Optional
 import numpy as np
 import pyqtgraph as pg
 
-from core.units import check_units_compatibility, convert_numeric_array
+from core.units import UnitPreferences, check_units_compatibility, convert_numeric_array
 from gui.workspace.plot_area import GRAPH_TOKENS
+from view_models.display_prefix import resolve_number_format
 from view_models.plot import BandRmsCursor, base_display_unit
 from signal_processing.dsp.levels import compute_band_rms
 
@@ -190,7 +191,9 @@ class BandRmsCursorsMixin:
             self._band_rms_label.setText(f"Band RMS unavailable\n{exc}")
             return
 
+        prefs = self._unit_preferences() if hasattr(self, "_unit_preferences") else UnitPreferences()
+        level_format = resolve_number_format(unit, prefs)
         self._band_rms_label.setText(
-            f"Band RMS  {level:.4g} {unit} RMS\n"
+            f"Band RMS  {level_format.format(level)} {level_format.shown_unit} RMS\n"
             f"{shown_start:,.1f} – {shown_stop:,.1f} {self._x_axis.unit}"
         )

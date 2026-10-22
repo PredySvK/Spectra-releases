@@ -47,7 +47,7 @@ try {
     if ($visibility -ne 'PUBLIC') { throw "Release repository $repository must be public; nothing uploaded." }
     # A failed asset upload leaves gh's draft behind; a rerun would add a second
     # release for the same tag. Drop such drafts, never touch a published release.
-    $releases = Invoke-Checked gh release list --repo $repository --limit 1000 --json tagName,isDraft
+    $releases = Invoke-Checked gh release list --repo $repository --limit 1000 --json 'tagName,isDraft'
     $all = ($releases -join "`n") | ConvertFrom-Json
     $existing = @($all | Where-Object { $_.tagName -ceq $Tag })
     if ($existing | Where-Object { -not $_.isDraft }) {

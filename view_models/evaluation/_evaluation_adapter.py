@@ -20,17 +20,12 @@ import numpy as np
 
 from core.block_kinds import KIND_ORDER_CUT, KIND_ORDER_RESIDUAL, KIND_OVERALL_LEVEL, PARAM_F_START, PARAM_F_STOP, PARAM_ORDER
 from core.data_block import NVHDataBlock
-from core.evaluation import CurveIdentity
+from core.evaluation import CurveBand, CurveIdentity, CurveOrder, CurveResidual, OrderOrBand
 from core.filter_card_config import (
-    COLUMN_ANALYSIS_TYPE, COLUMN_CHANNEL, COLUMN_CHANNEL_TYPE,
-    COLUMN_DATA_POOL_LABEL, COLUMN_DIRECTION, COLUMN_FILE_NAME,
-    COLUMN_ORDER, COLUMN_PARAMETER_SET, COLUMN_RESULT_SET,
+    COLUMN_CHANNEL, COLUMN_DIRECTION, COLUMN_FILE_NAME, COLUMN_PARAMETER_SET, COLUMN_RESULT_SET,
 )
+from view_models.curve_metadata import build_curve_metadata
 from view_models.plot import Trace
-from view_models.trace_filter import identity_for_trace
-from io_modules.metadata_schema import parse_value
-from selection.parameter_sets import parameter_set_for_signature, parameter_sets_from_traces
-from selection.source_facets import resolve_source_channel
 
 
 def synthetic_trace_for_block(block: NVHDataBlock) -> Trace:
@@ -88,124 +83,35 @@ def curve_identities_for_traces(
     if not traces:
         return []
 
-    identities = [identity_for_trace(trace, sources_by_path, result_set_labels) for trace in traces]
-    parameter_sets = parameter_sets_from_traces(identities)
+    records = build_curve_metadata(traces, sources_by_path, result_set_labels, schema or {})
 
     curves = []
-    for trace, identity in zip(traces, identities):
-        parameter_set = parameter_set_for_signature(identity.parameter_signature, tuple(parameter_sets))
-
-        # Build metadata dictionary covering Identity, Calculated, and Schema fields
-        meta_dict: Dict[str, Any] = {}
-
-        # 1. Identity built-ins
-        meta_dict[COLUMN_CHANNEL] = identity.channel_identity[0] or trace.channel_name
-        if identity.direction:
-            meta_dict[COLUMN_DIRECTION] = identity.direction
-        if identity.channel_type:
-            meta_dict[COLUMN_CHANNEL_TYPE] = identity.channel_type
-        if identity.file_name or trace.file_name:
-            meta_dict[COLUMN_FILE_NAME] = identity.file_name or trace.file_name
-        if identity.data_pool_label:
-            meta_dict[COLUMN_DATA_POOL_LABEL] = identity.data_pool_label
-        meta_dict[COLUMN_RESULT_SET] = identity.result_set_label or "Live"
-
-        # 2. Calculated built-ins
-        if identity.result_kind:
-            meta_dict[COLUMN_ANALYSIS_TYPE] = identity.result_kind
-        if identity.order is not None:
-            meta_dict[COLUMN_ORDER] = identity.order
-        if parameter_set is not None and parameter_set.label:
-            meta_dict[COLUMN_PARAMETER_SET] = parameter_set.label
-
-        # 3. Source typed metadata
-        source = identity.source
-        if source is not None:
-            if getattr(source, "parsed_metadata", None):
-                for k, v in source.parsed_metadata.items():
-                    # A channel-layer field's parsed_metadata value is the
-                    # file's first channel (channel_summary_value) -- never
-                    # this curve's; it comes from the curve's own channel below.
-                    if (schema or {}).get(k, {}).get("layer") == "channel":
-                        continue
-                    if v is not None and v != "":
-                        meta_dict[k] = v
-
-            if getattr(source, "channels", None):
-                ch_meta = resolve_source_channel(source, identity.channel_identity,
-                                                 getattr(identity, "channel_index", None))
-                if ch_meta:
-                    for k, v in ch_meta.items():
-                        if k in schema and v is not None and v != "":
-                            cfg = schema[k]
-                            kind = cfg.get("kind", "str")
-                            parsed = parse_value(v, kind, date_format=cfg.get("date_format"))
-                            if parsed is not None:
-                                meta_dict[k] = parsed
-
-            if getattr(source, "excel_metadata", None):
-                for k, v in source.excel_metadata.items():
-                    if k in schema and k not in meta_dict and v is not None and v != "":
-                        cfg = schema[k]
-                        kind = cfg.get("kind", "str")
-                        parsed = parse_value(v, kind, date_format=cfg.get("date_format"))
-                        if parsed is not None:
-                            meta_dict[k] = parsed
-
-            if getattr(source, "file_metadata", None):
-                for k, v in source.file_metadata.items():
-                    if k in schema and k not in meta_dict and v is not None and v != "":
-                        cfg = schema[k]
-                        kind = cfg.get("kind", "str")
-                        parsed = parse_value(v, kind, date_format=cfg.get("date_format"))
-                        if parsed is not None:
-                            meta_dict[k] = parsed
-
-        # 4. Trace meta_ref and block metadata fallback
-        if trace.meta_ref:
-            for k, v in trace.meta_ref.items():
-                if k not in meta_dict and v is not None and v != "":
-                    cfg = schema.get(k, {}) if schema else {}
-                    kind = cfg.get("kind", "str")
-                    parsed = parse_value(v, kind, date_format=cfg.get("date_format"))
-                    if parsed is not None:
-                        meta_dict[k] = parsed
-
-        if trace.block and hasattr(trace.block, "metadata") and trace.block.metadata:
-            for k, v in trace.block.metadata.items():
-                if k not in meta_dict and v is not None and v != "":
-                    cfg = schema.get(k, {}) if schema else {}
-                    kind = cfg.get("kind", "str")
-                    parsed = parse_value(v, kind, date_format=cfg.get("date_format"))
-                    if parsed is not None:
-                        meta_dict[k] = parsed
-
+    for trace, record in zip(traces, records):
         curve_identity = CurveIdentity(
-            channel=identity.channel_identity[0] or trace.channel_name,
-            direction=identity.direction or "",
-            measurement=identity.file_name or trace.file_name,
-            source=identity.result_set_label or "Live",
-            parameter_set=parameter_set.label if parameter_set is not None else "",
+            channel=record.get(COLUMN_CHANNEL, ""),
+            direction=record.get(COLUMN_DIRECTION, ""),
+            measurement=record.get(COLUMN_FILE_NAME, ""),
+            source=record[COLUMN_RESULT_SET],
+            parameter_set=record.get(COLUMN_PARAMETER_SET, ""),
             order_or_band=_order_or_band(trace.block),
-            metadata=meta_dict,
+            curve_metadata=record,
         )
         curves.append((trace.block, curve_identity))
     return curves
 
 
-def _order_or_band(block: NVHDataBlock) -> str:
+def _order_or_band(block: NVHDataBlock) -> OrderOrBand:
     if block.kind == KIND_ORDER_CUT:
         order = block.provenance.params.get(PARAM_ORDER)
-        return f"Order {order:g}" if order is not None else ""
+        return CurveOrder(float(order)) if order is not None else None
     if block.kind == KIND_OVERALL_LEVEL:
         f_start = block.provenance.params.get(PARAM_F_START)
         f_stop = block.provenance.params.get(PARAM_F_STOP)
         if f_start is None:
-            return ""
-        stop_text = f"{f_stop:g} Hz" if f_stop is not None else "Full Bandwidth"
-        return f"{f_start:g}-{stop_text}"
+            return None
+        return CurveBand(float(f_start), float(f_stop) if f_stop is not None else None)
     if block.kind == KIND_ORDER_RESIDUAL:
         # Its band is always the Overall Level default, so the
         # name alone tells it apart, as in the plot legend.
-        return "Residual"
-    return ""
+        return CurveResidual()
+    return None

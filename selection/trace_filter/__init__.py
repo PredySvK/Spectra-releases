@@ -49,8 +49,11 @@ from ._filter_card import (
     default_card_for_schema,
     local_card_cardinalities,
     resolve_card,
-    schema_field_group,
     user_default_column_keys,
+)
+from ._card_cardinalities import (
+    CardCardinalities,
+    resolve_card_cardinalities,
 )
 from ._panel_facets import (
     PanelRender,
@@ -71,6 +74,8 @@ from ._selection_edit import (
 )
 
 __all__ = [
+    "CardCardinalities",
+    "resolve_card_cardinalities",
     # TraceIdentity & gating
     "EMPTY_FACET_VALUE",
     "GATING_FACETS",
@@ -104,7 +109,6 @@ __all__ = [
     "default_card_for_schema",
     "local_card_cardinalities",
     "resolve_card",
-    "schema_field_group",
     "user_default_column_keys",
     # Panel facets & render
     "PanelRender",

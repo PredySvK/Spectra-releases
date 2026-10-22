@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 
 from core.block_kinds import KIND_TIME_RESPONSE
 from core.workflow_graph import Workflow, resolve_workflow_chains
+from selection.measurement_selection import WHOLE_POOL_SELECTION_NAME
 from signal_processing.workflow import BLOCKS, resolve_wire_port, topological_order
 from signal_processing.workflow_readiness import resolve_workflow_readiness
 
@@ -94,11 +95,15 @@ def build_pinned_workflow(before: Workflow, edited: Workflow) -> Workflow:
     """`edited` with every surviving block kept where it was drawn in `before`.
 
     The one way a structural edit (add, delete, wire, unwire) stores positions,
-    so remaining blocks never re-flow; new blocks stay automatic.
+    so remaining blocks never re-flow; a new block keeps a position the edit
+    gave it, otherwise it stays automatic.
     """
     kept = set(edited.block_ids)
-    return replace(edited, layout={block_id: position for block_id, position
-                                   in build_canvas_layout(before).items() if block_id in kept})
+    drawn = {block_id: position for block_id, position
+             in build_canvas_layout(before).items() if block_id in kept}
+    placed = {block_id: position for block_id, position
+              in edited.layout.items() if block_id in kept and block_id not in drawn}
+    return replace(edited, layout={**drawn, **placed})
 
 
 def build_workflow_canvas(
@@ -131,7 +136,7 @@ def build_workflow_canvas(
             x, y, 220.0, _block_height(block.block_type),
             (block.save.label or "Save result set") if block.save is not None else None,
             selection_label=(
-                ("Whole Data Pool" if block.input.whole_pool
+                (WHOLE_POOL_SELECTION_NAME if block.input.whole_pool
                  else block.input.selection_name or "No selection")
                 if block.input is not None else "No selection"
             ) if block.is_input else None,

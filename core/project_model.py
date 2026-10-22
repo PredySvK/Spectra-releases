@@ -32,6 +32,16 @@ from core.models import ChannelIdentity
 from core.workflow_graph import Workflow
 
 
+# A metadata schema field whose value lives per channel rather than once per
+# file (see NVHProject.metadata_schema).
+CHANNEL_LAYER = "channel"
+
+
+def is_channel_layer(config: Dict[str, Any]) -> bool:
+    """Whether a metadata schema field's `config` reads its value per channel."""
+    return config.get("layer") == CHANNEL_LAYER
+
+
 # Bumped only when a change cannot be read by an older build. Additive fields
 # do not need a bump, because from_dict() defaults anything it does not find.
 #
@@ -421,8 +431,8 @@ class NVHProject:
     # Which metadata fields are shown and what they are called:
     # {key: {"custom_label": str, "is_active": bool, "layer": "excel"|"channel"}}.
     # "channel" (BUGS.md N1/N2) means the value lives per-channel on a reader's
-    # ChannelMetadata (func_type, sampling_rate, id1..id5, ...), read through
-    # selection.source_facets.channel_summary_value -- never a UNV-only
+    # ChannelMetadata (func_type, sampling_rate, id1..id5, ...), read per channel
+    # (selection.source_facets.curve_field_value) -- never a UNV-only
     # concept, any reader that fills the matching ChannelMetadata attribute
     # participates.
     # A user decision, so it belongs with the project rather than in the folder

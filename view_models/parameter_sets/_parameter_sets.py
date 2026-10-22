@@ -6,7 +6,7 @@ Formatting helpers for Parameter Set presentation in the UI.
 
 Parameter Set grouping and signatures live in selection.parameter_sets (#163).
 """
-from selection.parameter_sets import shape_signature
+from selection.parameter_sets import parameter_signature
 
 
 def format_parameter_set_details(params: dict, kind: str) -> str:
@@ -24,5 +24,5 @@ def format_parameter_set_details(params: dict, kind: str) -> str:
         return value
 
     return "\n".join(
-        f"{key}: {shown(key, value)}" for key, value in shape_signature(kind, params)
+        f"{key}: {shown(key, value)}" for key, value in parameter_signature(kind, params)[1:]
     )

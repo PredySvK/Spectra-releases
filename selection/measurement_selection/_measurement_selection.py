@@ -16,14 +16,14 @@ from core.measurement_selection import (
     MeasurementSelection,
 )
 from core.models import (
-    FUNC_TYPE_TIME_RESPONSE, ChannelIdentity, ChannelMetadata, MeasurementRunIndex,
-    is_time_response, resolve_channel_block_kind,
+    READING_IMPORTED_RESULT, READING_UNREADABLE, READING_WAVEFORM, ChannelIdentity, ChannelMetadata,
+    MeasurementRunIndex, resolve_channel_reading,
 )
+from core.filter_card_config import RANGE_KINDS
 from core.project_model import SourceEntry
 from core.workflow_graph import SaveSpec
 from selection.channel_identity import split_channel_base_and_direction
 from selection.source_facets import (
-    RANGED_FIELD_KINDS,
     apply_column_facets,
     apply_channel_facet,
     POOL_IDENTITY_COLUMNS,
@@ -51,7 +51,7 @@ def _saved_facet_plan(metadata_values: Mapping[str, Any],
     Split a saved query into constraints that can still be evaluated and ones
     that cannot.
 
-    `usable_as_filter` is not consulted: it decides what the Filter panel offers,
+    `is_active` is not consulted: it decides what the Filter panel offers,
     not whether a query written earlier still names a real column. A missing
     field, or one whose kind no longer matches the constraint, is named instead
     of being skipped in silence.
@@ -71,7 +71,7 @@ def _saved_facet_plan(metadata_values: Mapping[str, Any],
             notes.append(_constraint_note(key, "the field is not in the metadata schema"))
             continue
         kind = field_kind(config)
-        if kind in RANGED_FIELD_KINDS:
+        if kind in RANGE_KINDS:
             notes.append(_constraint_note(
                 key, f"the field kind is {kind!r}, not categorical"))
             continue
@@ -85,7 +85,7 @@ def _saved_facet_plan(metadata_values: Mapping[str, Any],
             notes.append(_constraint_note(key, "the field is not in the metadata schema"))
             continue
         kind = field_kind(config)
-        if kind not in RANGED_FIELD_KINDS:
+        if kind not in RANGE_KINDS:
             notes.append(_constraint_note(key, f"the field kind is {kind!r}, not a range"))
             continue
         if kind == "date" and not _bounds_are_text(bounds):
@@ -211,7 +211,7 @@ def resolve(selection: MeasurementSelection,
             selection.column_values, selection.ranges, schema, column_rule=True)
     if ranges:
         matched = apply_range_facets(matched, schema, ranges, fields=ranges)
-    picked = apply_column_facets(matched, schema, columns)
+    picked = apply_column_facets(matched, schema, columns, ranges=ranges)
     matched = [source for source in matched if source.id in picked]
     if selection.mode == MODE_EXPLICIT and selection.channel_identities is not None:
         exact = apply_channel_facet(matched, selection.channel_identities)
@@ -222,8 +222,8 @@ def resolve(selection: MeasurementSelection,
     skipped = tuple(
         source.relpath for source in matched
         if time_responses_only and any(
-            source.channels[label].get("block_kind")
-            and not is_time_response(source.channels[label].get("func_type", FUNC_TYPE_TIME_RESPONSE))
+            resolve_channel_reading(ChannelMetadata.from_dict(source.channels[label]))
+            == READING_IMPORTED_RESULT
             for label in picked.get(source.id, ())
         )
     )
@@ -308,9 +308,9 @@ def _channels_for(sources: List[SourceEntry], picked: Mapping[str, Iterable[str]
         kept = []
         for label in sorted(labels):
             facts = stored.get(label) or {}
-            readable = (is_time_response(facts.get("func_type", FUNC_TYPE_TIME_RESPONSE))
-                        if time_responses_only else
-                        resolve_channel_block_kind(ChannelMetadata.from_dict(facts)) is not None)
+            reading = resolve_channel_reading(ChannelMetadata.from_dict(facts))
+            readable = (reading == READING_WAVEFORM if time_responses_only
+                        else reading != READING_UNREADABLE)
             if (readable
                     and (wanted is None or facts.get("type") in wanted)):
                 kept.append(label)
@@ -349,7 +349,7 @@ def channel_identities_by_type(runs: Iterable[MeasurementRunIndex],
     grouped: Dict[str, Set[Optional[str]]] = {}
     for run in runs:
         source = entries_by_path.get(os.path.normcase(os.path.abspath(run.file_path)))
-        for channel_meta in run.readable_channels():
+        for channel_meta in run.computable_channels():
             channel_type = resolve_run_channel_type(source, channel_meta)
             if channel_type is None or (channel_types is not None
                                         and channel_type not in channel_types):
@@ -368,7 +368,7 @@ def select_channels_for_run(run: MeasurementRunIndex,
                             channel_types: Set[str]) -> List[ChannelMetadata]:
     """The channels in one run whose identity was picked and whose type matches."""
     matches = []
-    for channel_meta in run.readable_channels():
+    for channel_meta in run.computable_channels():
         if channel_meta.type not in channel_types:
             continue
         identity = split_channel_base_and_direction(channel_meta.name)

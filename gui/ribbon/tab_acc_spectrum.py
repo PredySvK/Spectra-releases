@@ -10,12 +10,15 @@ Integrated with QSettings via AppContext for persistent user preferences;
 generates a SpectrumConfig DTO to decouple the UI from the DSP backend.
 """
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QCheckBox, QComboBox, QDoubleSpinBox, QHBoxLayout
+from PySide6.QtWidgets import QCheckBox, QDoubleSpinBox, QHBoxLayout
 
 from core.dsp_configs import SpectrumConfig
 from gui.ribbon.ribbon_dsp_tab import RibbonDspTab
 from gui.ribbon.ribbon_widgets import RibbonGroup, build_tab_layout, make_refresh_split_button, stack_buttons, vertical_separator
 from gui.ribbon.save_section import ComputeResultSetButton
+from view_models.analysis_kinds import ANALYSIS_SPECTRUM
+
+_DEFAULTS = SpectrumConfig()
 
 
 class TabAccSpectrum(RibbonDspTab):
@@ -23,6 +26,7 @@ class TabAccSpectrum(RibbonDspTab):
     # cb_band_rms is built last of the widgets get_dsp_config() reads.
     _settings_attr = "spectrum_settings"
     _ready_widget_name = "cb_band_rms"
+    _analysis_kind = ANALYSIS_SPECTRUM
 
     def _after_push(self):
         self.app_context.band_rms_cursors_enabled = self.cb_band_rms.isChecked()
@@ -53,14 +57,10 @@ class TabAccSpectrum(RibbonDspTab):
         layout.addWidget(vertical_separator())
 
         # -- FFT Analysis --
-        self.combo_fft_size = QComboBox()
-        self.combo_fft_size.addItems(["256", "512", "1024", "2048", "4096", "8192", "16384", "32768", "65536"])
-        self.combo_fft_size.setCurrentText(self._get_val("spec1d_fft_size", "4096"))
+        self.combo_fft_size = self._build_choice_combo("fft_size", "spec1d_fft_size")
         self.combo_fft_size.currentTextChanged.connect(lambda v: self._set_val("spec1d_fft_size", v))
 
-        self.combo_window_type = QComboBox()
-        self.combo_window_type.addItems(["Hanning", "Hamming", "Blackman", "Flat-top", "Rectangular"])
-        self.combo_window_type.setCurrentText(self._get_val("spec1d_window", "Hanning"))
+        self.combo_window_type = self._build_choice_combo("window_type", "spec1d_window")
         self.combo_window_type.currentTextChanged.connect(lambda v: self._set_val("spec1d_window", v))
 
         fft_group = RibbonGroup("FFT Analysis", tooltip="Block size and window of the spectrum")
@@ -71,40 +71,32 @@ class TabAccSpectrum(RibbonDspTab):
         layout.addWidget(vertical_separator())
 
         # -- View --
-        self.combo_spectrum_format = QComboBox()
-        self.combo_spectrum_format.addItems(["Linear", "Power", "PSD"])
-        self.combo_spectrum_format.setCurrentText(self._get_val("spec1d_format", "Linear"))
+        self.combo_spectrum_format = self._build_choice_combo("spectrum_format", "spec1d_format")
         self.combo_spectrum_format.currentTextChanged.connect(self._on_display_setting_changed)
         self.combo_format = self.combo_spectrum_format
 
-        self.combo_amplitude_mode = QComboBox()
-        self.combo_amplitude_mode.addItems(["RMS", "Peak"])
-        self.combo_amplitude_mode.setCurrentText(self._get_val("spec1d_amplitude", "RMS"))
+        self.combo_amplitude_mode = self._build_choice_combo("amplitude_mode", "spec1d_amplitude")
         self.combo_amplitude_mode.currentTextChanged.connect(self._on_display_setting_changed)
 
-        self.combo_scale = QComboBox()
-        self.combo_scale.addItems(["Linear", "dB"])
-        self.combo_scale.setCurrentText(self._get_val("spec1d_scale", "Linear"))
+        self.combo_scale = self._build_choice_combo("decibel_scale", "spec1d_scale")
         self.combo_scale.currentTextChanged.connect(self._on_display_setting_changed)
 
         view_group = RibbonGroup("View", tooltip="Display format, amplitude mode and scaling")
         view_group.add_fields([
-            ("Format", self.combo_spectrum_format),
             ("Amplitude", self.combo_amplitude_mode),
+            ("Format", self.combo_spectrum_format),
             ("Scale", self.combo_scale),
         ])
         layout.addWidget(view_group)
         layout.addWidget(vertical_separator())
 
         # -- Averaging --
-        self.combo_averaging = QComboBox()
-        self.combo_averaging.addItems(["Linear", "Peak Hold", "Exponential"])
+        self.combo_averaging = self._build_choice_combo("averaging_type", "spec1d_averaging")
         self.combo_averaging.setToolTip(
             "Linear: mean of every block. Peak Hold: the loudest value each bin ever "
             "reached, for a transient a mean would wash out. Exponential: recent "
             "blocks weighted more, by the alpha beside it."
         )
-        self.combo_averaging.setCurrentText(self._get_val("spec1d_averaging", "Linear"))
         self.combo_averaging.currentTextChanged.connect(self._on_averaging_changed)
 
         self.spin_alpha = QDoubleSpinBox()
@@ -112,7 +104,7 @@ class TabAccSpectrum(RibbonDspTab):
         self.spin_alpha.setSingleStep(0.05)
         self.spin_alpha.setDecimals(2)
         self.spin_alpha.setToolTip("Weight of each new block in exponential averaging.")
-        self.spin_alpha.setValue(self._get_val("spec1d_exp_alpha", 0.1, float))
+        self.spin_alpha.setValue(self._get_val("spec1d_exp_alpha", _DEFAULTS.exponential_alpha, float))
         self.spin_alpha.valueChanged.connect(lambda v: self._set_val("spec1d_exp_alpha", v))
 
         avg_group = RibbonGroup("Averaging", tooltip="How repeated FFT blocks are combined")
@@ -122,7 +114,7 @@ class TabAccSpectrum(RibbonDspTab):
 
         # -- Options --
         self.cb_remove_dc = QCheckBox("Remove DC Offset")
-        saved_dc = str(self._get_val("spec1d_remove_dc", "true")).lower() == "true"
+        saved_dc = str(self._get_val("spec1d_remove_dc", _DEFAULTS.remove_dc)).lower() == "true"
         self.cb_remove_dc.setChecked(saved_dc)
         self.cb_remove_dc.toggled.connect(lambda v: self._set_val("spec1d_remove_dc", v))
 
@@ -153,28 +145,28 @@ class TabAccSpectrum(RibbonDspTab):
 
         build_tab_layout(self, layout, "1d_spectrum")
 
-        self.spin_alpha.setEnabled(self.combo_averaging.currentText() == "Exponential")
+        self._sync_alpha_enabled()
         self._push_dsp_config()
 
     def _on_averaging_changed(self, text: str):
+        self._sync_alpha_enabled()
+        self._set_val("spec1d_averaging", text)
+
+    def _sync_alpha_enabled(self):
         # Alpha means nothing to the other two modes; left enabled it reads as a
         # setting that does something when it does not.
-        self.spin_alpha.setEnabled(text == "Exponential")
-        self._set_val("spec1d_averaging", text)
+        self.spin_alpha.setEnabled(
+            self._resolve_choice_value("averaging_type", self.combo_averaging) == "exponential")
 
     def get_dsp_config(self) -> SpectrumConfig:
         """Translates UI selections into standard DTOs for the DSP layer."""
-        w_map = {"Hanning": "hann", "Hamming": "hamming", "Blackman": "blackman", "Flat-top": "flattop",
-                 "Rectangular": "boxcar"}
-        a_map = {"Linear": "linear", "Peak Hold": "peak_hold", "Exponential": "exponential"}
-
         return SpectrumConfig(
-            fft_size=int(self.combo_fft_size.currentText()),
-            window_type=w_map.get(self.combo_window_type.currentText(), "hann"),
-            amplitude_mode=self.combo_amplitude_mode.currentText().lower(),
-            spectrum_format=self.combo_spectrum_format.currentText().lower(),
+            fft_size=self._resolve_choice_value("fft_size", self.combo_fft_size),
+            window_type=self._resolve_choice_value("window_type", self.combo_window_type),
+            amplitude_mode=self._resolve_choice_value("amplitude_mode", self.combo_amplitude_mode),
+            spectrum_format=self._resolve_choice_value("spectrum_format", self.combo_spectrum_format),
             remove_dc=self.cb_remove_dc.isChecked(),
-            averaging_type=a_map.get(self.combo_averaging.currentText(), "linear"),
+            averaging_type=self._resolve_choice_value("averaging_type", self.combo_averaging),
             exponential_alpha=self.spin_alpha.value(),
-            decibel_scale=(self.combo_scale.currentText() == "dB"),
+            decibel_scale=self._resolve_choice_value("decibel_scale", self.combo_scale),
         )

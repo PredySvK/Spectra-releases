@@ -8,6 +8,10 @@ Architecture:
 - Status: format_workflow_status, WorkflowStatus -- the "can this run?" line
   and its category; the caller (`gui/workspace/workflow_view.py`) maps the
   category to a stylesheet.
+- Workflow edit: resolve_workflow_edit, WorkflowEditResult and the edit values
+  (BlockMove, BlockAdd, BlockDelete, WireConnect, WireDisconnect,
+  BlockSettingsApply, InputChoice) -- the one door from a canvas or Properties
+  gesture to the document; `resolve_wire_targets` only previews.
 
 What does NOT belong here: Qt widgets, `setText`/`setStyleSheet` calls
 (gui/), deciding what runs (orchestration/), what project is currently open
@@ -15,19 +19,20 @@ What does NOT belong here: Qt widgets, `setText`/`setStyleSheet` calls
 """
 
 from ._status import WorkflowStatus, format_workflow_status
-from ._block_move import resolve_block_move
-from ._block_add import resolve_block_add
-from ._block_delete import resolve_block_delete
-from ._wire import resolve_wire_connect, resolve_wire_targets, resolve_wire_disconnect
+from ._wire import resolve_wire_targets
+from ._workflow_edit import (
+    BlockAdd, BlockDelete, BlockMove, BlockSettingsApply, InputChoice,
+    WireConnect, WireDisconnect, WorkflowEdit, WorkflowEditResult, resolve_workflow_edit,
+)
 from ._workflow_canvas import (
     CanvasBlock, CanvasPort, CanvasWire, WorkflowCanvas, build_workflow_canvas,
 )
 
 __all__ = [
-    "resolve_wire_connect", "resolve_wire_targets", "resolve_wire_disconnect",
-    "resolve_block_add",
-    "resolve_block_delete",
-    "resolve_block_move",
+    "resolve_workflow_edit", "WorkflowEdit", "WorkflowEditResult",
+    "BlockAdd", "BlockDelete", "BlockMove", "BlockSettingsApply", "InputChoice",
+    "WireConnect", "WireDisconnect",
+    "resolve_wire_targets",
     "CanvasBlock", "CanvasPort", "CanvasWire", "WorkflowCanvas", "build_workflow_canvas",
     "WorkflowStatus",
     "format_workflow_status",

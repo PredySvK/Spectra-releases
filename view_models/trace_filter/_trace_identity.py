@@ -14,7 +14,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from core.block_kinds import KIND_ORDER_RESIDUAL, KIND_OVERALL_LEVEL, KINDS, PARAM_COMPUTATION, PARAM_ORDER
+from core.block_kinds import KIND_ORDER_RESIDUAL, KINDS, PARAM_ORDER, STEP_READ
+from core.curve_recipe import resolve_curve_recipe
 from core.project_model import SourceEntry
 from view_models.plot import Trace, build_compute_spec
 from io_modules.measurement_files import canonical_path
@@ -70,7 +71,7 @@ def identity_for_trace(trace: Trace, sources_by_path: Dict[str, SourceEntry],
     result_kind = block_kind if block_kind is not None else (
         KIND_BY_X_QUANTITY.get(trace.x_quantity) if trace.x_quantity else None
     )
-    parameter_sig = trace_parameter_signature(result_kind, trace.compute_spec)
+    parameter_sig = None if _is_imported(block) else trace_parameter_signature(result_kind, trace.compute_spec)
 
     direction = channel_identity[1] or None
     channel_index = _channel_index_from((trace.meta_ref or {}).get("channel_index"))
@@ -87,7 +88,7 @@ def identity_for_trace(trace: Trace, sources_by_path: Dict[str, SourceEntry],
                          data_pool_label=data_pool_label, result_set_label=result_set_label,
                          compute_spec=trace.compute_spec,
                          channel_index=channel_index,
-                         computation=_computation_of(block))
+                         curve_recipe=resolve_curve_recipe(block))
 
 
 def identity_for_stored_curve(curve: Mapping[str, Any], source: Optional[SourceEntry]) -> TraceIdentity:
@@ -105,16 +106,13 @@ def identity_for_stored_curve(curve: Mapping[str, Any], source: Optional[SourceE
     # (#665 C19): the reader hands over the block, not a spec of its own.
     block = curve.get("block")
     compute_spec = build_compute_spec(block) if block is not None else curve.get("compute_spec")
-    if result_kind == KIND_OVERALL_LEVEL and compute_spec is not None:
-        # The Overall Level builders stamp this onto every Trace they build,
-        # so a drawn curve's signature carries it and the stored one must too.
-        compute_spec = {**compute_spec, "tracking_mode": curve.get("x_quantity", "")}
     return TraceIdentity(channel_identity=split_channel_base_and_direction(curve.get("channel_name", "")),
                          order=_order_from(compute_spec), source=source, result_kind=result_kind,
-                         parameter_signature=trace_parameter_signature(result_kind, compute_spec),
+                         parameter_signature=None if _is_imported(block)
+                         else trace_parameter_signature(result_kind, compute_spec),
                          compute_spec=compute_spec,
                          channel_index=_channel_index_from(curve.get("channel_index")),
-                         computation=dict(curve.get("computation") or {}))
+                         curve_recipe=resolve_curve_recipe(block))
 
 
 def resolve_stored_curves_already_held(
@@ -147,11 +145,12 @@ def resolve_stored_curves_already_held(
     return held, to_draw
 
 
-def _computation_of(block: Any) -> Dict[str, Any]:
-    """The extra settings a block records in its provenance, empty for none."""
+def _is_imported(block: Any) -> bool:
+    """Whether `block`, a result block, is an Imported result: computed by
+    another tool, so it has no curve recipe and belongs to no Parameter Set
+    (#813)."""
     provenance = getattr(block, "provenance", None)
-    params = provenance.params if provenance else {}
-    return dict(params.get(PARAM_COMPUTATION) or {})
+    return provenance is not None and provenance.step == STEP_READ
 
 
 def _channel_index_from(raw: Any) -> Optional[int]:
@@ -175,8 +174,12 @@ def trace_parameter_signature(result_kind: Optional[str], compute_spec: Optional
     is stripped first: it is already its own facet (Order), and shape_signature
     only exempts "orders_to_extract" (the plural, project-side key), not the
     singular value a stored order-cut block actually carries.
+
+    An empty compute_spec (a curve computed before the curve recipe) still
+    gets the signature of its kind alone, so it keeps a Parameter Set until it
+    is computed again; only a curve with no spec at all has none.
     """
-    if not result_kind or not compute_spec:
+    if not result_kind or compute_spec is None:
         return None
     params = {key: value for key, value in compute_spec.items() if key != PARAM_ORDER}
     return parameter_signature(result_kind, params)

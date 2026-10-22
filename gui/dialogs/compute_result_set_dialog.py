@@ -10,11 +10,15 @@ It answers one question in two parts before a batch runs:
   * Channels -- type (acceleration / sound) and all-vs-picked.
   * Orders -- one extra line, Order Tracking only, handed in by the tab.
 
-On accept it writes the channel scope back to QSettings under the tab's prefix
-(gui/ribbon/save_section.ComputeResultSetButton reads it there) and exposes
-`custom_label` for gui/handlers/batch_run.py to read. It does not run
-anything itself -- pressing Compute is the caller's business, same split as the
-old inline section had.
+On accept it hands the whole answer back as `request`, a
+CalculateAndSaveRequest that gui/handlers/batch_run.py passes straight to the
+planner (#770). It does not run anything itself -- pressing Compute is the
+caller's business, same split as the old inline section had.
+
+QSettings only prefill the dialog the next time it opens; the batch never
+reads them. The answer used to travel through them, and the contract was a key
+name three files had to spell alike -- it drifted once
+("order_order_save_targets") and the batch silently kept the old orders.
 
 Lives in gui/dialogs/: it drives QSettings and Qt dialogs, so it cannot sit any
 lower.
@@ -26,13 +30,14 @@ from PySide6.QtWidgets import (
     QLineEdit, QPushButton, QRadioButton, QVBoxLayout, QWidget,
 )
 
-from io_modules.result_cache.cache_naming import sanitize_result_set_label
+from orchestration.batch import CalculateAndSaveRequest
+from view_models.batch import SAVE_CHANNEL_TYPE_OPTIONS, resolve_channel_types
 from view_models.result_sets import build_label_preview
 from selection.measurement_selection import channel_identities_by_type
 
 from gui.dialogs.dialog_state import remember_dialog_geometry
 from gui.ribbon.save_section import (
-    SAVE_CHANNEL_TYPE_OPTIONS, identities_to_settings, read_selected_identities,
+    identities_to_settings, read_selected_identities,
 )
 from view_models.evaluation import parse_orders_text
 from gui.appearance import APP_TOKENS
@@ -54,10 +59,8 @@ class ComputeResultSetDialog(QDialog):
         self._selected_identities = read_selected_identities(
             self._settings, self._prefix)
 
-        # Blank = the caller derives a name from the parameters
-        # (default_result_set_label); a non-empty value overrides that and is
-        # what the result set folder is called on disk (sanitised on accept).
-        self.custom_label: str = ""
+        # The answer, filled in on accept.
+        self.request = CalculateAndSaveRequest()
 
         self._build_ui(extra_orders, folder_count)
 
@@ -204,7 +207,7 @@ class ComputeResultSetDialog(QDialog):
         from gui.dialogs.channel_selection_dialog import ChannelSelectionDialog
 
         loaded_runs = list(self._app_context.pool.loaded_runs)
-        types = set(SAVE_CHANNEL_TYPE_OPTIONS.get(self.combo_type.currentText(), set()))
+        types = set(resolve_channel_types(self.combo_type.currentText()) or ())
         identities = channel_identities_by_type(
             loaded_runs, types, self._app_context.project_session.source_location.entries_by_path
         )
@@ -217,28 +220,33 @@ class ComputeResultSetDialog(QDialog):
     # ---- accept ------------------------------------------------------
 
     def _on_accept(self) -> None:
-        self._set_val("save_channel_type", self.combo_type.currentText())
-        self._set_val("save_channel_mode",
-                      "selected" if self.rb_selected.isChecked() else "all")
-        if self._settings:
-            self._settings.setValue(
-                f"{self._prefix}_save_selected_identities",
-                identities_to_settings(self._selected_identities),
-            )
-        if self.edit_orders is not None and self._settings:
-            # Unprefixed on purpose: TabAccOrderTracking.get_save_dsp_config()
-            # reads this exact key back when the batch runs. Going through
-            # _set_val() would prefix it ("order_order_save_targets") and the
-            # batch would silently keep computing the old orders -- which is
-            # how a re-compute at a different order still hit the "already
-            # exists" prompt.
-            parsed = parse_orders_text(self.edit_orders.text())
-            if parsed:
-                self._settings.setValue("order_save_targets", self.edit_orders.text())
+        channel_type = self.combo_type.currentText()
+        all_channels = not self.rb_selected.isChecked()
+        orders = (tuple(parse_orders_text(self.edit_orders.text()) or ())
+                  if self.edit_orders is not None else ())
 
-        # Sanitised here so the value handed back is exactly the folder name
-        # on disk (finding 5.1); begin_result_set sanitises again as a backstop.
-        self.custom_label = sanitize_result_set_label(self.edit_name.text())
+        # Remembered only to prefill the dialog next time.
+        self._set_val("save_channel_type", channel_type)
+        self._set_val("save_channel_mode", "all" if all_channels else "selected")
+        self._set_val("save_selected_identities",
+                      identities_to_settings(self._selected_identities))
+        if orders:
+            # Unprefixed: the key predates the dialog and a renamed key would
+            # forget the orders the user last asked for.
+            self._settings_set("order_save_targets", self.edit_orders.text())
+
+        self.request = CalculateAndSaveRequest(
+            channel_types=(resolve_channel_types(channel_type)
+                           or resolve_channel_types(_DEFAULT_CHANNEL_TYPE)),
+            all_channels=all_channels,
+            picked_identities=frozenset(self._selected_identities),
+            orders=orders,
+            # Blank = the planner derives a name from the parameters
+            # (default_result_set_label). The preview's clean name, so the value
+            # handed back is exactly the folder name on disk (finding 5.1);
+            # begin_result_set sanitises again as a backstop.
+            custom_label=build_label_preview(self.edit_name.text()).clean,
+        )
 
         self.accept()
 
@@ -246,11 +254,11 @@ class ComputeResultSetDialog(QDialog):
 
     def _batch_orders(self) -> str:
         """
-        What to show in the Orders field. Both keys are unprefixed because both
-        are shared with TabAccOrderTracking: `order_save_targets` is the batch
-        value it reads at run time, `order_targets` its live-plot value used
-        only as the first-time seed so the field is not stuck at a fixed
-        default while the user dials orders into the ribbon.
+        What to show in the Orders field: the batch orders asked for last time
+        (`order_save_targets`, written only by this dialog), else the ribbon's
+        live-plot orders (`order_targets`, TabAccOrderTracking's key) as the
+        first-time seed, so the field is not stuck at a fixed default while the
+        user dials orders into the ribbon.
         """
         if not self._settings:
             return "1, 2"
@@ -270,5 +278,8 @@ class ComputeResultSetDialog(QDialog):
         return default
 
     def _set_val(self, suffix: str, value) -> None:
+        self._settings_set(f"{self._prefix}_{suffix}", value)
+
+    def _settings_set(self, key: str, value) -> None:
         if self._settings:
-            self._settings.setValue(f"{self._prefix}_{suffix}", value)
+            self._settings.setValue(key, value)

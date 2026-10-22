@@ -28,6 +28,8 @@ Architecture:
   (half a bin past each end, +-0.5 for a single bin); the dock draws the image over it
   and the Cursor reads the cell under the mouse from it (#665 C28).
 - Presentation styling & legend text: base_display_unit, format_display_unit, resolve_carousel_colour.
+- resolve_ordinate_quantity: "rpm" for a speed curve's Y values, so the Display prefix
+  puts a Hz ordinate on the Speed row.
 - Rendering mode & curve look: resolve_rendering_mode picks OpenGL or raster
   from the drawn curves (LARGE_CURVE_POINTS); resolve_curve_look turns a Pen's carousel
   slot into a CurveLook (colour + one of LINE_STYLES) for that mode.
@@ -102,6 +104,9 @@ from ._plot_model_builder import (
     overall_level_band_differs_from_dock,
     traces_kept_after_unload,
 )
+from ._trace_display import (
+    resolve_ordinate_quantity,
+)
 from ._visible_traces import (
     AcceptOutcome,
     HiddenReason,
@@ -152,6 +157,8 @@ __all__ = [
     "resolve_carousel_colour",
     "HeldPens",
     "format_display_unit",
+    # The quantity of a curve's Y values (Display prefix row for a Hz ordinate)
+    "resolve_ordinate_quantity",
     # Rendering mode & curve look
     "CurveLook",
     "LARGE_CURVE_POINTS",

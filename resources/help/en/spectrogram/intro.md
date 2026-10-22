@@ -8,8 +8,8 @@ This module computes a time-frequency or RPM-frequency map of the signal. Each c
 
 One block of $N$ samples is placed **centred on every trigger**; there is no overlap setting and no averaging. The trigger spacing (the *Step*) decides whether neighbouring blocks overlap or leave gaps. Triggers come from [Tacho tracking](topic:shared/tracking):
 
-- **RPM Tracked:** a trigger at every multiple of the step in RPM (default **50 RPM**) where the tacho crosses it, in the chosen sweep direction (Up or Down; Any is refused because a run-up plus run-down crosses each speed twice). The axis is the RPM (see [Order Tracking](topic:order_tracking/intro) for the same data read as orders).
-- **Free Run (Time):** a trigger every step seconds from the start of the record (default **0.05 s**). The axis is time. No tacho is needed.
+- **RPM Tracked:** a trigger at every multiple of the step in RPM (default **50 RPM**) where the tacho crosses it, in the chosen Ramp direction (Up or Down). The axis is the RPM (see [Order Tracking](topic:order_tracking/intro) for the same data read as orders).
+- **Free Run (Time):** a trigger every step seconds from the start of the record (default **0.05 s**), or from *Start [s]* to *End [s]* when a [Tracking range](topic:shared/tracking) is set. The axis is time. No tacho is needed.
 
 ## Per-block computation
 
@@ -35,7 +35,7 @@ $g_i=1$ for a whole block. Because a trigger is always inside the record, a bloc
 | Format / Amplitude / Colour scale | Linear / RMS / Linear |
 | Tracking mode | RPM Tracked |
 | Step | 50 RPM (time mode: 0.05 s) |
-| Sweep / Hysteresis | Up / 10 RPM |
+| Ramp | Up |
 | Remove DC Offset | on (see [Spectrum](topic:spectrum/intro)) |
 
 The record must be at least $N$ samples long. The map's data come from the [raw signal](topic:raw_data/intro) of the channel.

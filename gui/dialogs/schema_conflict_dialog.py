@@ -46,7 +46,8 @@ def show_schema_conflicts(app_context, parent, conflicts) -> bool:
     is already in the pool and usable. This is a notice with a decision
     attached, not a gate in front of the folder.
     """
-    pending = unacknowledged(app_context.project_session.project, conflicts)
+    pending = unacknowledged(
+        app_context.project_session.acknowledged_schema_conflicts, conflicts)
     if not pending:
         return False
 
@@ -116,7 +117,6 @@ class SchemaConflictDialog(QDialog):
             if not self._checkboxes[conflict.key].isChecked():
                 continue
             definition = dict(schema.get(conflict.key) or {})
-            definition["usable_as_filter"] = False
             definition["is_active"] = False
             schema[conflict.key] = definition
             excluded += 1

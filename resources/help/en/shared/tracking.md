@@ -2,7 +2,7 @@
 
 Decides **where** in the record the analysis blocks are centred ([Spectrogram](topic:spectrogram/intro), [Order Tracking](topic:order_tracking/intro), [Overall Level](topic:overall_level/intro)). The settings below are described one by one: what each does and what it changes in the results.
 
-**Defaults:** Step 50 RPM (0.05 s in time mode), Sweep Up, Hysteresis 10 RPM.
+**Defaults:** Step 50 RPM (0.05 s in time mode), Ramp Up.
 
 ## Mode
 
@@ -11,7 +11,7 @@ Decides **where** in the record the analysis blocks are centred ([Spectrogram](t
 
 ![Triggers of Free Run and RPM Tracked](tracking_triggers.png)
 
-The same run-up and run-down, cut two ways. **Free Run** (left) places a trigger every second, whatever the speed: the points are evenly spaced in time but unevenly in rpm, and some fall in the standstill. **RPM Tracked** (right, Sweep Up) places one trigger each time the speed crosses a multiple of the step on the way up, so the points are evenly spaced in rpm and the run-down and the standstill are left out.
+The same run-up and run-down, cut two ways. **Free Run** (left) places a trigger every second, whatever the speed: the points are evenly spaced in time but unevenly in rpm, and some fall in the standstill. **RPM Tracked** (right, Ramp Up) places one trigger each time the speed crosses a multiple of the step on the way up, so the points are evenly spaced in rpm and the run-down and the standstill are left out.
 
 ## Step
 
@@ -27,29 +27,49 @@ The same run-up, order 2, with a narrow resonance at 3500 rpm. With Step = 50 rp
 
 The same measurement with a fast run-up (125 rpm/s) and a resonance only 15 rpm wide. Step = 50 rpm and Step = 5 rpm give the same wide, lower peak, because one block covers 100 rpm, much more than the resonance. A slower run-up or a shorter block ([FFT size](topic:shared/fft_size), at the price of frequency resolution) narrows the stretch; a lower step does not.
 
-## Sweep
+## Ramp
 
 Up counts only upward crossings, Down only downward ones. The standstill noise before a run-up and after a run-down is excluded. The same machine behaves differently when it speeds up and when it slows down, so Up and Down give different curves at the same speeds.
 
-![Which part of a record Sweep Up and Sweep Down use](tracking_sweep.png)
+![Which part of a record Ramp Up and Ramp Down use](tracking_sweep.png)
 
-The sweep works from the **highest point of the record**. **Up** takes the rise to that point, starting from the last moment the speed was at rest before it (or from the start of the record if it never was). **Down** takes the fall from that point to the first moment at rest after it (or to the end of the record). Only inside that stretch are the crossings of the targets looked for. A smaller run-up or run-down elsewhere in the record is not used: otherwise some speeds would be crossed twice.
+The ramp works from the **highest point of the record**. **Up** takes the rise to that point, starting from the last moment the speed was at rest before it (or from the start of the record if it never was). **Down** takes the fall from that point to the first moment at rest after it (or to the end of the record). Only inside that stretch are the crossings of the targets looked for. A smaller run-up or run-down elsewhere in the record is not used: otherwise some speeds would be crossed twice.
 
 Edge cases:
 
-- A record with only a run-down gives no triggers for Sweep Up, and one with only a run-up gives none for Sweep Down.
-- If a run-down comes first and a higher run-up later, Sweep Down finds nothing: the highest point is at the end, and the earlier run-down lies before it.
+- A record with only a run-down gives no triggers for Ramp Up, and one with only a run-up gives none for Ramp Down.
+- If a run-down comes first and a higher run-up later, Ramp Down finds nothing: the highest point is at the end, and the earlier run-down lies before it.
 - A tacho that never reaches 0 (an idle at 800 rpm, say) is not trimmed: Up starts from the first sample, and the triggers begin at the first target at or above the lowest speed.
 
-## Hysteresis
+## Tracking range
 
-Guards against a speed that dithers around a target. After a trigger at a target, the next trigger at the *same* target is accepted only once the speed has left the band around it on the far side. For an Up sweep that means dropping below target − hysteresis. Example: with 10 RPM, a trigger at 1000 RPM is not repeated until the speed has gone below 990 RPM and crossed 1000 again.
+**Min [RPM]** and **Max [RPM]**, next to the step, narrow the ramp to the speeds you care about. Empty fields mean auto: 0 rpm and the record's top speed, exactly the ramp described above. In Free Run the same fields are **Start [s]** and **End [s]** (see below).
 
-With a speed that wobbles around a target, too small a value gives several blocks at almost the same speed, which shows as duplicated points and a jagged curve. A larger value keeps one. Too large a value also drops a real dip and return that is smaller than it.
+- **Up** starts at the **last moment the speed is at or below Min** before the top speed of the record, and ends at the top speed. A short spin-up past Min and back before the real run is therefore not taken for the run, and the standstill and the wobbly start below Min give no blocks.
+- **Down** is the mirror: it starts at the top speed and ends at the first moment at or below Min after it.
+- Targets above **Max** are dropped. Max below the top speed does not pick an earlier run: the ramp is still found around the top speed of the whole record.
+- The targets stay on **whole multiples of the step**: Min 1 030 rpm with Step 50 rpm gives a first point at 1 050 rpm, so two measurements analysed with different ranges still share speed points.
+- A record that already starts above Min is used from its start.
+- A reverse-rotation run takes the range in positive rpm, like its result axis.
+- A Min at or above Max is refused as you enter it. A range the measurement never reaches (Min 40 000 rpm on a run to 35 000 rpm) stops with a message naming the measurement. In a [batch](topic:batch/intro) that measurement is listed as a problem and the other measurements still finish.
+- The Spectrogram, Order Tracking and Overall Level tabs each keep their own range. **Calculate & Save Data** uses the tab's range, and a [workflow](topic:workflow/intro) block has it as *Rpm Min* / *Rpm Max* in its Properties (empty = auto). The Overall Level + Residual curves of Order Tracking use the orders' range.
 
-![The same wobbling speed with Hysteresis = 2 rpm and 10 rpm](tracking_hysteresis.png)
+### Start and End in Free Run
 
-The speed wobbles by ±7 rpm around a target of 300 rpm. With Hysteresis = 2 rpm every wobble dips below the orange line (target − hysteresis) and comes back, so each return counts again: five triggers at almost the same speed. With Hysteresis = 10 rpm the speed never drops below 290 rpm, so the first trigger stands and the returns (hollow circles) are rejected: one trigger, one block.
+In Free Run the two fields read **Start [s]** and **End [s]** and narrow the record in time. Empty fields mean the whole record, exactly the blocks without a range.
+
+- The times are the ones on the **time axis**, as in the time signal graph: a record that starts at 12.3 s analysed from 15 s starts 2.7 s into it.
+- The **first block sits exactly on Start**, then one every step; the last one is at or before End. Unlike the rpm targets, the time grid is not on multiples of the step: Start 12.3 s with Step 0.5 s gives 12.3, 12.8, 13.3 s ... A Start before the record keeps its grid: Start 10 s with Step 0.5 s on a record from 12.3 s gives a first block at 12.5 s.
+- The time range and the rpm range are remembered separately: switching the Tracking Mode shows the range of that mode, so an rpm value is never read as seconds. Each tab keeps its own pair, and a [workflow](topic:workflow/intro) block has it as *Time Start* / *Time End*.
+- A Start at or after End is refused as you enter it. A range outside the record (Start 40 s on a record that ends at 30 s) stops with a message naming the measurement; in a batch the other measurements still finish.
+
+## One block per speed: the first crossing
+
+Each target speed gets exactly one block, from the **first time** the speed reaches it in the ramp direction. A later crossing of the same speed is ignored. The rpm axis of the result therefore has every speed once, evenly spaced.
+
+![A wobbling and a sagging plateau: one trigger per speed](tracking_first_crossing.png)
+
+Two run-ups with a plateau at 300 rpm, Step = 50 rpm. On the left the speed wobbles around the target: it crosses 300 rpm four times, but only the first crossing gives a block. On the right the plateau sags below its setpoint and the next ramp crosses 300 rpm again; that block is not repeated either. The same holds for a run-up that dips and recovers in the middle: the speeds it passes again keep the blocks from before the dip. Ramp Down is the mirror: the first time the speed falls to each target.
 
 ## Tacho cleaning
 

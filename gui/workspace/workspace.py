@@ -15,11 +15,13 @@ from PySide6.QtWidgets import QTabBar, QTabWidget, QWidget
 from core.jobs import job_step
 from gui.workspace.graph_dock import GraphDock
 from gui.workspace.spectrogram_dock import SpectrogramDock
-from core.block_kinds import KIND_ORDER_CUT, resolve_clipped_f_stop
-from core.models import resolve_channel_block_kind
+from core.block_kinds import resolve_clipped_f_stop
+from core.models import READING_IMPORTED_RESULT, resolve_channel_reading
 from gui.workspace.analysis_tabs import AnalysisTabsMixin
 from gui.handlers.companion_curves import CompanionCurvesHandler
+from io_modules.tab_cache import write_tab_cache_file
 from orchestration import tab_cache
+from orchestration.channel_drop import build_channel_descriptors, resolve_dropped_channels
 from orchestration.dock_tasks import PURPOSE_COMPUTE, PURPOSE_TAB_CACHE, DockTasks
 from core.evaluation import EvaluationConfig
 from core.units import strip_channel_name_prefix
@@ -170,7 +172,9 @@ class Workspace(AnalysisTabsMixin):
                  # over by constructor. None in a window with no Filter panel
                  # and in tests that do not drive the mask -- both leave the
                  # three call sites below as no-ops.
-                 filter_routing=None):
+                 filter_routing=None,
+                 # The Tab cache file write; tests hand in a fake.
+                 tab_cache_write=write_tab_cache_file):
         self.app_context = app_context
         self.tabs = tab_widget
         # The Home Workspace tab: never an analysis dock, so every loop over
@@ -189,9 +193,18 @@ class Workspace(AnalysisTabsMixin):
         # answer to "is this result still wanted?" for the whole workspace.
         self.dock_tasks = DockTasks(
             self.job_runner, is_open=lambda dock_id: self.find_dock_by_id(dock_id) is not None)
-        # Tab cache results of an Untitled project, written after its first
-        # Save (AnalysisTabsMixin.write_tab_cache_file, ADR §1.178).
-        self.held_tab_cache_writes = tab_cache.HeldTabCacheWrites()
+        # The Tab cache of every curve of every open tab: names, writes, and
+        # what an Untitled project holds until its first Save.
+        self.tab_cache_files = tab_cache.TabCacheFiles(
+            start_write=lambda dock_id, fn, *args, on_error: self.dock_tasks.run(
+                dock_id, fn, *args, purpose=PURPOSE_TAB_CACHE, on_error=on_error),
+            writes_in_flight=lambda: self.dock_tasks.count_in_flight(PURPOSE_TAB_CACHE),
+            project_path=self._project_path,
+            saved_open_tabs=self._saved_open_tabs,
+            mark_view_changed=self._mark_view_changed,
+            log=lambda text: self.app_context.log(text),
+            is_open=lambda dock_id: self.find_dock_by_id(dock_id) is not None,
+            write_file=tab_cache_write)
         self.companion_curves = CompanionCurvesHandler(
             app_context, self.dock_tasks, self.route_channel_drop)
         # One TrackingPlan bag for every dock's compute: a click on another
@@ -388,6 +401,7 @@ class Workspace(AnalysisTabsMixin):
         if idx != -1:
             self.tabs.removeTab(idx)
             dock.deleteLater()
+        self.tab_cache_files.close_tab(dock.dock_id)
         if self.tabs.count() == 0:
             self.show_home_tab()
 
@@ -431,7 +445,7 @@ class Workspace(AnalysisTabsMixin):
         the dock's own drop signal, a restored dock's pending overlays, and
         AnalysisTabsMixin.refresh_last_n_curves.
         """
-        from gui.file_explorer.actions.channel_drop import execute_channel_drop_processing
+        from gui.workspace.channel_drop import execute_channel_drop_processing
         accepted = execute_channel_drop_processing(
             dock_instance=dock_instance,
             raw_descriptors=raw_descriptors,
@@ -500,8 +514,6 @@ class Workspace(AnalysisTabsMixin):
         "Selection 'X'" (#469). A tab nothing could be loaded into closes
         again with the reason in the log.
         """
-        from gui.file_explorer.actions.channel_drop import build_channel_descriptors
-
         self._drop_home_tab()
         dock = GraphDock(app_context=self.app_context)
         dock.analysis_kind = analysis_kind
@@ -522,8 +534,8 @@ class Workspace(AnalysisTabsMixin):
             self._remove_dock_tab(dock)
 
     def _open_dropped_on_home_tab(self, raw_descriptors: list) -> None:
-        from gui.file_explorer.actions.channel_drop import resolve_dropped_channels
-        self.open_channels_tab(resolve_dropped_channels(raw_descriptors, self.app_context))
+        context = self.app_context
+        self.open_channels_tab(resolve_dropped_channels(raw_descriptors, context.pool.run_lookup, context.log))
 
     def _drop_home_tab(self):
         """Removes the lone "Home Workspace" placeholder before the first real dock opens."""
@@ -710,7 +722,7 @@ class Workspace(AnalysisTabsMixin):
         """
         if (dock.analysis_kind == ANALYSIS_TIME or
                 (dock.channel_meta is not None
-                 and resolve_channel_block_kind(dock.channel_meta) == KIND_ORDER_CUT)):
+                 and resolve_channel_reading(dock.channel_meta) == READING_IMPORTED_RESULT)):
             self._dispatch_compute_time(dock, origin=origin)
         else:
             self._dispatch_compute(dock, dock.analysis_kind, origin=origin, vib_block=vib_block)
@@ -724,7 +736,7 @@ class Workspace(AnalysisTabsMixin):
         self.open_tabs.restore()
 
     def open_specific_channel_tab(self, run_index, channel_meta):
-        if resolve_channel_block_kind(channel_meta) == KIND_ORDER_CUT:
+        if resolve_channel_reading(channel_meta) == READING_IMPORTED_RESULT:
             dock = self.build_shell(ANALYSIS_ORDERS, ResolvedTrace(run_index, channel_meta))
             self._mark_project_dirty()
             self.dispatch_compute(dock, origin=ComputeOrigin.FRESH_OPEN)
@@ -960,6 +972,8 @@ class Workspace(AnalysisTabsMixin):
         """
         for idx in range(self.tabs.count()):
             dock = self.tabs.widget(idx)
+            if hasattr(dock, "apply_unit_preferences"):
+                dock.apply_unit_preferences()
             if not hasattr(dock, "curves") or not hasattr(dock, "_unit_preferences"):
                 continue
             if dock.curves.model is None:
@@ -975,6 +989,13 @@ class Workspace(AnalysisTabsMixin):
             if getattr(dock.curves.model, "analysis_kind", "") != kind.name:
                 continue
             dock.curves.rebuild_units(dock._unit_preferences())
+
+        for idx in range(self.tabs.count()):
+            dock = self.tabs.widget(idx)
+            if hasattr(dock, "_update_band_rms") and getattr(dock, "band_rms_cursors_enabled", False):
+                dock._update_band_rms()
+            if hasattr(dock, "cursor_box_visible") and dock.cursor_box_visible() and hasattr(dock, "_refresh_cursor_box"):
+                dock._refresh_cursor_box()
 
         panel = self.evaluation_panel
         if panel is not None and hasattr(panel, "on_units_changed"):
@@ -996,6 +1017,19 @@ class Workspace(AnalysisTabsMixin):
         if panel is not None and hasattr(panel, "on_units_changed"):
             panel.on_units_changed()
 
+    def _saved_open_tabs(self):
+        """The saved project's open tabs; None without a session."""
+        session = self._project_session()
+        return session.project.open_tabs if session is not None else None
+
+    def _mark_view_changed(self) -> None:
+        session = self._project_session()
+        if session is not None:
+            session.mark_view_changed()
+
+    def _project_session(self):
+        return getattr(self.app_context, "project_session", None)
+
     def finish_tab_cache_writes(self, show_note=None, timeout_ms: int = 60000) -> bool:
         """
         Waits, keeping the window painted, until every Tab cache write in
@@ -1007,7 +1041,7 @@ class Workspace(AnalysisTabsMixin):
         Returns False when `timeout_ms` ran out first.
         """
         def writing() -> bool:
-            return bool(self.dock_tasks.count_in_flight(PURPOSE_TAB_CACHE))
+            return self.tab_cache_files.has_writes_in_flight()
 
         if not writing():
             return True
@@ -1041,10 +1075,10 @@ class Workspace(AnalysisTabsMixin):
         Called when the project is swapped (New / Open): the previous project's
         plots otherwise stay on screen against a project that has no channel
         for any of them -- the same trap as a standing pool, one level up.
-        See ProjectDocumentHandler.new_project / open_project.
+        See orchestration.project_swap.
 
-        Never marks the project dirty: Open runs this after the new project is
-        loaded, and the tabs closed here belong to the outgoing one (#640).
+        Never marks the project dirty: the tabs closed here belong to the
+        outgoing project, never to the one being opened (#640).
         """
         placeholder = self.placeholder_graph
         for index in range(self.tabs.count() - 1, -1, -1):
@@ -1091,7 +1125,7 @@ class Workspace(AnalysisTabsMixin):
         tag = getattr(target_widget, "dock_id", None)
         if tag:
             self.dock_tasks.cancel(tag)
-            self.held_tab_cache_writes.discard_dock(tag)
+            self.tab_cache_files.close_tab(tag)
 
         target_widget.setParent(None)
         target_widget.deleteLater()

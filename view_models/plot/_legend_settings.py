@@ -11,6 +11,17 @@ class's clothes, which is why the class name is gone rather than renamed.
 
 from typing import Any, Dict, Optional
 
+from core.block_kinds import (
+    KIND_ORDER_CUT,
+    KIND_ORDER_RESIDUAL,
+    KIND_OVERALL_LEVEL,
+    META_EFFECTIVE_F_START,
+    META_EFFECTIVE_F_STOP,
+    PARAM_F_START,
+    PARAM_F_STOP,
+    PARAM_ORDER,
+    STEP_READ,
+)
 from core.units import strip_channel_name_prefix
 
 # Maps Pint's internal calculation tokens back into the canonical short display
@@ -35,20 +46,55 @@ def format_display_unit(internal_pint_unit: str) -> str:
     return _CANONICAL_DISPLAY_UNITS.get(str(internal_pint_unit).strip(), internal_pint_unit)
 
 
+def _curve_name(block: Any) -> str:
+    """
+    What a curve of `block` is, named after its channel: "Order 2", "OAL",
+    "OAL 10–500 Hz", "Residual" -- or "" when the channel alone says it.
+
+    An OAL only names its band when it is not the Full Bandwidth default: a
+    Parameter Set's identity is the *requested* band (``provenance.params``),
+    but a changed band is shown with the *effective* one (``metadata``) --
+    what was actually integrated over this file after clipping to its
+    Nyquist. An Imported order cut is named through
+    ``source_meta["imported_order"]`` instead.
+    """
+    kind = getattr(block, "kind", None)
+    if kind == KIND_ORDER_RESIDUAL:
+        return "Residual"
+    if kind == KIND_ORDER_CUT:
+        order = block.provenance.params.get(PARAM_ORDER)
+        if block.provenance.step == STEP_READ or order is None:
+            return ""
+        return f"Order {order:g}"
+    if kind != KIND_OVERALL_LEVEL:
+        return ""
+    params = block.provenance.params if block.provenance else {}
+    if params.get(PARAM_F_START) == 10.0 and params.get(PARAM_F_STOP) is None:
+        return "OAL"
+    eff_lo = block.metadata.get(META_EFFECTIVE_F_START)
+    eff_hi = block.metadata.get(META_EFFECTIVE_F_STOP)
+    return f"OAL {eff_lo:g}–{eff_hi:g} Hz"
+
+
 def build_legend_text(
     file_name: str,
     raw_channel_name: str,
     active_unit_str: str,
     source_meta: Optional[Dict[str, Any]] = None,
+    block: Any = None,
 ) -> str:
     """
-    The legend line for one trace: '[file.unv] Channel_1 [g]'.
+    The legend line for one trace: '[file.unv] Channel_1 Order 2 [g]'.
 
-    Expandable to richer templates like '{acquisition_date} | {sensor_name}';
-    `source_meta` is where the extra attributes would come from.
+    The one legend rule for every curve -- base, overlay and every display
+    rebuild -- so a curve's legend cannot change with how it got into the
+    graph. `block` names what the curve is after the channel (``_curve_name``).
     """
     # 1. Standardize and strip operational text prefixes from the incoming sensor name
     clean_channel_name = strip_channel_name_prefix(raw_channel_name)
+    curve_name = _curve_name(block)
+    if curve_name:
+        clean_channel_name += f" {curve_name}"
     if source_meta is not None and "imported_order" in source_meta:
         order = source_meta["imported_order"]
         order_label = "?" if order is None else f"{order:g}"

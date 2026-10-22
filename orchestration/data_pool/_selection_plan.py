@@ -1,10 +1,10 @@
 """
-From a discovery snapshot to the three maps an ingest plan carries.
+From a discovery snapshot to the folder map and parent Metadata.xlsx an ingest plan carries.
 
 `discover_selection_tree` (io_modules) says what is on disk; the decisions
-live here: one job per folder, which folders are tagged, which inherit a
-parent Metadata.xlsx. Nothing here touches the disk, so the tree is walked once
-per selected folder however many maps are built from it (#667, T7).
+live here: one job per folder and which inherit a parent Metadata.xlsx.
+Nothing here touches the disk, so the tree is walked once per selected
+folder however many maps are built from it (#667, T7).
 """
 
 import os
@@ -53,19 +53,6 @@ def build_ingest_folder_map(paths, tree: SelectionTree) -> dict:
 def _reached_by_recursion(selected):
     """The folders below a picked folder; the picked folder itself was chosen, not reached."""
     return [folder for folder in selected.folders if folder != selected.path]
-
-
-def derive_auto_tags(tree: SelectionTree) -> dict:
-    """
-    Test-setup label for each folder only reached by recursing into a picked
-    parent: its own name, e.g. "Run 00". A folder the user picked directly is
-    left untagged -- that pick is itself the explicit decision.
-    """
-    tags = {}
-    for selected in tree.selected:
-        for folder in _reached_by_recursion(selected):
-            tags[folder] = os.path.basename(folder.rstrip("/\\")) or folder
-    return tags
 
 
 def find_parent_metadata_files(tree: SelectionTree) -> dict:

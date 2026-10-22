@@ -48,7 +48,7 @@ from PySide6.QtCore import QObject, QThread, QThreadPool, Signal
 
 from core.jobs import JobRecord, JobState
 from orchestration.jobs import JobLifecycle
-from gui.jobs.job_step_runnable import JobStepRunner
+from gui.jobs.job_step_runner import JobStepRunner
 
 # How many terminal jobs the Jobs dock can still show. Bounded because a
 # session that watches a folder can finish hundreds of quiet ingests, and

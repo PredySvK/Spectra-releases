@@ -27,6 +27,8 @@ not branched on:
 
     block_type     "order_tracking" / "spectrum" / "spectrogram" / "overall_level"
     config         that tab's dsp_configs dataclass, straight from its ribbon
+                   (Order Tracking with the request's orders swapped in)
+    request        the dialog's answer, CalculateAndSaveRequest
     start          which controller runs it
 
 All tabs go through WorkflowRunBridge. The pre-Epic-P
@@ -46,6 +48,7 @@ Qt `parent_widget` and the shared job runner.
 All internal documentation strings and variable labels are standardly written
 in English.
 """
+from dataclasses import replace
 from typing import Callable, Optional
 
 from PySide6.QtWidgets import QMessageBox
@@ -53,9 +56,8 @@ from PySide6.QtWidgets import QMessageBox
 from core.measurement_selection import MeasurementSelection
 from core.workflow_graph import Workflow
 from orchestration.batch import (
-    REFUSAL_NO_CHANNELS_CHOSEN,
-    REFUSAL_NO_LOADED_FOLDER,
-    REFUSAL_NO_MATCHING_CHANNELS,
+    CALCULATE_AND_SAVE_WHAT,
+    CalculateAndSaveRequest,
     default_result_set_label,
     find_overwrite_candidates,
     plan_calculate_and_save,
@@ -65,13 +67,7 @@ from orchestration.batch import (
 from orchestration.data_pool import REGISTRATION_SLOT_KEY, run_pool_registration
 from signal_processing.workflow import sole_terminal_block
 
-WHAT = "Calculate & Save Data"
-
-_CALCULATE_AND_SAVE_REFUSALS = {
-    REFUSAL_NO_LOADED_FOLDER: "no folder is loaded.",
-    REFUSAL_NO_CHANNELS_CHOSEN: "no channels chosen. Use 'Choose…' first.",
-    REFUSAL_NO_MATCHING_CHANNELS: "no matching channels in the loaded folder.",
-}
+WHAT = CALCULATE_AND_SAVE_WHAT
 
 
 # ---- the per-node duplicate prompt, shared by both entry points -------
@@ -174,46 +170,48 @@ class BatchRunHandler:
 
     # ---- the four ribbon entry points ---------------------------------
 
-    def calculate_and_save_order_results(self, custom_label: str = "") -> None:
+    def calculate_and_save_order_results(self, request: CalculateAndSaveRequest) -> None:
         tab = self.ribbon.tab_acc_order_tracking
 
-        config = tab.get_save_dsp_config()
-        if not config.orders_to_extract:
+        # The tab's FFT/tracking settings, with the orders the dialog asked for
+        # in place of the ones the live plot shows.
+        if not request.orders:
             self.app_context.log(f"ERROR: {WHAT} skipped -- no orders specified.")
             return
+        config = replace(tab.get_dsp_config(), orders_to_extract=list(request.orders))
 
         self.calculate_and_save(
             save_section=tab.save_section,
             block_type="order_tracking", config=config,
             start=self._runner_start(section=tab.save_section),
-            custom_label=custom_label,
+            request=request,
         )
 
-    def calculate_and_save_spectrum_results(self, custom_label: str = "") -> None:
+    def calculate_and_save_spectrum_results(self, request: CalculateAndSaveRequest) -> None:
         tab = self.ribbon.tab_acc_spectrum
         self.calculate_and_save(
             save_section=tab.save_section,
             block_type="spectrum", config=tab.get_dsp_config(),
             start=self._runner_start(section=tab.save_section),
-            custom_label=custom_label,
+            request=request,
         )
 
-    def calculate_and_save_spectrogram_results(self, custom_label: str = "") -> None:
+    def calculate_and_save_spectrogram_results(self, request: CalculateAndSaveRequest) -> None:
         tab = self.ribbon.tab_acc_spectrogram
         self.calculate_and_save(
             save_section=tab.save_section,
             block_type="spectrogram", config=tab.get_dsp_config(),
             start=self._runner_start(section=tab.save_section),
-            custom_label=custom_label,
+            request=request,
         )
 
-    def calculate_and_save_overall_level_results(self, custom_label: str = "") -> None:
+    def calculate_and_save_overall_level_results(self, request: CalculateAndSaveRequest) -> None:
         tab = self.ribbon.tab_acc_overall_level
         self.calculate_and_save(
             save_section=tab.save_section,
             block_type="overall_level", config=tab.get_dsp_config(),
             start=self._runner_start(section=tab.save_section),
-            custom_label=custom_label,
+            request=request,
         )
 
     def _track_status(self, section, label: str) -> None:
@@ -261,22 +259,20 @@ class BatchRunHandler:
     # ---- what all four "Calculate & Save Data" tabs do -----------------
 
     def calculate_and_save(self, *, save_section, block_type, config,
-                           start: Callable, custom_label: str = "") -> None:
+                           start: Callable, request: CalculateAndSaveRequest) -> None:
         context = self.app_context
         session = context.project_session
 
         loaded_runs = list(context.pool.loaded_runs)
-        channel_types = save_section.get_save_channel_types()
-        all_channels_mode = save_section.is_save_mode_all_channels()
-        picked_identities = save_section.selected_channel_identities()
 
-        def refuse(reason):
-            context.log(f"WARNING: {WHAT} skipped -- {_CALCULATE_AND_SAVE_REFUSALS[reason]}")
+        def refuse(messages):
+            for message in messages:
+                context.log(message)
 
         # Refuse what needs no source lookup before asking to save the project.
         refusal = resolve_calculate_and_save_refusal(
-            loaded_runs, all_channels_mode, picked_identities)
-        if refusal is not None:
+            loaded_runs, request.all_channels, request.picked_identities)
+        if refusal:
             refuse(refusal)
             return
 
@@ -285,16 +281,13 @@ class BatchRunHandler:
             plan = plan_calculate_and_save(
                 block_type,
                 config,
+                request,
                 loaded_runs=loaded_runs,
-                channel_types=channel_types,
-                all_channels=all_channels_mode,
-                picked_identities=picked_identities,
                 sources_by_path=sources_by_path,
-                custom_label=custom_label,
             )
 
             if not plan.runnable:
-                refuse(plan.refusal_reason)
+                refuse(plan.messages)
                 return
 
             workflow = plan.workflow
@@ -319,9 +312,9 @@ class BatchRunHandler:
     def _open_compute_dialog(self, *, section, folder_action: Callable,
                              extra_orders: bool = False) -> None:
         """
-        Opens the dialog to gather the channel scope and an optional result-set
-        name, then runs the unchanged calculate_and_save_* action (it re-reads
-        `section`, which the dialog has just updated in QSettings).
+        Opens the dialog to gather the channel scope, the orders and an
+        optional result-set name, then hands its answer -- a
+        CalculateAndSaveRequest -- straight to the calculate_and_save_* action.
         """
         from gui.dialogs.compute_result_set_dialog import ComputeResultSetDialog
 
@@ -336,7 +329,7 @@ class BatchRunHandler:
         if not dialog.exec():
             return
 
-        folder_action(custom_label=dialog.custom_label)
+        folder_action(dialog.request)
 
     # `open_*` rather than the button's own word: opening the dialog is what
     # these four do, and `compute_*` names DSP number-crunching, which lives on
@@ -423,9 +416,9 @@ class BatchRunHandler:
 
         chains = plan_workflow_chains(workflow, session.find_selection, block_id=block_id)
         if not any(chain.run.runnable for chain in chains):
-            messages = [f"{chain.workflow.name}: {chain.run.message}" for chain in chains]
+            messages = [message for chain in chains for message in chain.run.messages]
             for message in messages:
-                context.log(f"WARNING: {message}")
+                context.log(message)
             QMessageBox.warning(parent, "Run Workflow", "\n\n".join(messages) or "No chains to run.")
             return
 

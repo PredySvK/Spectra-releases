@@ -23,6 +23,7 @@ from core.units import (
 from core.axis_projections import XAxisDisplay, resolve_x_axis_display
 from core.block_kinds import KIND_SPECTRUM
 from orchestration.channel_drop import PendingDrops
+from orchestration.companion_curves import CompanionCurvesState
 from view_models.analysis_kinds import ANALYSIS_ORDERS, ANALYSIS_OVERALL_LEVEL, ANALYSIS_SPECTRUM, ANALYSIS_TIME
 from core.benchmark import benchmark_step
 from core.evaluation import EvaluationConfig
@@ -30,9 +31,10 @@ from core.data_block import NVHDataBlock
 from core.models import MeasurementRunIndex, ChannelMetadata
 from gui.workspace.band_rms_cursors import BandRmsCursorsMixin
 from gui.workspace.cursor import CursorMixin
-from gui.workspace.highlight import HighlightMixin
+from gui.workspace.highlight import HighlightMixin, HighlightSample
 from gui.workspace.plot_area import GRAPH_TOKENS, style_plot_area
 from gui.workspace.channel_drop_target import ChannelDropTargetMixin, CHANNEL_DRAG_MIME
+from gui.workspace.display_prefix_axis import DisplayPrefixAxisItem
 from gui.workspace.secondary_axis import SecondaryAxis
 from view_models.plot import (
     AcceptOutcome,
@@ -46,6 +48,7 @@ from view_models.plot import (
     format_display_unit,
     HiddenReason,
     resolve_curve_decimation,
+    resolve_ordinate_quantity,
     RenderingMode,
     Trace,
     amplitude_mode_for_kind,
@@ -150,6 +153,7 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
                                   base_curve_color=GRAPH_TOKENS.base_curve)
         self.live_drops = LiveChannelDrops()
         self.pending_drops = PendingDrops()
+        self.companion_curves = CompanionCurvesState()
         # The dock's Evaluation configuration:
         # evaluation algorithm name, parameters, and whether to respect the trace filter.
         # Persisted into TabSpec. Single values are recomputed on demand, not stored.
@@ -174,7 +178,13 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
 
-        self.plot_widget = pg.PlotWidget()
+        self.plot_widget = pg.PlotWidget(
+            axisItems={
+                "bottom": DisplayPrefixAxisItem("bottom", unit_preferences_provider=self._unit_preferences),
+                "left": DisplayPrefixAxisItem("left", unit_preferences_provider=self._unit_preferences),
+                "right": DisplayPrefixAxisItem("right", unit_preferences_provider=self._unit_preferences),
+            }
+        )
         self.plot_widget.setObjectName("GraphPlot")  # Help figure target
         # A new plot widget draws as main.py configured (OpenGL); every full
         # draw then picks the mode its curves need (_apply_rendering_mode).
@@ -182,14 +192,14 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
                                 else RenderingMode.RASTER)
         style_plot_area(self.plot_widget)
         self.plot_widget.showGrid(x=True, y=True)
-        self.plot_widget.addLegend(labelTextColor=GRAPH_TOKENS.axis)
+        self.plot_widget.addLegend(labelTextColor=GRAPH_TOKENS.axis, sampleType=HighlightSample)
         # PlotItem.addItem/removeItem rebuild the context menu's averaging
         # parameter list from every curve, O(N^2) for a result set of N (#442).
         # No curve here carries plot params, so that list is always empty.
         self.plot_widget.plotItem.updateParamList = lambda: None
         layout.addWidget(self.plot_widget)
 
-        self.secondary_axis = SecondaryAxis(self.plot_widget)
+        self.secondary_axis = SecondaryAxis(self.plot_widget, unit_preferences_provider=self._unit_preferences)
         self._init_cursor()
         self._init_highlight()
 
@@ -201,7 +211,9 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
         return len(self.curves.visible.draw) <= self._LEGEND_CURVE_LIMIT
 
     def _unit_preferences(self) -> UnitPreferences:
-        return self.app_context.unit_preferences() if self.app_context else UnitPreferences()
+        if self.app_context is not None and hasattr(self.app_context, "unit_preferences"):
+            return self.app_context.unit_preferences()
+        return UnitPreferences()
 
     def visible_traces(self) -> List[Trace]:
         """
@@ -305,6 +317,8 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
             title = f"{title} — legend hidden above {self._LEGEND_CURVE_LIMIT} curves"
         self.plot_widget.setTitle(title)
         self._x_axis = self._resolve_x_axis()
+        self.plot_widget.getAxis('bottom').set_quantity(model.x_domain)
+        self.plot_widget.getAxis('left').set_quantity(view.y_quantity)
         self.plot_widget.setLabel('bottom', self._x_axis.label, self._x_axis.unit)
         self.plot_widget.setLabel('left', view.y_label, view.y_unit)
 
@@ -344,7 +358,7 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
             return
 
         self.secondary_axis.ensure(
-            format_display_unit(trace.unit)
+            format_display_unit(trace.unit), quantity=resolve_ordinate_quantity(trace)
         )
         item = self.secondary_axis.add(trace, pen, in_legend=self._legend_shown, x=x)
         if item is not None:
@@ -387,6 +401,15 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
         integration and the Evaluation all keep working in the native unit."""
         scale = self._x_axis.scale
         return x if scale == 1.0 else x * scale
+
+    def apply_unit_preferences(self) -> None:
+        """Update axis display prefixes when unit preferences change."""
+        for axis_name in ("bottom", "left", "right"):
+            axis = self.plot_widget.getAxis(axis_name)
+            if hasattr(axis, "update_display_prefix"):
+                axis.update_display_prefix()
+        if self.secondary_axis is not None and hasattr(self.secondary_axis, "update_display_prefix"):
+            self.secondary_axis.update_display_prefix()
 
     def apply_x_axis_unit(self) -> None:
         """Redraw for a changed global X axis unit and let the view range

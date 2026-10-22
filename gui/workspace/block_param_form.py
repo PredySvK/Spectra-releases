@@ -27,7 +27,9 @@ from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QLineEdit, QSpinBox, QWidget,
 )
 
-# Wide enough for any FFT size / step / hysteresis the DSP configs carry, without
+from view_models.analysis_kinds import resolve_dsp_choices_of_config
+
+# Wide enough for any FFT size / step the DSP configs carry, without
 # pretending to know a real range -- that belongs to the ribbon widgets, which
 # stay the authoritative editor. This form is a mirror, not a validator.
 _INT_LIMIT = 10_000_000
@@ -66,32 +68,19 @@ def _optional_inner(ftype: Any) -> Any:
     return None
 
 
-# Fields with a closed set of values get the same dropdown the analysis tab's
-# ribbon shows: (label, stored value) pairs. Same labels/order as the ribbons.
-_FFT_SIZES = [(str(n), n) for n in (256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536)]
-_CHOICES: Dict[str, list] = {
-    "fft_size": _FFT_SIZES,
-    "window_type": [("Hanning", "hann"), ("Hamming", "hamming"), ("Blackman", "blackman"),
-                    ("Flat-top", "flattop"), ("Rectangular", "boxcar")],
-    "amplitude_mode": [("RMS", "rms"), ("Peak", "peak")],
-    "spectrum_format": [("Linear", "linear"), ("Power", "power"), ("PSD", "psd")],
-    "tracking_mode": [("RPM Tracked", "rpm"), ("Free Run (Time)", "time")],
-    "direction": [("Up (Run-Up)", "up"), ("Down (Run-Down)", "down"), ("Any (Both)", "any")],
-    "averaging_type": [("Linear", "linear"), ("Peak hold", "peak_hold"),
-                       ("Exponential", "exponential")],
-    "color_scale": [("Linear", "Linear"), ("dB (Log)", "dB (Log)")],
-}
+def _choices_for(config_cls: Any, name: str) -> tuple:
+    """The register's (label, value) list for a field with a closed set of values,
+    the same the analysis tab's ribbon offers (#759); empty for a free field."""
+    register = resolve_dsp_choices_of_config(config_cls)
+    if register is None:
+        return ()
+    try:
+        return register.parameter(name).choices
+    except ValueError:
+        return ()
 
 
-def _choices_for(config_cls: Any, name: str) -> list:
-    choices = _CHOICES.get(name, [])
-    # The spectrogram refuses "any" for RPM tracking; its ribbon omits it.
-    if name == "direction" and config_cls.__name__ == "SpectrogramConfig":
-        return [c for c in choices if c[1] != "any"]
-    return choices
-
-
-def _make_combo(choices: list, value: Any) -> QComboBox:
+def _make_combo(choices: tuple, value: Any) -> QComboBox:
     w = QComboBox()
     for label, data in choices:
         w.addItem(label, data)
@@ -103,7 +92,7 @@ def _make_combo(choices: list, value: Any) -> QComboBox:
     return w
 
 
-def _make_widget(f: dataclasses.Field, value: Any, choices: list = ()) -> QWidget:
+def _make_widget(f: dataclasses.Field, value: Any, choices: tuple = ()) -> QWidget:
     ftype = _field_type(f)
 
     if choices:

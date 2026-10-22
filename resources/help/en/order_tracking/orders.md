@@ -28,7 +28,7 @@ By Parseval the sum is a mean square, so $A_n$ is the RMS of the order in the un
 
 With **Overall Level + Residual** ticked, the same $P_\text{canon}$ also gives two more curves, from one pass:
 
-- **OAL**: the [Overall Level](topic:overall_level/intro) of the default band, 10 Hz to each file's Nyquist ($F_\text{min}=10$ Hz, Full Bandwidth). The band cannot be changed here. It uses this tab's [FFT](topic:shared/fft_size), [window](topic:shared/windows), Step, Sweep ([tracking](topic:shared/tracking)), Hysteresis and Remove DC.
+- **OAL**: the [Overall Level](topic:overall_level/intro) of the default band, 10 Hz to each file's Nyquist ($F_\text{min}=10$ Hz, Full Bandwidth). The band cannot be changed here. It uses this tab's [FFT](topic:shared/fft_size), [window](topic:shared/windows), Step, Ramp, Tracking range ([tracking](topic:shared/tracking)) and Remove DC, so its points sit at the same speeds as the orders.
 - **Residual**: the energy of that band **outside** every selected order's band.
 
 With $b_k$ the fraction of bin $k$ inside the OAL band and $m_k$ the fraction covered by the **union** of the order bands (clipped to the OAL band):

@@ -44,7 +44,7 @@ class Trace:
 
     ``y`` is in the display unit (``unit``); ``y_raw`` is the untouched source
     array in ``source_unit``. Keeping both means a global-unit change is
-    ``rebuild_with_units(model, prefs)`` with no I/O. ``channel_type`` drives
+    ``rebuild_with_units(model, settings)`` with no I/O. ``channel_type`` drives
     the ordinate label and the display-unit choice.
     """
 
@@ -82,14 +82,17 @@ class Trace:
     # §1.31).
     result_set_id: str = ""
     meta_ref: Optional[Dict[str, Any]] = None
-    # FFT/window/etc. this curve was computed with -- None for a raw time
-    # trace, where no DSP ran. Mirrors block.processing (SpectralProcessing)
-    # rather than the full DSP config DTO (no remove_dc: that is applied
-    # before the block exists and never lands on processing). Two jobs:
-    # a legend "Settings" column (ideas/session_persistence/PLAN.md §4 F) and
-    # the source a dropped comparison curve can inherit instead of the
-    # ribbon's current config (§4 R1) -- see channel_drop.py.
+    # The Curve recipe this curve was computed with, plus an order cut's
+    # order (build_compute_spec) -- None for a raw time trace, where no DSP
+    # ran. Only what changes the numbers: how the curve is shown lives in
+    # spectrum_format/amplitude_mode below, so the Parameter Set, adoption and
+    # a saved tab read the recipe alone.
     compute_spec: Optional[Dict[str, Any]] = None
+    # The Spectrum format and Amplitude the curve's values are shown in
+    # -- "" when it says neither. A cursor readout names the
+    # amplitude, a dropped spectrum can take both over (channel_drop).
+    spectrum_format: str = ""
+    amplitude_mode: str = ""
     # Underlying NVHDataBlock (canonical FFT or order cut) if available.
     # Enables instant on-the-fly re-scaling (Linear/Power/PSD, RMS/Peak, dB)
     # without re-running FFT or background jobs.
@@ -106,6 +109,9 @@ class ViewSpec:
     x_unit: str = ""
     y_label: str = ""
     y_unit: str = ""
+    # The ordinate's quantity ("rpm" for a speed channel, else ""): it puts a
+    # Hz ordinate on the Speed row of the Display prefix (resolve_ordinate_quantity).
+    y_quantity: str = ""
     y_scale: str = "linear"  # "linear" | "log"
     bg: str = "default"
     x_range: Optional[Tuple[float, float]] = None
@@ -177,6 +183,7 @@ class SpectrogramModel:
     z_quantity: str = "time"
     color_scale: str = "linear"
     title: str = ""
+    value_unit: str = ""
     block: Optional[Any] = None
     data_block: Optional[Any] = None
     # The recipe the waterfall was computed and shown with -- what a saved tab

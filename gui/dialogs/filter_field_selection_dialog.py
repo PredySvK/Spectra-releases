@@ -15,20 +15,18 @@ Calculated built-ins have no schema row, so they are always offered, in the
 fixed order core.filter_card_config.IDENTITY_BUILTIN_ORDER /
 CALCULATED_BUILTIN_ORDER lists them.
 
-Two gates, not one. Opting an Excel/Raw metadata field into "usable_as_filter"
-is Metadata and Filter Settings' job alone (its "Use as Filter" column) --
-this dialog only lists fields already opted in there, so it can add one to
-the active card or drop it, but not turn a brand-new field on. Active Status
-plays no part in that listing either way (BUGS.md M1): a field hidden from
-the Metadata and Filter Settings grid can still show up here if it is marked
-as a filter.
+Two gates, not one. Opting an Excel/Raw metadata field into "is_active"
+is Metadata and Filter Settings' job alone (its "Active Status" column,
+ADR §1.188) -- this dialog only lists fields already opted in there, so it
+can add one to the active card or drop it, but not turn a brand-new field on.
 
 Every checkbox's label carries "(N)" -- how many distinct values that column
 has right now (selection.source_facets.FieldCardinality / selection.trace_filter.
-builtin_column_cardinalities), not only the greyed ones. For a
+resolve_card_cardinalities), not only the greyed ones. For a
 Global card that count is pool-wide; for a Local one it is read off the focused
-dock's own traces, since that is all a Local card can filter -- the
-caller passes those dock-scoped cardinalities in. A column whose cardinality
+dock's own traces, since that is all a Local card can filter. The
+dialog never counts anything itself: the caller hands the resolver's
+`CardCardinalities` in, so a count cannot drift from the facet it describes. A column whose cardinality
 means it cannot narrow anything down -- one value, or a value unique to every
 measurement -- is greyed out on top of that, but stays checkable: the app never
 decides this for the user, and the verdict flips back on its own once the scope
@@ -67,20 +65,17 @@ from PySide6.QtWidgets import (
 )
 
 from core.filter_card_config import (
-    BUILTIN_COLUMN_LABELS, CALCULATED_BUILTIN_ORDER,
-    GROUP_RAW, IDENTITY_BUILTIN_ORDER, WIDGET_CHECKBOX_LIST, WIDGET_MULTI_SELECT,
+    WIDGET_CHECKBOX_LIST, WIDGET_MULTI_SELECT,
     WIDGET_RANGE, WIDGETS, FilterCardConfig, add_column, default_widget_for_kind,
     kind_is_ranged, move_column, remove_column, with_column_count, with_column_default,
     with_column_order, with_column_widget,
 )
-from core.project_model import NVHProject
-from selection.source_facets import FieldCardinality, filter_field_cardinalities
+from selection.source_facets import FieldCardinality
 
 from gui.dialogs.dialog_state import fit_width_to_scroll_content, remember_dialog_geometry
 from gui.dialogs.priority_grid import PriorityGrid
-from selection.trace_filter import (
-    build_column_for_key, builtin_column_cardinalities, schema_field_group,
-)
+from selection.field_offer import OfferedField, build_field_offer
+from selection.trace_filter import CardCardinalities, build_column_for_key
 
 # Display label per widget id -- the ids and their picker order are
 # core.filter_card_config.WIDGETS' to own, this only names them for the combo.
@@ -132,10 +127,9 @@ def _read_auto_apply(settings) -> bool:
 
 
 class FilterFieldSelectionDialog(QDialog):
-    def __init__(self, schema: Dict[str, Dict[str, Any]], project: Optional[NVHProject] = None,
-                 parent=None, settings=None, card: Optional[FilterCardConfig] = None,
-                 schema_cardinalities: Optional[Dict[str, FieldCardinality]] = None,
-                 builtin_cardinalities: Optional[Dict[str, FieldCardinality]] = None,
+    def __init__(self, schema: Dict[str, Dict[str, Any]], parent=None, settings=None,
+                 card: Optional[FilterCardConfig] = None,
+                 cardinalities: Optional[CardCardinalities] = None,
                  on_live_change: Optional[Callable[[FilterCardConfig], None]] = None,
                  excluded_columns: Collection[str] = ()):
         super().__init__(parent)
@@ -163,24 +157,22 @@ class FilterFieldSelectionDialog(QDialog):
         self._card = card if card is not None else FilterCardConfig()
         self._on_card_keys = {column.key for column in self._card.columns}
 
-        # For a Local card the counts and "cannot narrow" verdicts come from the
-        # focused dock's own traces, not the pool -- the caller
-        # computes them and hands them in; None means fall back to the pool.
-        self._schema_cardinalities_override = schema_cardinalities
-        self._builtin_cardinalities_override = builtin_cardinalities
+        # The counts and "cannot narrow" verdicts, resolved by the caller from
+        # the same universe the facets are; None counts nothing.
+        self._cardinalities = cardinalities or CardCardinalities({}, {})
         # Which section a schema field landed in, and why a field is greyed --
         # kept as plain dicts (not re-derived from the widget tree) so a test
         # can assert on the dialog's *output* rather than its layout.
         self._raw_field_keys: Set[str] = set()
         self._excel_field_keys: Set[str] = set()
         self._greyed_reasons: Dict[str, str] = {}
-        self._build_ui(schema, project or NVHProject())
+        self._build_ui(schema)
         self._sync_rows()
         size = fit_width_to_scroll_content(
             self, self.findChild(QScrollArea, "FilterColumnSections"), (800, 520))
         remember_dialog_geometry(self, settings, "filter_field_selection", default_size=size)
 
-    def _build_ui(self, schema: Dict[str, Dict[str, Any]], project: NVHProject) -> None:
+    def _build_ui(self, schema: Dict[str, Dict[str, Any]]) -> None:
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Which columns sit on this card:"))
 
@@ -203,15 +195,13 @@ class FilterFieldSelectionDialog(QDialog):
         columns = QWidget()
         columns_layout = QHBoxLayout(columns)
 
-        schema_cardinalities = (self._schema_cardinalities_override
-                                if self._schema_cardinalities_override is not None
-                                else filter_field_cardinalities(project.sources, schema))
-        builtin_cardinalities = (self._builtin_cardinalities_override
-                                 if self._builtin_cardinalities_override is not None
-                                 else builtin_column_cardinalities(project))
-        raw_fields, excel_fields = self._schema_field_sections(schema)
-        self._raw_field_keys = set(raw_fields)
-        self._excel_field_keys = set(excel_fields)
+        schema_cardinalities = self._cardinalities.schema_fields
+        builtin_cardinalities = self._cardinalities.builtins
+        offer = build_field_offer(schema, excluded=self._excluded_columns)
+        raw_fields = {key for key, _label in offer.raw}
+        excel_fields = {key for key, _label in offer.excel}
+        self._raw_field_keys = raw_fields
+        self._excel_field_keys = excel_fields
         self._greyed_reasons = {
             key: cardinality.reason for key, cardinality in schema_cardinalities.items()
             if cardinality.reason is not None and (key in raw_fields or key in excel_fields)
@@ -223,13 +213,13 @@ class FilterFieldSelectionDialog(QDialog):
         })
 
         columns_layout.addWidget(self._section(
-            "Identity", self._builtin_entries(IDENTITY_BUILTIN_ORDER, builtin_cardinalities)))
+            "Identity", self._entries(offer.identity, builtin_cardinalities)))
         columns_layout.addWidget(self._section(
-            "Raw metadata", self._schema_entries(raw_fields, schema_cardinalities)))
+            "Raw metadata", self._entries(offer.raw, schema_cardinalities)))
         columns_layout.addWidget(self._section(
-            "Excel metadata", self._schema_entries(excel_fields, schema_cardinalities)))
+            "Excel metadata", self._entries(offer.excel, schema_cardinalities)))
         columns_layout.addWidget(self._section(
-            "Calculated metadata", self._builtin_entries(CALCULATED_BUILTIN_ORDER, builtin_cardinalities)))
+            "Calculated metadata", self._entries(offer.calculated, builtin_cardinalities)))
 
         scroll.setWidget(columns)
         layout.addWidget(scroll)
@@ -255,29 +245,10 @@ class FilterFieldSelectionDialog(QDialog):
 
     # -- section builders -----------------------------------------------
 
-    def _builtin_entries(self, order: Tuple[str, ...],
-                         cardinalities: Dict[str, FieldCardinality]) -> List[_Entry]:
-        return [
-            (key, BUILTIN_COLUMN_LABELS[key], cardinalities.get(key, _NO_CARDINALITY))
-            for key in order if key not in self._excluded_columns
-        ]
-
-    def _schema_field_sections(self, schema: Dict[str, Dict[str, Any]]
-                               ) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
-        raw_fields, excel_fields = {}, {}
-        for key, config in schema.items():
-            if not config.get("usable_as_filter", False) or key in self._excluded_columns:
-                continue
-            target = raw_fields if schema_field_group(config) == GROUP_RAW else excel_fields
-            target[key] = config
-        return raw_fields, excel_fields
-
-    def _schema_entries(self, fields: Dict[str, Dict[str, Any]],
-                        cardinalities: Dict[str, FieldCardinality]) -> List[_Entry]:
-        return [
-            (key, fields[key].get("custom_label", key), cardinalities.get(key, _NO_CARDINALITY))
-            for key in sorted(fields, key=lambda k: fields[k].get("custom_label", k))
-        ]
+    @staticmethod
+    def _entries(fields: Tuple[OfferedField, ...],
+                 cardinalities: Dict[str, FieldCardinality]) -> List[_Entry]:
+        return [(key, label, cardinalities.get(key, _NO_CARDINALITY)) for key, label in fields]
 
     def _section(self, title: str, entries: List[_Entry]) -> PriorityGrid:
         section = PriorityGrid(

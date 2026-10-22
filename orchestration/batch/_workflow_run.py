@@ -23,7 +23,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from core.jobs import JobRecord, JobState, job_step
 from core.workflow_graph import Workflow
-from io_modules.result_cache.cache_layout import result_params_from_block
+from io_modules.result_cache import result_params_from_block
 from orchestration.batch._batch_plan import BatchPlan
 from orchestration.batch._result_set_sink import ResultSetSink
 from orchestration.batch._source_chain import _BlockSavePlan, _run_source_chain

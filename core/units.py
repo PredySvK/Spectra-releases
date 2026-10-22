@@ -39,6 +39,18 @@ class UnitPreferences:
     voltage: str = "V"
     speed: str = "rpm"
     x_axis_unit: str = X_AXIS_NATIVE
+    prefix_acceleration: str = "none"
+    prefix_pressure: str = "none"
+    prefix_voltage: str = "none"
+    prefix_speed: str = "none"
+    prefix_frequency: str = "none"
+    prefix_time: str = "none"
+    decimals_acceleration: str = "auto"
+    decimals_pressure: str = "auto"
+    decimals_voltage: str = "auto"
+    decimals_speed: str = "auto"
+    decimals_frequency: str = "auto"
+    decimals_time: str = "auto"
 
 # Initialize a single, top-level centralized unit framework companion for the active process.
 _UREG = UnitRegistry()
@@ -65,6 +77,9 @@ _UNV_UNIT_MAPPING = {
     'mm/s²': 'mm/s2',
     'mm/s**2': 'mm/s2',
     'mm/s^2': 'mm/s2',
+    's': 's',
+    'sec': 's',
+    'second': 's',
 }
 
 CANONICAL_UNIT_GROUPS = [
@@ -72,6 +87,13 @@ CANONICAL_UNIT_GROUPS = [
     ["Pa", "bar", "mbar"],   # Domain Index 1: Acoustic / fluid pressure
     ["V", "mV"],             # Domain Index 2: Electrical voltage
     ["rpm", "Hz", "rad/s"]   # Domain Index 3: Rotational speed / frequency
+]
+
+DISPLAY_BASE_UNIT_GROUPS = [
+    ["g", "m/s2"],          # Domain Index 0: Acceleration
+    ["Pa", "bar"],          # Domain Index 1: Acoustic / fluid pressure
+    ["V"],                  # Domain Index 2: Electrical voltage
+    ["rpm", "Hz", "rad/s"]  # Domain Index 3: Rotational speed / frequency
 ]
 
 

@@ -17,15 +17,13 @@ automatically.
 All internal documentation strings and variable labels are standardly written in English.
 """
 
-import numpy as np
 from PySide6.QtCore import QTimer
 import pyqtgraph as pg
 
 from gui.appearance import GRAPH_TOKENS
 from core.jobs import job_step
 from orchestration.jobs import JobRunner
-from io_modules.signal_generation import compute_preview_arrays
-from io_modules.signal_generation.signal_generation_engine import generate_rpm_profile
+from io_modules.signal_generation import compute_preview_arrays, compute_preview_start_rpm
 
 PREVIEW_SLOT_KEY = "signal_generator_preview"
 # Curve palette indices of the red and the amber hue, readable on either Graph theme.
@@ -74,18 +72,7 @@ class SignalPreviewHandler:
         start_time = params["prev_start"]
         duration = params["duration"]
 
-        # Robustly determine the RPM exactly at 'start_time' regardless of the complex profile shape
-        t_dummy = np.linspace(0, duration, 1000)
-        rpm_dummy = generate_rpm_profile(
-            t_dummy,
-            params["rpm_start"],
-            params["rpm_stop"],
-            params["direction"],
-            params["plateaus_on"],
-            params["plateaus"],
-            params["plateau_ratio"]
-        )
-        current_rpm = np.interp(start_time, t_dummy, rpm_dummy)
+        current_rpm = compute_preview_start_rpm(params, start_time)
 
         if current_rpm <= 0:
             current_rpm = 60.0

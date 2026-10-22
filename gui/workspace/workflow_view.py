@@ -16,27 +16,19 @@ from PySide6.QtWidgets import (
     QToolBar, QVBoxLayout, QWidget,
 )
 
-from core.workflow_graph import (
-    INPUT_BLOCK_TYPE, InputSpec, Workflow,
-    with_block_replaced,
-)
+from core.workflow_graph import InputSpec, Workflow
 from selection.source_facets import all_pool_sources, build_channel_facet
 from selection.measurement_selection import WHOLE_POOL_SELECTION_NAME
 from gui.workspace.save_spec_editor import SaveSpecEditor
 from gui.workflow import WorkflowCanvasView, apply_workflow_style
-from signal_processing.workflow import (
-    BLOCKS, resolve_block_params, spec_for,
-)
+from signal_processing.workflow import spec_for
 from view_models.workflow import (
-    format_workflow_status,
-    build_workflow_canvas, resolve_block_move, resolve_block_add, resolve_block_delete,
-    resolve_wire_connect, resolve_wire_targets, resolve_wire_disconnect,
+    BlockAdd, BlockDelete, BlockMove, BlockSettingsApply, InputChoice,
+    WireConnect, WireDisconnect, WorkflowEdit, WorkflowEditResult,
+    build_workflow_canvas, format_workflow_status, resolve_wire_targets, resolve_workflow_edit,
 )
 
 _NO_SELECTION = "(none)"
-_INPUT_NONE = "none"
-_INPUT_WHOLE_POOL = "whole_pool"
-_INPUT_SELECTION = "selection"
 
 # `add_block`'s default `wire_to`: connect the new block to the canvas's selected
 # block. A caller passing an explicit block id (a drop target) or None (a drop on
@@ -127,10 +119,10 @@ class WorkflowView(QWidget):
         self.canvas.wire_requested.connect(self._on_wire_requested)
         self.canvas.wire_delete_requested.connect(self._delete_wires)
         canvas_box = self._boxed("Workflow canvas", self.canvas)
-        self.lbl_wire_reason = QLabel("")
-        self.lbl_wire_reason.setWordWrap(True)
-        self.lbl_wire_reason.setProperty("workflowError", True)
-        canvas_box.layout().addWidget(self.lbl_wire_reason)
+        self.lbl_edit_refusal = QLabel("")
+        self.lbl_edit_refusal.setWordWrap(True)
+        self.lbl_edit_refusal.setProperty("workflowError", True)
+        canvas_box.layout().addWidget(self.lbl_edit_refusal)
         splitter.addWidget(canvas_box)
         self.lbl_status = QLabel("")
         self.lbl_status.setWordWrap(True)
@@ -272,7 +264,7 @@ class WorkflowView(QWidget):
 
     def _refresh_canvas(self, keep_block_id: Optional[str] = None) -> None:
         self._refresh_history_actions()
-        self.lbl_wire_reason.clear()
+        self.lbl_edit_refusal.clear()
         self.canvas.set_description(build_workflow_canvas(
             self._workflow, getattr(self._session(), "find_selection", None)))
         block_ids = [block.block_id for block in self._workflow.blocks] if self._workflow is not None else []
@@ -310,34 +302,18 @@ class WorkflowView(QWidget):
         self._show_block_editor(block)
 
     def _on_canvas_block_moved(self, block_id: str, x: float, y: float) -> None:
-        if self._workflow is None or not self._editable():
-            return
-        moved = resolve_block_move(self._workflow, block_id, (x, y))
-        if moved is not self._workflow:
-            self._save(moved, keep_block_id=block_id)
+        self._edit(BlockMove(block_id, (x, y)))
 
     def _on_wire_started(self, source_id: str) -> None:
-        self.lbl_wire_reason.clear()
+        self.lbl_edit_refusal.clear()
         if self._workflow is not None:
             self.canvas.set_wire_targets(resolve_wire_targets(self._workflow, source_id))
 
     def _on_wire_requested(self, source_id: str, target_id: str, port_name: str) -> None:
-        if self._workflow is None or not self._editable():
-            return
-        workflow, reason = resolve_wire_connect(self._workflow, source_id, target_id, port_name)
-        if reason:
-            self.lbl_wire_reason.setText(reason)
-        elif workflow is not self._workflow:
-            self._save(workflow, keep_block_id=target_id)
+        self._edit(WireConnect(source_id, target_id, port_name))
 
     def _delete_wires(self, ports) -> None:
-        if self._workflow is None or not self._editable():
-            return
-        workflow = self._workflow
-        for target_id, port_name in ports:
-            workflow = resolve_wire_disconnect(workflow, target_id, port_name)
-        if workflow is not self._workflow:
-            self._save(workflow, keep_block_id=self._selected_block_id)
+        self._edit(WireDisconnect(tuple(ports)))
 
     def _show_block_editor(self, workflow_block) -> None:
         editable = self._editable()
@@ -401,7 +377,7 @@ class WorkflowView(QWidget):
         self.refresh_input_selections()
         combo = self.combo_input_selection
         for index in range(combo.count()):
-            if combo.itemData(index) == (_INPUT_SELECTION, name):
+            if combo.itemData(index) == InputSpec(selection_name=name):
                 combo.setCurrentIndex(index)
                 return
 
@@ -430,10 +406,10 @@ class WorkflowView(QWidget):
         self.combo_input_selection.clear()
         # Items carry their meaning as data, not as text: a user selection may
         # share its display text with the synthetic whole-pool item.
-        self.combo_input_selection.addItem(_NO_SELECTION, _INPUT_NONE)
-        self.combo_input_selection.addItem(WHOLE_POOL_SELECTION_NAME, _INPUT_WHOLE_POOL)
+        self.combo_input_selection.addItem(_NO_SELECTION, InputSpec())
+        self.combo_input_selection.addItem(WHOLE_POOL_SELECTION_NAME, InputSpec(whole_pool=True))
         for name in names:
-            self.combo_input_selection.addItem(name, (_INPUT_SELECTION, name))
+            self.combo_input_selection.addItem(name, InputSpec(selection_name=name))
         if spec is not None and spec.whole_pool:
             self.combo_input_selection.setCurrentIndex(1)
         elif spec is not None and spec.selection_name in names:
@@ -467,6 +443,18 @@ class WorkflowView(QWidget):
             self._workflow = workflow
             self._refresh_canvas(self._selected_block_id)
 
+    def _edit(self, edit: WorkflowEdit) -> Optional[WorkflowEditResult]:
+        """Store an accepted edit, show a refusal; None without an editable workflow."""
+        if self._workflow is None or not self._editable():
+            return None
+        result = resolve_workflow_edit(self._workflow, edit)
+        if result.refusal:
+            self.lbl_edit_refusal.setText(result.refusal)
+        elif result.workflow is not self._workflow:
+            self._save(result.workflow, keep_block_id=(
+                self._selected_block_id if result.keeps_selection else result.selected_block_id))
+        return result
+
     def _save(self, workflow: Workflow, keep_block_id: Optional[str]) -> None:
         session = self._session()
         if session is None:
@@ -491,22 +479,14 @@ class WorkflowView(QWidget):
         whole pool. A graph may carry several (phase 8's canvas branches from
         two inputs); the 7A runner still only runs a single-input graph.
         """
-        workflow = self._workflow
-        if workflow is None or not self._editable():
-            return
-
-        if block_type != INPUT_BLOCK_TYPE and block_type not in BLOCKS:
-            return
         source_id = self._selected_block_id if wire_to is _USE_SELECTED else wire_to
-        workflow, block_id = resolve_block_add(workflow, block_type, source_id)
-        self._app_context.log(f"WORKFLOW: added '{block_id}' to '{workflow.name}'.")
-        self._save(workflow, keep_block_id=block_id)
+        result = self._edit(BlockAdd(block_type, source_id))
+        if result is not None and not result.refusal:
+            self._app_context.log(
+                f"WORKFLOW: added '{result.selected_block_id}' to '{result.workflow.name}'.")
 
     def _on_canvas_block_dropped(self, block_type: str, x: float, y: float) -> None:
-        if self._workflow is None or not self._editable():
-            return
-        workflow, block_id = resolve_block_add(self._workflow, block_type, position=(x, y))
-        self._save(workflow, keep_block_id=block_id)
+        self._edit(BlockAdd(block_type, position=(x, y)))
 
     def _on_selection_dropped(self, name: str, block_id) -> None:
         workflow = self._workflow
@@ -517,47 +497,19 @@ class WorkflowView(QWidget):
         self.select_input_selection(name)
 
     def _delete_blocks(self, block_ids) -> None:
-        if self._workflow is None or not self._editable():
-            return
-        workflow = resolve_block_delete(self._workflow, block_ids)
-        if workflow is not self._workflow:
-            self._save(workflow, keep_block_id=None)
+        self._edit(BlockDelete(tuple(block_ids)))
 
     def _on_apply_params(self) -> None:
         """"Apply block settings" -- writes the parameter form *and* the save spec
-        in one rebuild, so a block is one save to the project and one canvas
+        in one edit, so a block is one save to the project and one canvas
         redraw, not two."""
-        workflow = self._workflow
-        block_id = self._selected_block_id
-        if workflow is None or block_id is None or not self._editable():
-            return
-        workflow_block = workflow.block(block_id)
-        if workflow_block.is_input:
-            return
-        params = resolve_block_params(workflow_block.block_type, self.param_form.values())
-        workflow = with_block_replaced(
-            workflow, block_id,
-            params=params,
-            save=self.save_editor.current_spec(),
-        )
-        self._save(workflow, keep_block_id=block_id)
+        if self._selected_block_id is not None:
+            self._edit(BlockSettingsApply(
+                self._selected_block_id, self.param_form.values(), self.save_editor.current_spec()))
 
     def _on_input_selection_changed(self, index: int) -> None:
-        workflow = self._workflow
-        block_id = self._selected_block_id
-        if workflow is None or block_id is None or not self._editable():
-            return
-        workflow_block = workflow.block(block_id)
-        if not workflow_block.is_input:
-            return
-        data = self.combo_input_selection.itemData(index)
-        if data == _INPUT_WHOLE_POOL:
-            new_spec = InputSpec(whole_pool=True)
-        elif isinstance(data, tuple) and data[0] == _INPUT_SELECTION:
-            new_spec = InputSpec(selection_name=data[1])
-        else:
-            new_spec = InputSpec()
-        if workflow_block.input == new_spec:
-            return
-        workflow = with_block_replaced(workflow, block_id, input=new_spec)
-        self._save(workflow, keep_block_id=block_id)
+        # The combo keeps its last items while a non-Input block is shown, and
+        # the Selection editor may still pick in it (#464): not an edit then.
+        if self._selected_block_id is not None and self.input_row.isVisibleTo(self):
+            self._edit(InputChoice(
+                self._selected_block_id, self.combo_input_selection.itemData(index)))

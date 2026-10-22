@@ -3,7 +3,7 @@
 # =====================================================================
 """
 Standalone picker that loads one measurement's parameter dict out of a
-predefined dataset (io_modules.signal_generation.signal_library, ADR section
+predefined dataset (io_modules.signal_generation.build_dataset, ADR section
 1.20). Split out of signal_generator_dialog.py: it is its own topic -- browsing
 the library -- and shares no state with the generator's channel editor beyond
 the params dict it hands back.
@@ -32,15 +32,15 @@ class LibraryPresetDialog(QDialog):
         self.setMinimumWidth(520)
         self._selected_params = None
 
-        from io_modules.signal_generation import signal_library
-        self._library = signal_library
+        from io_modules.signal_generation import build_dataset, list_datasets
+        self._build_dataset = build_dataset
 
         layout = QVBoxLayout(self)
 
         row = QHBoxLayout()
         row.addWidget(QLabel("Dataset:"))
         self.combo_dataset = QComboBox()
-        self.combo_dataset.addItems(signal_library.list_datasets())
+        self.combo_dataset.addItems(list_datasets())
         self.combo_dataset.currentTextChanged.connect(self._reload_measurements)
         row.addWidget(self.combo_dataset, stretch=1)
         layout.addLayout(row)
@@ -67,7 +67,7 @@ class LibraryPresetDialog(QDialog):
         self.list_measurements.clear()
         if not key:
             return
-        spec = self._library.build_dataset(key)
+        spec = self._build_dataset(key)
         self.lbl_description.setText(spec.description)
         self._measurements = list(spec.measurements)
         for m in self._measurements:

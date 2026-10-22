@@ -18,19 +18,14 @@ from __future__ import annotations
 import csv
 import io
 import math
-import re
 from dataclasses import dataclass
 from typing import Any, List, Mapping, Optional, Sequence, Tuple
 
 from core.axis_projections import X_AXIS_NATIVE, resolve_x_axis_display
 from core.data_block import KIND_SPECTRUM
-from core.evaluation import EvaluationTable, SingleValue
-from core.filter_card_config import (
-    COLUMN_CHANNEL, COLUMN_DIRECTION, COLUMN_FILE_NAME,
-    COLUMN_ORDER, COLUMN_PARAMETER_SET, COLUMN_RESULT_SET,
-)
+from core.evaluation import CurveBand, CurveOrder, CurveResidual, EvaluationTable, OrderOrBand, SingleValue
 from core.units import UnitPreferences
-from io_modules.metadata_schema import parse_value
+from view_models.display_prefix import resolve_number_format
 
 from ._evaluation_columns import build_column_descriptor
 
@@ -45,6 +40,8 @@ class RowCells:
     texts: Tuple[str, ...]
     sort_keys: Tuple[Any, ...]
     is_dash: bool
+    raw_values: Optional[Tuple[Any, ...]] = None
+    number_formats: Optional[Tuple[Optional[str], ...]] = None
 
 
 def _header_label_for_column(col_key: str, schema: Mapping[str, Mapping[str, Any]]) -> str:
@@ -56,7 +53,7 @@ def active_metadata_columns(
     selected_cols: Sequence[str], schema: Mapping[str, Mapping[str, Any]],
 ) -> List[str]:
     """Filters a dock's selected metadata columns down to the active ones
-    (BUGS.md M1 / ADR §1.64 point 10) -- a schema field the user deactivated
+    -- a schema field the user deactivated
     stays selected in EvaluationConfig but drops out of the table."""
     active: List[str] = []
     for col_key in selected_cols:
@@ -82,8 +79,14 @@ def table_headers(
         if not row.is_empty:
             _, u = row.display_value(spec_format, amp_mode, prefs)
             if u:
-                units.add(u)
-            x_units.add(_x_display(row, prefs)[1])
+                shown_u = resolve_number_format(u, prefs).shown_unit
+                if shown_u:
+                    units.add(shown_u)
+            x_val, x_u = _x_display(row, prefs)
+            if x_u:
+                shown_x_u = resolve_number_format(x_u, prefs, quantity=row.x_quantity).shown_unit
+                if shown_x_u:
+                    x_units.add(shown_x_u)
 
     amp_label = "Peak" if amp_mode == "peak" else "RMS"
     if len(units) == 1:
@@ -97,7 +100,8 @@ def table_headers(
         elif spec_format == "psd":
             col4_header = f"Value (({acc_unit})^2/Hz)"
         else:
-            col4_header = f"Value ({acc_unit} {amp_label})"
+            shown_acc = resolve_number_format(acc_unit, prefs).shown_unit
+            col4_header = f"Value ({shown_acc} {amp_label})"
 
     active_meta_cols = active_metadata_columns(selected_cols, schema)
 
@@ -117,108 +121,46 @@ def has_spectra(table: EvaluationTable) -> bool:
     return any(row.block.kind == KIND_SPECTRUM for row in table.rows)
 
 
-_BAND_RE = re.compile(
-    r"^\s*([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)\s*(?:hz)?\s*[-–—]\s*(?:([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)\s*(?:hz)?|full(?:\s+bandwidth)?)\s*$",
-    re.IGNORECASE,
-)
+# Orders sort before bands, bands before a Residual: an order and a band
+# edge are not on one axis, so neither is compared with the other (#793).
+_ORDER_GROUP, _BAND_GROUP, _RESIDUAL_GROUP = 0, 1, 2
 
 
-class _BandSortKey(tuple):
-    """Sort key for frequency bands: (f_start, f_stop), interoperable with scalar orders."""
-
-    def __lt__(self, other: Any) -> bool:
-        if isinstance(other, (int, float)):
-            return super().__lt__((float(other),))
-        return super().__lt__(other)
-
-    def __gt__(self, other: Any) -> bool:
-        if isinstance(other, (int, float)):
-            return super().__gt__((float(other),))
-        return super().__gt__(other)
-
-    def __le__(self, other: Any) -> bool:
-        if isinstance(other, (int, float)):
-            return super().__le__((float(other),))
-        return super().__le__(other)
-
-    def __ge__(self, other: Any) -> bool:
-        if isinstance(other, (int, float)):
-            return super().__ge__((float(other),))
-        return super().__ge__(other)
+def _order_or_band_cell(order_or_band: OrderOrBand) -> Tuple[str, Any]:
+    """The one place the Order / Band column's (text, sort_key) is made from
+    the typed value a curve carries. A curve with neither gives ("", None)."""
+    if isinstance(order_or_band, CurveOrder):
+        text = f"Order {order_or_band.order:g}"
+        if order_or_band.width is not None:
+            text += f" (±{order_or_band.width:g})"
+        width_key = order_or_band.width if order_or_band.width is not None else 0.0
+        return text, (_ORDER_GROUP, order_or_band.order, width_key)
+    if isinstance(order_or_band, CurveBand):
+        if order_or_band.f_stop is None:
+            stop_text, stop_key = "Full Bandwidth", math.inf
+        else:
+            stop_text, stop_key = f"{order_or_band.f_stop:g} Hz", order_or_band.f_stop
+        return f"{order_or_band.f_start:g}-{stop_text}", (_BAND_GROUP, order_or_band.f_start, stop_key)
+    if isinstance(order_or_band, CurveResidual):
+        return "Residual", (_RESIDUAL_GROUP, 0.0, 0.0)
+    return "", None
 
 
-def _parse_numeric_sort_key(text: str) -> Any:
-    if not text or text == _EM_DASH:
-        return None
-    try:
-        return float(text)
-    except ValueError:
-        pass
-    if text.startswith("Order "):
-        # "Order 4.79" or "Order 4.79 (±0.2)" -- the number is the first token.
-        try:
-            return float(text[6:].split()[0])
-        except (ValueError, IndexError):
-            pass
-    band_match = _BAND_RE.match(text)
-    if band_match:
-        f_start = float(band_match.group(1))
-        stop_grp = band_match.group(2)
-        f_stop = float(stop_grp) if stop_grp is not None else math.inf
-        return _BandSortKey((f_start, f_stop))
-    parts = text.split()
-    if parts:
-        try:
-            return float(parts[0])
-        except ValueError:
-            pass
-    return text.casefold()
-
-
-def _extract_column_value(
-    single: SingleValue,
-    col_key: str,
-    schema: Optional[Mapping[str, Mapping[str, Any]]],
-) -> Tuple[str, Any]:
+def _extract_column_value(single: SingleValue, col_key: str) -> Tuple[str, Any]:
     """
-    Extracts (text, sort_key) for a metadata or built-in column from single.identity.
-
-    Strictly uses typed values or io_modules.metadata_schema.parse_value.
-    Missing / empty values return ("", None).
+    Formats (text, sort_key) for a metadata or built-in column from the typed
+    Curve metadata record in single.identity.curve_metadata: numbers
+    sort numerically, ISO dates chronologically as text. Missing / empty
+    values return ("", None).
     """
-    val = single.identity.metadata.get(col_key) if single.identity.metadata else None
-    if val is None or val == "":
-        if col_key == COLUMN_CHANNEL:
-            val = single.identity.channel
-        elif col_key == COLUMN_DIRECTION:
-            val = single.identity.direction
-        elif col_key == COLUMN_FILE_NAME:
-            val = single.identity.measurement
-        elif col_key == COLUMN_RESULT_SET:
-            val = single.identity.source
-        elif col_key == COLUMN_PARAMETER_SET:
-            val = single.identity.parameter_set
-        elif col_key == COLUMN_ORDER:
-            val = _parse_numeric_sort_key(single.identity.order_or_band)
-
+    val = single.identity.curve_metadata.get(col_key) if single.identity.curve_metadata else None
     if val is None or val == "":
         return "", None
-
     if isinstance(val, bool):
         return str(val), str(val).casefold()
-
     if isinstance(val, (int, float)):
         text = f"{val:g}" if isinstance(val, float) else str(val)
         return text, float(val)
-
-    if schema and col_key in schema:
-        kind = schema[col_key].get("kind", "str")
-        if kind in ("int", "float"):
-            parsed = parse_value(val, kind)
-            if parsed is not None:
-                text = f"{parsed:g}" if isinstance(parsed, float) else str(parsed)
-                return text, float(parsed)
-
     return str(val), str(val).casefold()
 
 
@@ -238,27 +180,35 @@ def _row_cells(
     amplitude_mode: str,
     prefs: Optional[UnitPreferences],
     active_meta_cols: Sequence[str],
-    schema: Optional[Mapping[str, Mapping[str, Any]]],
 ) -> RowCells:
     identity = single.identity
     if single.is_empty:
         value_text = _EM_DASH
         value_sort = None
+        raw_val = None
+        val_fmt = None
         x_text = _EM_DASH
         x_sort = None
+        raw_x = None
+        x_fmt = None
         is_dash = True
     else:
         value, unit = single.display_value(spectrum_format, amplitude_mode, prefs)
-        value_text = f"{value:.4g} {unit}"
-        value_sort = float(value) if value is not None else None
+        value_format = resolve_number_format(unit, prefs)
+        value_text = value_format.format_with_unit(value)
+        val_fmt = value_format.cell_format
+        value_sort = raw_val = float(value_format.scale(value))
+
         x_value, x_unit = _x_display(single, prefs)
-        x_text = f"{x_value:.4g} {x_unit}"
-        x_sort = float(x_value)
+        x_format = resolve_number_format(x_unit, prefs, quantity=single.x_quantity)
+        x_text = x_format.format_with_unit(x_value)
+        x_fmt = x_format.cell_format
+        x_sort = raw_x = float(x_format.scale(x_value))
+
         is_dash = False
 
     channel_text = f"{identity.channel} {identity.direction}".strip()
-    order_text = identity.order_or_band
-    order_sort = _parse_numeric_sort_key(order_text)
+    order_text, order_sort = _order_or_band_cell(identity.order_or_band)
     edge_text = "Yes" if (single.is_edge and not is_dash) else ""
 
     texts: List[str] = [
@@ -281,13 +231,42 @@ def _row_cells(
         edge_text.casefold() if edge_text else None,
         identity.parameter_set.casefold(),
     ]
+    raw_values: List[Any] = [
+        channel_text,
+        identity.measurement,
+        identity.source,
+        order_text,
+        raw_val,
+        raw_x,
+        edge_text,
+        identity.parameter_set,
+    ]
+    number_formats: List[Optional[str]] = [
+        None,
+        None,
+        None,
+        None,
+        val_fmt,
+        x_fmt,
+        None,
+        None,
+    ]
 
     for col_key in active_meta_cols:
-        c_text, c_sort = _extract_column_value(single, col_key, schema)
+        c_text, c_sort = _extract_column_value(single, col_key)
         texts.append(c_text)
         sort_keys.append(c_sort)
+        raw_val_meta = single.identity.curve_metadata.get(col_key) if single.identity.curve_metadata else None
+        raw_values.append(raw_val_meta if raw_val_meta is not None else "")
+        number_formats.append("General" if isinstance(raw_val_meta, (int, float)) else None)
 
-    return RowCells(texts=tuple(texts), sort_keys=tuple(sort_keys), is_dash=is_dash)
+    return RowCells(
+        texts=tuple(texts),
+        sort_keys=tuple(sort_keys),
+        is_dash=is_dash,
+        raw_values=tuple(raw_values),
+        number_formats=tuple(number_formats),
+    )
 
 
 def rows_for_table(
@@ -296,32 +275,137 @@ def rows_for_table(
     amplitude_mode: str,
     prefs: Optional[UnitPreferences],
     active_meta_cols: Sequence[str] = (),
-    schema: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> List[RowCells]:
     """Computes one RowCells per row the table holds for `amplitude_mode`
     (EvaluationTable.rows_in), in that order."""
     return [
-        _row_cells(single, spectrum_format, amplitude_mode, prefs, active_meta_cols, schema)
+        _row_cells(single, spectrum_format, amplitude_mode, prefs, active_meta_cols)
         for single in table.rows_in(amplitude_mode)
     ]
 
 
-def to_clipboard_string(headers: Sequence[str], grid: Sequence[Sequence[str]]) -> str:
-    """Tab-separated headers + grid, for pasting into Excel. Pure string
-    join -- headers/grid come from whatever's currently visible in the
-    table (including sort order and a row selection), which is
-    EvaluationPanel's job to gather, not this module's."""
+def _build_clipboard_string(headers: Sequence[str], grid: Sequence[Sequence[str]]) -> str:
     lines = ["\t".join(headers)]
     for row in grid:
         lines.append("\t".join(row))
     return "\n".join(lines)
 
 
-def to_csv_string(headers: Sequence[str], grid: Sequence[Sequence[str]]) -> str:
-    """CSV-escaped headers + grid, same input contract as to_clipboard_string."""
+def to_clipboard_string(
+    headers_or_table: Sequence[str] | EvaluationTable,
+    grid: Optional[Sequence[Sequence[str]]] = None,
+    *,
+    spectrum_format: str = "linear",
+    amplitude_mode: str = "rms",
+    prefs: Optional[UnitPreferences] = None,
+    selected_cols: Sequence[str] = (),
+    schema: Optional[Mapping[str, Mapping[str, Any]]] = None,
+) -> str:
+    """Tab-separated headers + grid, for pasting into Excel."""
+    if isinstance(headers_or_table, EvaluationTable):
+        table = headers_or_table
+        headers, active_cols = table_headers(table, selected_cols, schema or {}, spectrum_format, amplitude_mode, prefs)
+        rows = rows_for_table(table, spectrum_format, amplitude_mode, prefs, active_cols)
+        grid_data = [r.texts for r in rows]
+        return _build_clipboard_string(headers, grid_data)
+    else:
+        return _build_clipboard_string(headers_or_table, grid or ())
+
+
+def _build_csv_string(headers: Sequence[str], grid: Sequence[Sequence[str]]) -> str:
     output = io.StringIO()
     writer = csv.writer(output, lineterminator="\n")
     writer.writerow(headers)
     for row in grid:
         writer.writerow(row)
     return output.getvalue()
+
+
+def to_csv_string(
+    headers_or_table: Sequence[str] | EvaluationTable,
+    grid: Optional[Sequence[Sequence[str]]] = None,
+    *,
+    spectrum_format: str = "linear",
+    amplitude_mode: str = "rms",
+    prefs: Optional[UnitPreferences] = None,
+    selected_cols: Sequence[str] = (),
+    schema: Optional[Mapping[str, Mapping[str, Any]]] = None,
+) -> str:
+    """CSV-escaped headers + grid (or EvaluationTable)."""
+    if isinstance(headers_or_table, EvaluationTable):
+        table = headers_or_table
+        headers, active_cols = table_headers(table, selected_cols, schema or {}, spectrum_format, amplitude_mode, prefs)
+        rows = rows_for_table(table, spectrum_format, amplitude_mode, prefs, active_cols)
+        grid_data = [r.texts for r in rows]
+        return _build_csv_string(headers, grid_data)
+    else:
+        return _build_csv_string(headers_or_table, grid or ())
+
+
+def build_xlsx_bytes(
+    headers_or_table: Sequence[str] | EvaluationTable,
+    grid: Optional[Sequence[Sequence[Any]]] = None,
+    number_formats: Optional[Sequence[Optional[str]] | Sequence[Sequence[Optional[str]]]] = None,
+    *,
+    spectrum_format: str = "linear",
+    amplitude_mode: str = "rms",
+    prefs: Optional[UnitPreferences] = None,
+    selected_cols: Sequence[str] = (),
+    schema: Optional[Mapping[str, Mapping[str, Any]]] = None,
+) -> bytes:
+    """Exports headers and grid (or EvaluationTable) to XLSX format in memory as bytes."""
+    if isinstance(headers_or_table, EvaluationTable):
+        table = headers_or_table
+        headers, active_cols = table_headers(table, selected_cols, schema or {}, spectrum_format, amplitude_mode, prefs)
+        rows = rows_for_table(table, spectrum_format, amplitude_mode, prefs, active_cols)
+        grid_data = [r.raw_values if r.raw_values is not None else r.texts for r in rows]
+        formats = [r.number_formats for r in rows]
+        return _build_xlsx_bytes(headers, grid_data, formats)
+    else:
+        return _build_xlsx_bytes(headers_or_table, grid or (), number_formats)
+
+
+def _build_xlsx_bytes(
+    headers: Sequence[str],
+    grid: Sequence[Sequence[Any]],
+    number_formats: Optional[Sequence[Optional[str]] | Sequence[Sequence[Optional[str]]]] = None,
+) -> bytes:
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Evaluation"
+    ws.append(list(headers))
+
+    is_2d_formats = False
+    if number_formats and len(number_formats) > 0 and isinstance(number_formats[0], (list, tuple)):
+        is_2d_formats = True
+
+    for r_idx, row in enumerate(grid, start=2):
+        for c_idx, val in enumerate(row, start=1):
+            cell = ws.cell(row=r_idx, column=c_idx)
+            if val is None or val == _EM_DASH:
+                cell.value = _EM_DASH
+            elif isinstance(val, (int, float)):
+                cell.value = val
+                fmt = None
+                if number_formats:
+                    if is_2d_formats and (r_idx - 2) < len(number_formats):
+                        row_fmts = number_formats[r_idx - 2]
+                        if (c_idx - 1) < len(row_fmts):
+                            fmt = row_fmts[c_idx - 1]
+                    elif not is_2d_formats and (c_idx - 1) < len(number_formats):
+                        fmt = number_formats[c_idx - 1]
+                if fmt:
+                    cell.number_format = fmt
+                else:
+                    cell.number_format = "General"
+            else:
+                cell.value = str(val)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+to_xlsx_bytes = build_xlsx_bytes

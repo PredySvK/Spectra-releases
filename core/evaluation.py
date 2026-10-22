@@ -13,10 +13,36 @@ module changing.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Tuple, Union
 
 from core.data_block import NVHDataBlock
 from core.units import UnitPreferences, convert_signal_to_global_unit
+
+
+@dataclass(frozen=True)
+class CurveOrder:
+    """The order a curve was cut at, and the order width of the cut when the
+    Evaluation chose it (Typed / Dominant orders); a dock's own Order cut
+    leaves `width` None, as its legend does."""
+    order: float
+    width: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class CurveBand:
+    """The frequency band of an Overall Level curve, in Hz. `f_stop` None is
+    Full Bandwidth (CONTEXT.md)."""
+    f_start: float
+    f_stop: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class CurveResidual:
+    """A Residual curve. Its band is always the Overall Level default
+   , so it carries no numbers of its own."""
+
+
+OrderOrBand = Union[CurveOrder, CurveBand, CurveResidual, None]
 
 
 @dataclass(frozen=True)
@@ -25,8 +51,11 @@ class CurveIdentity:
     Which curve a Single value came from, in Evaluation table column terms
     (CONTEXT.md Evaluation): channel, direction, measurement, source (a
     result set's label, or "Live"), the dock-local Parameter Set label
-    (io_modules.parameter_sets), and a display string for the order or band
-    the curve was computed with. Built by the dock adapter
+    (io_modules.parameter_sets), the order or band the curve was computed
+    with as numbers (`order_or_band`, None for a curve with neither), plus its
+    typed Curve metadata record (`curve_metadata`, ADR §1.184). Its text and
+    sort key are made in one place, view_models.evaluation -- never parsed
+    back from a string (#793). Built by the dock adapter
     (gui/workspace/evaluation_adapter.py) from the same identity machinery
     the Filter panel uses -- not re-derived here.
     """
@@ -35,8 +64,8 @@ class CurveIdentity:
     measurement: str
     source: str
     parameter_set: str
-    order_or_band: str
-    metadata: Mapping[str, Any] = field(default_factory=dict, hash=False)
+    order_or_band: OrderOrBand
+    curve_metadata: Mapping[str, Any] = field(default_factory=dict, hash=False)
 
 
 @dataclass(frozen=True)

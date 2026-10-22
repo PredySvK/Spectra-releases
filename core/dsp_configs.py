@@ -9,7 +9,7 @@ All internal documentation strings and variable labels are standardly written in
 
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Optional
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 # Numeric algorithm version per result kind. io_modules.result_cache folds a
 # kind's version into every saved result set's params, so a stale result computed
@@ -30,10 +30,10 @@ from typing import Optional
 DSP_ALGORITHM_VERSIONS = MappingProxyType({
     "time_response": 2,
     "spectrum": 3,
-    "spectrogram": 3,
-    "order_cut": 3,
-    "overall_level": 2,
-    "order_residual": 1,
+    "spectrogram": 5,
+    "order_cut": 4,
+    "overall_level": 4,
+    "order_residual": 2,
 })
 
 # The string-valued DSP modes live here, not in each engine, so the GUI layer
@@ -46,7 +46,7 @@ VALID_AMPLITUDE_MODES = ("peak", "rms")
 VALID_SPECTRUM_FORMATS = ("linear", "power", "psd")
 VALID_AVERAGING_TYPES = ("linear", "peak_hold", "exponential")
 VALID_TRACKING_MODES = ("rpm", "time")
-VALID_SWEEP_DIRECTIONS = ("up", "down", "any")
+VALID_SWEEP_DIRECTIONS = ("up", "down")
 
 
 def normalize_dsp_choice(value: str, valid: tuple, field_name: str) -> str:
@@ -88,7 +88,16 @@ class SpectrogramConfig:
     tracking_mode: str = "rpm"
     step: float = 50.0
     direction: str = "up"
-    hysteresis: float = 10.0
+    # Tracking range (#805): the span of the sweep that counts, in positive rpm.
+    # None is auto -- 0 rpm and the record's top speed -- an intent rather than
+    # a number, so one setting is one identity over every measurement.
+    rpm_min: Optional[float] = None
+    rpm_max: Optional[float] = None
+    # Tracking range in time mode (#807): Start / End [s] in the time of the
+    # time axis, None is the whole record. Kept apart from the rpm pair, so a
+    # speed is never read as seconds.
+    time_start: Optional[float] = None
+    time_end: Optional[float] = None
     remove_dc: bool = True
     color_scale: str = "Linear"
 
@@ -98,11 +107,11 @@ class OrderTrackingConfig:
     order_width: float = 0.2
     fft_size: int = 4096
     window_type: str = "hann"
-    spectrum_format: str = "linear"
     amplitude_mode: str = "rms"
     step: float = 50.0
     direction: str = "up"
-    hysteresis: float = 10.0
+    rpm_min: Optional[float] = None    # Tracking range, as in SpectrogramConfig
+    rpm_max: Optional[float] = None
     remove_dc: bool = True
 
 @dataclass
@@ -119,5 +128,81 @@ class OverallLevelConfig:
     tracking_mode: str = "rpm"
     step: float = 50.0
     direction: str = "up"
-    hysteresis: float = 10.0
+    rpm_min: Optional[float] = None    # Tracking range, as in SpectrogramConfig
+    rpm_max: Optional[float] = None
+    time_start: Optional[float] = None
+    time_end: Optional[float] = None
     remove_dc: bool = True
+
+
+# The Tracking range fields of a tracked config, per tracking mode. Only the
+# pair of the config's own mode counts; the other one is auto.
+_TRACKING_RANGE_FIELDS = {"rpm": ("rpm_min", "rpm_max"), "time": ("time_start", "time_end")}
+
+
+def _resolve_tracking_mode(value: Any) -> str:
+    # Spelled as normalize_dsp_choice spells it, without its refusal: an
+    # unknown mode is the computation's to report, not the identity's.
+    return str(value).strip().lower()
+
+
+@dataclass(frozen=True)
+class TrackingSweep:
+    """
+    Everything a TrackingPlan is built from, apart from the tacho: the
+    tracking mode, step, direction and the Tracking range of that mode. One
+    value, so the shared plan's scratch key, the scratch bag's identity and the
+    plan itself cannot each follow another subset of the settings (#805, #807).
+
+    Only the range of `mode` is kept; the other pair is always None (auto).
+    A workflow block shows both pairs whatever its mode, and a filled-in pair
+    of the other mode must not make the same computation another result.
+    """
+
+    mode: str = "rpm"
+    step: float = 50.0
+    direction: str = "up"
+    rpm_min: Optional[float] = None
+    rpm_max: Optional[float] = None
+    time_start: Optional[float] = None
+    time_end: Optional[float] = None
+
+    @property
+    def bounds(self) -> Tuple[Optional[float], ...]:
+        """(rpm_min, rpm_max, time_start, time_end)."""
+        return self.rpm_min, self.rpm_max, self.time_start, self.time_end
+
+
+def resolve_tracking_sweep(config: Any) -> TrackingSweep:
+    """The TrackingSweep of a Spectrogram, Order Tracking or Overall Level config;
+    Order Tracking is always rpm-tracked and has no time range."""
+    params = resolve_active_tracking_params({
+        "tracking_mode": getattr(config, "tracking_mode", "rpm"),
+        "rpm_min": config.rpm_min, "rpm_max": config.rpm_max,
+        "time_start": getattr(config, "time_start", None),
+        "time_end": getattr(config, "time_end", None),
+    })
+    return TrackingSweep(
+        mode=_resolve_tracking_mode(params["tracking_mode"]),
+        step=config.step, direction=_resolve_tracking_mode(config.direction),
+        rpm_min=params["rpm_min"], rpm_max=params["rpm_max"],
+        time_start=params["time_start"], time_end=params["time_end"],
+    )
+
+
+def resolve_active_tracking_params(params: Mapping[str, Any]) -> Dict[str, Any]:
+    """
+    `params` (a flat `asdict` of a DSP config, or a workflow block's params)
+    with the Tracking range of the inactive tracking mode set to None (auto).
+    A config without a tracking mode is rpm-tracked; one without range fields
+    comes back unchanged. The curve recipe goes through here, so a result's
+    identity holds only the range that shaped it, however the config was made.
+    """
+    mode = _resolve_tracking_mode(params.get("tracking_mode", "rpm"))
+    out = dict(params)
+    for other_mode, names in _TRACKING_RANGE_FIELDS.items():
+        if other_mode != mode:
+            for name in names:
+                if name in out:
+                    out[name] = None
+    return out

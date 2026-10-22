@@ -7,7 +7,10 @@ a `JobRunner`, folds each folder into the pool as it lands, and reports the
 run as data: a `FolderReport` per folder and one `IngestOutcome` at the end.
 Before reading it asks the **Source amplitude** question (RMS or Peak) once per
 Imported-result reader that has files in the plan, through a callback the shell
-supplies. `unregistered_pool_directories` answers the separate question of which pooled
+supplies. When an ingest finishes it starts the `MissingMeasurementCheck`,
+which also runs after a project's pool is restored and tells the pool which
+of its measurements are Missing measurements, on a worker.
+`unregistered_pool_directories` answers the separate question of which pooled
 directories the project does not know yet, and `save_metadata_schema` stores an
 edited metadata schema in the project without committing other unsaved edits.
 
@@ -26,6 +29,10 @@ from orchestration.data_pool._ingest import (
     plan_pool_ingest,
     plan_pool_refresh,
 )
+from orchestration.data_pool._missing_measurement_check import (
+    MissingCheckOutcome,
+    MissingMeasurementCheck,
+)
 from orchestration.data_pool._source_amplitude import (
     SourceAmplitudeAsker,
     SourceAmplitudeQuestion,
@@ -43,6 +50,8 @@ __all__ = [
     "FolderReport",
     "IngestOutcome",
     "IngestPlan",
+    "MissingCheckOutcome",
+    "MissingMeasurementCheck",
     "PoolIngestUseCase",
     "SourceAmplitudeAsker",
     "SourceAmplitudeQuestion",

@@ -17,7 +17,7 @@ from core.block_kinds import KIND_ORDER_CUT
 from core.filter_card_config import COLUMN_CHANNEL, COLUMN_DIRECTION
 from core.measurement_selection import MeasurementSelection
 from core.workflow_graph import Workflow
-from io_modules.result_cache.cache_naming import (
+from io_modules.result_cache import (
     build_channel_component,
     build_kind_result_set_label,
     build_result_set_label,

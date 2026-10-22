@@ -1,7 +1,7 @@
 # gui/dialogs/metadata_editor_dialog.py
 """
 Universal Agnostic Metadata Schema Editor Dialog framework.
-Dynamically displays discovered metadata fields allowing runtime renames and visibility toggles.
+Dynamically displays discovered metadata fields allowing runtime renames and the Active Status switch.
 All internal documentation strings and variable labels are standardly written in English.
 """
 
@@ -14,10 +14,11 @@ from PySide6.QtGui import QColor, QPalette
 from gui.dialogs.dialog_state import remember_dialog_geometry
 from gui.dialogs.channel_pairing_tab import ChannelPairingTab
 from io_modules.metadata_schema import build_schema_field_choice, resolve_schema_field_kind
-from io_modules.channel_pairing import PAIRING_FILE_NAME
 from io_modules.measurement_files import is_simulated_result_file
+from io_modules.project_store import PAIRING_FILE_NAME
 from orchestration.channel_pairing import resolve_channel_pairing_path, write_project_channel_pairing
 from selection.channel_identity import split_channel_base_and_direction
+from selection.field_offer import is_active_field
 from gui.appearance import APP_TOKENS
 
 
@@ -27,8 +28,9 @@ from gui.appearance import APP_TOKENS
 _KIND_CHOICES = (("Auto", None), ("Text", "str"), ("Integer", "int"),
                  ("Decimal", "float"), ("Date", "date"))
 
-# Checkbox columns whose header click checks/unchecks the whole column.
-_TOGGLE_ALL_COLUMNS = (0, 3)
+# The one checkbox column (Active Status); its header click checks/unchecks every row.
+_ACTIVE_COLUMN = 0
+_TYPE_COLUMN = 3
 
 
 class _TypeComboBox(QComboBox):
@@ -103,36 +105,33 @@ class MetadataEditorDialog(QDialog):
         self.tabs.addTab(fields_tab, "Fields")
         self.tabs.addTab(self._build_pairing_tab(), "Pairing")
 
-        fields_layout.addWidget(QLabel("Dynamic Metadata Schema Configuration (Rename fields or toggle visibility flags):"))
+        fields_layout.addWidget(QLabel("Choose which metadata fields are active, rename them or set their Type:"))
 
         # Initialize adaptive 4-column data grid panel
         self.table = QTableWidget()
         self.table.setObjectName("MetadataFieldsTable")  # help figure target
         self.table.horizontalHeader().setObjectName("MetadataFieldsHeader")
-        self.table.setColumnCount(5)
+        self.table.setColumnCount(4)
         self.table.setHorizontalHeaderLabels(
-            ["Active Status", "Original Metadata Key", "Custom Display Label Override",
-             "Use as Filter", "Type"])
+            ["Active Status", "Original Metadata Name", "Custom Metadata Name", "Type"])
 
         # The two middle columns (original key, custom label) are the ones the
         # user reads and edits, so they get the room: key sized to its content,
-        # label taking the slack. The three checkbox/combo columns only need to
+        # label taking the slack. The checkbox and combo columns only need to
         # fit their header text.
         header = self.table.horizontalHeader()
         header.setStretchLastSection(False)
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(_ACTIVE_COLUMN, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(_TYPE_COLUMN, QHeaderView.ResizeMode.ResizeToContents)
         self.table.setColumnWidth(1, 220)
 
         # A real Excel sheet brings ~20 columns; clicking the checkbox header
         # flips the whole column instead of one row at a time.
         header.setSectionsClickable(True)
         header.sectionClicked.connect(self._toggle_whole_column)
-        for column in _TOGGLE_ALL_COLUMNS:
-            self.table.horizontalHeaderItem(column).setToolTip("Click to check / uncheck all rows")
+        self.table.horizontalHeaderItem(_ACTIVE_COLUMN).setToolTip("Click to check / uncheck all rows")
 
         self.populate_dynamic_grid()
         fields_layout.addWidget(self.table)
@@ -183,7 +182,7 @@ class MetadataEditorDialog(QDialog):
         # fills what it can (func_type/sampling_rate/... for both .unv and
         # .asc, id1..id5 only where the format has an equivalent), and a field
         # no loaded run has a value for is simply blank here, not hidden.
-        self._insert_section_divider(current_row, "--- LEVEL 1: PER-CHANNEL PARAMETERS ---")
+        self._insert_section_divider(current_row, "--- LEVEL 1: Raw metadata ---")
         current_row += 1
 
         for key, config in channel_items.items():
@@ -191,7 +190,7 @@ class MetadataEditorDialog(QDialog):
             current_row += 1
 
         # --- SECTION 2: FILE LEVEL METADATA ---
-        self._insert_section_divider(current_row, "--- LEVEL 2: RELATIONAL EXCEL FILE-LEVEL METADATA ---")
+        self._insert_section_divider(current_row, "--- LEVEL 2: Excel metadata ---")
         current_row += 1
 
         for key, config in excel_items.items():
@@ -206,19 +205,23 @@ class MetadataEditorDialog(QDialog):
         divider_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.table.setItem(row_idx, 0, divider_item)
-        self.table.setSpan(row_idx, 0, 1, 5)
+        self.table.setSpan(row_idx, 0, 1, self.table.columnCount())
 
-        for c in range(5):
+        for c in range(self.table.columnCount()):
             cell = self.table.item(row_idx, c)
             if cell:
                 cell.setBackground(QColor(APP_TOKENS.text_muted))
 
     def _insert_data_row(self, row_idx: int, original_key: str, config: dict, layer_type: str):
         """Injects a standardized interactive row entry line matching state markers."""
-        cb_item = QTableWidgetItem()
-        cb_item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
-        cb_item.setCheckState(Qt.CheckState.Checked if config.get("is_active", True) else Qt.CheckState.Unchecked)
-        self.table.setItem(row_idx, 0, cb_item)
+        # Active Status: the one flag that offers the field to the Filters panel,
+        # the Evaluation table columns and the Cursor Box.
+        active_item = QTableWidgetItem()
+        active_item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+        active_item.setCheckState(
+            Qt.CheckState.Checked if is_active_field(config) else Qt.CheckState.Unchecked
+        )
+        self.table.setItem(row_idx, _ACTIVE_COLUMN, active_item)
 
         key_item = QTableWidgetItem(original_key)
         key_item.setFlags(key_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -232,13 +235,6 @@ class MetadataEditorDialog(QDialog):
         label_item = QTableWidgetItem(config.get("custom_label", original_key))
         self.table.setItem(row_idx, 2, label_item)
 
-        filter_item = QTableWidgetItem()
-        filter_item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
-        filter_item.setCheckState(
-            Qt.CheckState.Checked if config.get("usable_as_filter", False) else Qt.CheckState.Unchecked
-        )
-        self.table.setItem(row_idx, 3, filter_item)
-
         # Securely lock the layer token explicitly inside user data role cell to guarantee mapping consistency on save
         self.table.item(row_idx, 1).setData(Qt.ItemDataRole.UserRole, layer_type)
 
@@ -251,11 +247,11 @@ class MetadataEditorDialog(QDialog):
             manual = config.get("kind", "str")
             match = next((i for i, (_, k) in enumerate(_KIND_CHOICES) if k == manual), 0)
             type_combo.setCurrentIndex(match)
-        self.table.setCellWidget(row_idx, 4, type_combo)
+        self.table.setCellWidget(row_idx, _TYPE_COLUMN, type_combo)
 
     def _toggle_whole_column(self, column: int):
-        """Checks every data row in a checkbox column, or clears it when all are checked."""
-        if column not in _TOGGLE_ALL_COLUMNS:
+        """Checks every data row in Active Status, or clears it when all are checked."""
+        if column != _ACTIVE_COLUMN:
             return
         # Divider rows span the table and have no key cell; data rows do.
         items = [self.table.item(r, column) for r in range(self.table.rowCount())
@@ -287,18 +283,16 @@ class MetadataEditorDialog(QDialog):
                 continue
 
             original_key = key_cell.text()
-            cb_item = self.table.item(row_idx, 0)
+            active_item = self.table.item(row_idx, _ACTIVE_COLUMN)
             label_cell = self.table.item(row_idx, 2)
-            filter_item = self.table.item(row_idx, 3)
 
-            if cb_item and label_cell:
-                is_active = (cb_item.checkState() == Qt.CheckState.Checked)
+            if active_item and label_cell:
+                is_active = (active_item.checkState() == Qt.CheckState.Checked)
                 custom_text = label_cell.text().strip()
                 row_layer = key_cell.data(Qt.ItemDataRole.UserRole)
-                usable_as_filter = bool(filter_item and filter_item.checkState() == Qt.CheckState.Checked)
 
                 prior = self.master_schema.get(original_key) or {}
-                type_combo = self.table.cellWidget(row_idx, 4)
+                type_combo = self.table.cellWidget(row_idx, _TYPE_COLUMN)
                 chosen_kind = type_combo.currentData() if type_combo else None
                 entry = build_schema_field_choice(
                     prior, self.baseline_schema.get(original_key, {}), chosen_kind,
@@ -306,7 +300,6 @@ class MetadataEditorDialog(QDialog):
                 entry.update(
                     custom_label=custom_text or original_key,
                     is_active=is_active,
-                    usable_as_filter=usable_as_filter,
                     layer=row_layer or "excel",
                 )
                 self.updated_schema[original_key] = entry

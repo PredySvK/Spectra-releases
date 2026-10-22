@@ -16,20 +16,16 @@ from core.block_kinds import (
 )
 from core.data_block import NVHDataBlock, build_source_ref
 from io_modules.data_accessor import DataAccessor
-from io_modules.result_cache.block_io import block_from_stored
+from io_modules.result_cache import block_from_stored
 from io_modules.tab_cache import TabCacheMiss, read_tab_cache_file
 from orchestration.live_compute._compute_origin import PHASE_COMPUTE, PHASE_READ
-from orchestration.live_compute._dock_reads import (
-    read_order_channels, read_overall_level_channels,
-)
-from orchestration.live_compute._payloads import read_spectrogram_channels
 from orchestration.tab_cache import build_tab_cache_miss_line
 from signal_processing.result_blocks import (
     TrackingScratch,
     build_invalid_samples_line,
     build_order_cut_blocks,
+    build_order_tracking_curve_recipe,
     build_overall_level_missing_line,
-    computation_params,
     compute_order_cuts,
     compute_overall_level,
     compute_spectrogram,
@@ -37,6 +33,7 @@ from signal_processing.result_blocks import (
     require_uniform_rpm_axis,
     UnevenRpmAxisError,
 )
+from selection.tacho import find_tacho_channel
 
 
 @dataclasses.dataclass(frozen=True)
@@ -137,18 +134,18 @@ def run_live_compute(request: LiveRequest, finder: Optional[Callable] = None,
             return dataclasses.replace(hit, notices=before + hit.notices)
 
     try:
-        vib_block, tacho_block, notices = _read(request)
+        vib_block, tacho_block = _read(request)
     except Exception as error:
         return LiveFailure(PHASE_READ, str(error), before)
 
     try:
-        blocks, more_notices = _run_dsp(request, vib_block, tacho_block, tracking)
+        blocks, notices = _run_dsp(request, vib_block, tacho_block, tracking)
     except Exception as error:
-        return LiveFailure(PHASE_COMPUTE, str(error), before + notices)
+        return LiveFailure(PHASE_COMPUTE, str(error), before)
 
     return LiveResult(
         blocks=tuple(blocks), vib_block=vib_block, tacho_block=tacho_block,
-        notices=before + notices + more_notices + _invalid_samples_notices(blocks),
+        notices=before + notices + _invalid_samples_notices(blocks),
     )
 
 
@@ -242,7 +239,8 @@ def _rebuild_cached_blocks(request: LiveRequest, cached) -> list:
         source_block, first.axes[0].values,
         {order: block.values for order, block in zip(config.orders_to_extract, cached.blocks)},
         window_type=config.window_type, fft_size=config.fft_size,
-        value_unit=first.value_unit, computation=computation_params(config),
+        value_unit=first.value_unit,
+        curve_recipe=build_order_tracking_curve_recipe(config),
     )
     # What invalid samples cost the cut is all the rebuild keeps of the stored
     # metadata: the rest is rebuilt from the channel (#673).
@@ -255,51 +253,50 @@ def _rebuild_cached_blocks(request: LiveRequest, cached) -> list:
 # ---- miss ------------------------------------------------------------------
 
 def _read(request: LiveRequest):
-    """The raw channels a miss computes from: `(vib, tacho_or_None, notices)`."""
+    """The raw channels a miss computes from: `(vib, tacho_or_None)`."""
     run_index, channel_meta, config = request.run_index, request.channel_meta, request.config
     kind = request.block_kind
     if kind not in (KIND_SPECTRUM, KIND_SPECTROGRAM, KIND_ORDER_CUT, KIND_OVERALL_LEVEL):
         raise ValueError(f"no live compute for block kind '{kind}'")
     if kind == KIND_SPECTROGRAM:
-        return _read_spectrogram(request)
+        # A `vib_block` already read is kept; its tacho is still read when
+        # missing -- a channel dropped onto a spectrogram restored from the Tab
+        # cache, which holds no tacho.
+        if config.tracking_mode == "rpm":
+            return _read_with_tacho(request)
+        return _read_vib(request), request.tacho_block
     if request.vib_block is not None:
-        return request.vib_block, request.tacho_block, ()
+        return request.vib_block, request.tacho_block
 
     if kind == KIND_SPECTRUM:
-        return DataAccessor.fetch_channel_data(run_index, channel_meta), None, ()
+        return DataAccessor.fetch_channel_data(run_index, channel_meta), None
 
-    if kind == KIND_ORDER_CUT:
-        vib_block, tacho_block = read_order_channels(
-            run_index, channel_meta, request.tacho_block, request.tacho_meta)
-        return vib_block, tacho_block, ()
-
-    vib_block, tacho_block = read_overall_level_channels(
-        run_index, channel_meta, request.tacho_block, config.tracking_mode == "rpm",
-        request.tacho_meta)
-    return vib_block, tacho_block, ()
+    if kind == KIND_ORDER_CUT or config.tracking_mode == "rpm":
+        return _read_with_tacho(request)
+    return DataAccessor.fetch_channel_data(run_index, channel_meta), request.tacho_block
 
 
-def _read_spectrogram(request: LiveRequest):
+def _read_vib(request: LiveRequest):
+    """The vibration channel: the block the request carries, else read from disk."""
+    if request.vib_block is not None:
+        return request.vib_block
+    return DataAccessor.fetch_channel_data(request.run_index, request.channel_meta)
+
+
+def _read_with_tacho(request: LiveRequest):
     """
-    A spectrogram's vibration channel and, tracked against rpm with no tacho
-    given, its file's tacho. A `vib_block` already read is kept; its tacho is
-    still read when missing -- a channel dropped onto a spectrogram restored
-    from the Tab cache, which holds no tacho.
+    The vibration channel and a tacho: the one the view holds, else
+    `tacho_meta`, else the file's own (`find_tacho_channel`, ADR §1.197). A
+    file with no tacho gives None for it, for the compute to refuse; a tacho
+    that does not read fails the read like the vibration channel would.
     """
-    run_index, config = request.run_index, request.config
-    tacho_block = request.tacho_block
-    candidates = []
-    if config.tracking_mode == "rpm" and tacho_block is None:
-        candidates = ([(request.tacho_meta.name, request.tacho_meta)] if request.tacho_meta is not None
-                      else list(run_index.available_channels.items()))
-    vib_block, linked, linked_meta = read_spectrogram_channels(
-        run_index, request.channel_meta, candidates, vib_block=request.vib_block)
-    notices = ()
-    if linked is not None:
-        tacho_block = linked
-        if linked_meta is not None:
-            notices = (f"SYSTEM: Auto-linked Tacho [{linked_meta.name}] for RPM Tracking.",)
-    return vib_block, tacho_block, notices
+    vib_block = _read_vib(request)
+    if request.tacho_block is not None:
+        return vib_block, request.tacho_block
+    tacho_meta = request.tacho_meta or find_tacho_channel(request.run_index)
+    if tacho_meta is None:
+        return vib_block, None
+    return vib_block, DataAccessor.fetch_channel_data(request.run_index, tacho_meta)
 
 
 def _run_dsp(request: LiveRequest, vib_block, tacho_block, tracking: Optional[TrackingScratch]):

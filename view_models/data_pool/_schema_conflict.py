@@ -8,12 +8,10 @@ Formatting schema conflict descriptions for the Data Pool view model.
 from __future__ import annotations
 
 import os
-from typing import Any
-
-LAYER_CONFLICT = "layer"
+from core.schema_conflict import LAYER_CONFLICT, SchemaConflict
 
 
-def describe_schema_conflict(conflict: Any) -> str:
+def describe_schema_conflict(conflict: SchemaConflict) -> str:
     """Names the folders by their own name rather than their full path."""
     parts = ", ".join(
         f"{os.path.basename(where.rstrip(os.sep)) or where}: {what}"

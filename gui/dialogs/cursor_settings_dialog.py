@@ -6,7 +6,7 @@ Cursor Settings: which fields the Cursor Box shows and in what order.
 
 A trimmed Configure Filters: the same shared `PriorityGrid`, one row = a checkbox
 and a Priority. A Values section (X, Y, Z, Curve name, RMS/Peak) and the metadata
-sections offering the fields marked "Use as Filter" -- the same gate, so a field
+sections offering the fields with "Active Status" ticked -- the same gate, so a field
 meant only for the box needs that flag too. Parameter set and Channel are not
 offered (the box has no value for the first; "Curve name" is the second).
 
@@ -26,13 +26,10 @@ from core.cursor_config import (
     FIELD_AMPLITUDE, FIELD_CURVE, FIELD_X, FIELD_Y, FIELD_Z, CursorConfig, move_field, with_field,
     with_field_order,
 )
-from core.filter_card_config import (
-    BUILTIN_COLUMN_LABELS, CALCULATED_BUILTIN_ORDER, COLUMN_CHANNEL, COLUMN_PARAMETER_SET, GROUP_RAW,
-    IDENTITY_BUILTIN_ORDER,
-)
+from core.filter_card_config import COLUMN_CHANNEL, COLUMN_PARAMETER_SET
 from gui.dialogs.dialog_state import fit_width_to_scroll_content, remember_dialog_geometry
 from gui.dialogs.priority_grid import PriorityGrid
-from selection.trace_filter import schema_field_group
+from selection.field_offer import build_field_offer
 
 _VALUE_ROWS: Tuple[Tuple[str, str], ...] = (
     (FIELD_X, "X"), (FIELD_Y, "Y"), (FIELD_Z, "Z (spectrogram)"),
@@ -109,19 +106,13 @@ class CursorSettingsDialog(QDialog):
 
     @staticmethod
     def _sections(schema: Dict[str, Dict[str, Any]]) -> List[Tuple[str, List[Tuple[str, str]]]]:
-        raw, excel = [], []
-        for key, config in schema.items():
-            if config.get("usable_as_filter", False):
-                (raw if schema_field_group(config) == GROUP_RAW else excel).append(
-                    (key, config.get("custom_label", key)))
-        by_label = lambda item: item[1]
-        builtins = lambda order: [(k, BUILTIN_COLUMN_LABELS[k]) for k in order if k not in _NOT_OFFERED]
+        offer = build_field_offer(schema, excluded=_NOT_OFFERED)
         return [
             ("Values", list(_VALUE_ROWS)),
-            ("Identity", builtins(IDENTITY_BUILTIN_ORDER)),
-            ("Raw metadata", sorted(raw, key=by_label)),
-            ("Excel metadata", sorted(excel, key=by_label)),
-            ("Calculated metadata", builtins(CALCULATED_BUILTIN_ORDER)),
+            ("Identity", list(offer.identity)),
+            ("Raw metadata", list(offer.raw)),
+            ("Excel metadata", list(offer.excel)),
+            ("Calculated metadata", list(offer.calculated)),
         ]
 
     def _on_toggled(self, key: str, checked: bool) -> None:

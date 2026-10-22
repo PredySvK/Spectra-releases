@@ -2,11 +2,23 @@
 
 What changed in Spectra, written for users. Rules for writing it: [docs/agents/release.md](docs/agents/release.md).
 
-## Unreleased
+## 0.2.2 - 2026-10-23
+
+- Simcenter Testlab `.ldsf` version 21, 24-bit data format as input is supported.
+- Settings has Display prefix and decimals per unit, with a live Preview; axes, Cursor Box and evaluation table follow them.
+- Tracked analysis takes Min and Max RPM. Start and End in seconds in Free Run.
+- Tracking gives one point per speed, so plateaus and dips no longer cause zigzag curves. The Hysteresis setting is gone and Sweep offers only Up and Down.
+  ![One point per speed, the first crossing](docs/site/img/whats_new_0_2_2.png)
+- Folder added to the Data Pool gets its own Label after the folder name.
+- A tab restored with a project keeps the settings it was saved with.
+- Highlight also marks the legend row.
+- Curve legends are named consistently.
+- Bug fixes.
+
 
 ## 0.2.1 - 2026-10-18
 
-- Simcenter Testlab `.ldsf` data format as input is supported.
+- Simcenter Testlab `.ldsf` time recordings with 32-bit float samples can be opened.
 - The project keeps its computed graph tabs on Save and when Spectra closes, so reopening it shows them without recomputing.
 - Minor bug fixes.
 

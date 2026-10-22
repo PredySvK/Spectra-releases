@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from core.theme import resolve_graph_theme, resolve_theme
-from core.units import CANONICAL_UNIT_GROUPS
+from core.units import DISPLAY_BASE_UNIT_GROUPS
 
 
 @dataclass(frozen=True)
@@ -55,8 +55,22 @@ def _choice(allowed) -> Callable[[object], str]:
     return coerce
 
 
+PREFIX_CHOICES: tuple[str, ...] = ("none", "auto", "µ", "m", "k", "M", "scientific")
+
+
+def _prefix() -> SettingDefinition:
+    return SettingDefinition("none", _choice(PREFIX_CHOICES))
+
+
+DECIMALS_CHOICES: tuple[str, ...] = ("auto", "0", "1", "2", "3", "4", "5", "6")
+
+
+def _decimals(default: str) -> SettingDefinition:
+    return SettingDefinition(default, _choice(DECIMALS_CHOICES))
+
+
 def _unit(domain: int) -> SettingDefinition:
-    units = CANONICAL_UNIT_GROUPS[domain]
+    units = DISPLAY_BASE_UNIT_GROUPS[domain]
     return SettingDefinition(units[0], _choice(units))
 
 
@@ -67,6 +81,18 @@ SETTING_DEFINITIONS: dict[str, SettingDefinition] = {
     "global_unit_pressure": _unit(1),
     "global_unit_voltage": _unit(2),
     "global_unit_speed": _unit(3),
+    "prefix_acceleration": _prefix(),
+    "prefix_pressure": _prefix(),
+    "prefix_voltage": _prefix(),
+    "prefix_speed": _prefix(),
+    "prefix_frequency": _prefix(),
+    "prefix_time": _prefix(),
+    "decimals_acceleration": _decimals("2"),
+    "decimals_pressure": _decimals("2"),
+    "decimals_voltage": _decimals("2"),
+    "decimals_speed": _decimals("0"),
+    "decimals_frequency": _decimals("2"),
+    "decimals_time": _decimals("4"),
     "theme": SettingDefinition("dark", lambda value: resolve_theme(value).value, applies_after_restart=True),
     "graph_theme": SettingDefinition(
         "follow", lambda value: resolve_graph_theme(value).value, applies_after_restart=True),

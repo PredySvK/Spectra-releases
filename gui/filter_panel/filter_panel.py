@@ -18,8 +18,8 @@ Builds and displays the facets computed by selection.source_facets --
 from the whole Data Pool for a Global profile, or from whatever the focused
 dock is actually drawing for a Local one (selection.trace_filter.
 facets_from_traces, ARCHITECTURE_DECISIONS §1.30) -- one group box per
-opted-in metadata field (opted in from Metadata and Filter Settings' "Use as
-Filter" column; this panel's own "Configure Filters…" can only narrow that
+opted-in metadata field (opted in from Metadata and Filter Settings' "Active
+Status" column; this panel's own "Configure Filters…" can only narrow that
 set further, not opt a new field in), a Channel group (opt-in exclusively
 through "Configure Filters…", since Channel has no row in Metadata and Filter
 Settings), and an Order group -- both read straight off whatever traces are on
@@ -317,7 +317,7 @@ class FilterPanel(ProfileTabsMixin, QWidget):
                      else "the checked result set(s)")
             self.label_status.setText(
                 f"No filterable metadata found for {scope}. "
-                "Mark a field \"Use as Filter\" in Metadata and Filter Settings, or add "
+                "Tick a field's \"Active Status\" in Metadata and Filter Settings, or add "
                 "a column in \"⚙ Configure Filters…\"."
             )
         else:

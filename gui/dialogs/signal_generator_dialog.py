@@ -8,7 +8,7 @@ Mathematical imports and complex preview logic have been stripped out.
 All internal documentation strings and variable labels are written in English.
 
 The component editor mirrors the generation engine's contract
-(io_modules/signal_generation/signal_generation_engine.compose_vibration_signal):
+(io_modules/signal_generation/_signal_generation_engine.compose_vibration_signal):
 every optional per-component key the engine understands -- amp_end (warm-up
 drift), mod_order / mod_depth (bearing-fault sidebands) -- has a field here, and
 the four stochastic component types (White / Pink / Brown Noise, Resonance) are
@@ -29,6 +29,8 @@ from PySide6.QtGui import QIntValidator
 from gui.dialogs.dialog_state import remember_dialog_geometry
 from gui.dialogs.library_preset_dialog import LibraryPresetDialog
 from gui.appearance import APP_TOKENS
+from core.units import UnitPreferences
+from gui.workspace.display_prefix_axis import DisplayPrefixAxisItem
 from gui.workspace.plot_area import style_plot_area
 
 
@@ -322,9 +324,10 @@ class ChannelTab(QWidget):
 class SignalGeneratorDialog(QDialog):
     sig_parameters_changed = Signal()
 
-    def __init__(self, parent=None, settings=None):
+    def __init__(self, parent=None, settings=None, **kwargs):
         super().__init__(parent)
         self._is_updating = False
+        self._unit_preferences_provider = kwargs.get("unit_preferences_provider")
         self.setWindowTitle("Signal Generator")
 
         self.init_ui()
@@ -336,6 +339,14 @@ class SignalGeneratorDialog(QDialog):
         self.setMinimumSize(1100, 680)
         # Remembered across restarts; cleared by Settings > Reset Layout / Reset All.
         remember_dialog_geometry(self, settings, "signal_generator", default_size=(1400, 860))
+
+    def _unit_preferences(self) -> UnitPreferences:
+        if self._unit_preferences_provider is not None:
+            return self._unit_preferences_provider()
+        parent_app_context = getattr(self.parent(), "app_context", None)
+        if parent_app_context is not None and hasattr(parent_app_context, "unit_preferences"):
+            return parent_app_context.unit_preferences()
+        return UnitPreferences()
 
     def _param_changed(self, *_):
         """Single funnel for every 'a widget changed' wire, muted during a bulk load."""
@@ -559,7 +570,13 @@ class SignalGeneratorDialog(QDialog):
 
         # Floor on the preview width so the plots never collapse to a sliver
         # when the controls column is asking for room.
-        self.rpm_plot = pg.PlotWidget(title="Tacho Profile")
+        self.rpm_plot = pg.PlotWidget(
+            title="Tacho Profile",
+            axisItems={
+                "bottom": DisplayPrefixAxisItem("bottom", unit_preferences_provider=self._unit_preferences),
+                "left": DisplayPrefixAxisItem("left", unit_preferences_provider=self._unit_preferences),
+            },
+        )
         self.rpm_plot.setObjectName("TachoProfilePlot")
         self.rpm_plot.setMinimumWidth(340)
         style_plot_area(self.rpm_plot)
@@ -568,7 +585,13 @@ class SignalGeneratorDialog(QDialog):
         self.rpm_plot.setLabel('left', 'Speed', 'RPM')
         right_layout.addWidget(self.rpm_plot)
 
-        self.vib_plot = pg.PlotWidget(title="Active Channel Vibration Preview")
+        self.vib_plot = pg.PlotWidget(
+            title="Active Channel Vibration Preview",
+            axisItems={
+                "bottom": DisplayPrefixAxisItem("bottom", unit_preferences_provider=self._unit_preferences),
+                "left": DisplayPrefixAxisItem("left", unit_preferences_provider=self._unit_preferences),
+            },
+        )
         self.vib_plot.setObjectName("VibrationPreviewPlot")
         self.vib_plot.setMinimumWidth(340)
         style_plot_area(self.vib_plot)

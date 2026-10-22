@@ -26,9 +26,10 @@ class HeldTabCacheWrites:
    . Nothing reaches the disk before that.
 
     Any curve of a tab can be held -- the base curve, a spectrogram, a
-    dropped channel -- under a `key` the caller picks for "this curve of this
-    tab": a newer result under the same key (a Refresh) replaces the older
-    one, so only the latest is ever written. Closing a tab drops its curves.
+    dropped channel -- under its `TabCacheCurve` ("this curve of this tab"),
+    the key its file name is stored under too: a newer result under the same
+    key (a Refresh) replaces the older one, so only the latest is ever
+    written. Closing a tab drops its curves.
     """
 
     def __init__(self):

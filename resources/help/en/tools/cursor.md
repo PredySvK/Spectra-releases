@@ -25,7 +25,7 @@ On curve graphs, the Cursor snaps to the nearest **real sample** of the nearest 
 | **Z** | the amplitude under the mouse on a spectrogram, in the displayed unit and colour scale |
 | **Amplitude** | **RMS** or **Peak** ([Amplitude format](topic:shared/amplitude_format)), where the curve has one |
 
-Numbers use 4 significant digits; very small (below 0.001) or large (from 100 000) values switch to scientific notation, and dB values show one decimal.
+Numbers follow the Display prefix and decimals set in Settings → Units. With Auto decimals they use 4 significant digits and are written in scientific notation only when the prefix is Scientific; a number without a Units row (such as a PSD value or a metadata field) switches to scientific notation below 0.001 or from 100 000. dB values show one decimal.
 
 Only curves you currently see are considered: curves hidden by the [Trace filter](topic:filtering/intro) or by the X domain of the graph are never picked, and neither are the [Band RMS](topic:tools/band_rms) Cursors.
 
@@ -45,9 +45,9 @@ The crosshair lines track the mouse continuously and disappear when the mouse le
 
 ## Highlight
 
-**Highlight** is its own switch in the **Cursors** group, independent of the Cursor. While it is on, the curve under the mouse (the same nearest curve rule as the Cursor, within about 10 pixels) is drawn thicker and every other curve is dimmed to about 25 %. Turn it on with the **Highlight** button or press **H** while a graph has focus.
+**Highlight** is its own switch in the **Cursors** group, independent of the Cursor. While it is on, the curve under the mouse (the same nearest curve rule as the Cursor, within about 10 pixels) is drawn thicker and every other curve is dimmed to about 25 %. The legend follows: the highlighted curve's row shows a thicker line, the other rows are dimmed the same way (at 0 % they disappear but keep their place). Turn it on with the **Highlight** button or press **H** while a graph has focus.
 
-All curves return to normal when the mouse leaves the graph, moves away from every curve, a mouse button is pressed, the graph is redrawn, or Highlight is switched off.
+All curves and the legend return to normal when the mouse leaves the graph, moves away from every curve, a mouse button is pressed, the graph is redrawn, or Highlight is switched off.
 
 ## Pin
 
@@ -55,7 +55,7 @@ All curves return to normal when the mouse leaves the graph, moves away from eve
 
 ## Cursor Settings
 
-Click **Cursor Settings…** in the **Cursors** group to choose what the box shows. Tick a field to show it; its **Priority** (arrows or a typed number) is its line, 1 on top. The **Values** section has X, Y, Z, Curve name and RMS / Peak; the metadata sections offer the fields marked **Use as Filter** in [Metadata and Filter Settings](topic:import/metadata), with the curve's own values (for example Direction, File name or an Excel field).
+Click **Cursor Settings…** in the **Cursors** group to choose what the box shows. Tick a field to show it; its **Priority** (arrows or a typed number) is its line, 1 on top. The **Values** section has X, Y, Z, Curve name and RMS / Peak; the metadata sections offer the fields with **Active Status** ticked in [Metadata and Filter Settings](topic:import/metadata), with the curve's own values (for example Direction, File name or an Excel field).
 
 One list serves curve graphs and spectrograms; a field that does not apply (Z on a curve graph, metadata on a spectrogram) is skipped. The choice is saved for **every project** and survives a restart. A metadata field the open project does not have is simply left out of the box.
 

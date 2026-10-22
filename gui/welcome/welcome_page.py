@@ -15,7 +15,7 @@ from __future__ import annotations
 import html
 import os
 from pathlib import Path
-from typing import List, Optional, Tuple, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QImage
@@ -25,9 +25,9 @@ from PySide6.QtWidgets import (
 )
 
 from core.app_metadata import APP_TITLE
-from core.jobs import job_step
 from core.recent_projects import RecentProject
 from io_modules.changelog import ChangelogEntry
+from orchestration.recent_projects import run_recent_project_check
 from view_models.recent_projects import format_when
 from gui.appearance import APP_TOKENS
 
@@ -43,10 +43,6 @@ _WELCOME_RECENT_LIMIT = 5
 _SCREENSHOT_MAX_WIDTH = 860
 
 _WELCOME_RECENT_SLOT = "welcome_page_recent_check"
-
-
-def _check_path_exists(path: str) -> Tuple[str, bool]:
-    return path, os.path.exists(path)
 
 
 # Extensions a drop is allowed to be. A folder is also accepted (durability
@@ -197,17 +193,9 @@ class WelcomePage(QWidget):
         if not shown:
             return
 
-        steps = [
-            job_step(f"Check recent project {entry.path}", _check_path_exists, entry.path)
-            for entry in shown
-        ]
-        self.job_runner.submit(
-            "Check recent projects exist",
-            steps=steps,
-            lane="interactive",
-            slot_key=_WELCOME_RECENT_SLOT,
-            quiet=True,
-            on_step=lambda payload, _idx: self._on_recent_checked(payload[0], payload[1]),
+        run_recent_project_check(
+            self.job_runner, [entry.path for entry in shown],
+            slot_key=_WELCOME_RECENT_SLOT, on_checked=self._on_recent_checked,
         )
 
     def _find_item_by_path(self, path: str) -> Optional[QListWidgetItem]:

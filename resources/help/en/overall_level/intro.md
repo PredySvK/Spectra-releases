@@ -20,8 +20,9 @@ $b_k$ is described in [Fractional bins](topic:overall_level/band), and why the s
 |---|---|
 | $F_\text{min}$ / $F_\text{max}$ | 10 Hz / Full Bandwidth (the file's Nyquist) |
 | [FFT size](topic:shared/fft_size) / [Window](topic:shared/windows) | 4096 / Hanning |
-| Tracking | RPM Tracked, Step 50 RPM, Sweep Up, Hysteresis 10 RPM |
+| Tracking | RPM Tracked, Step 50 RPM, Ramp Up |
 | Free Run (Time) step | 0.05 s |
+| Min / Max [RPM] | empty (auto: the whole run-up or run-down) |
 | [Amplitude](topic:shared/amplitude_format) | RMS |
 | Remove DC Offset | on ([Spectrum](topic:spectrum/intro)) |
 
@@ -29,11 +30,10 @@ There is no Linear / Power / PSD choice ([Amplitude format](topic:shared/amplitu
 
 ## Tracking Engine
 
-The tracking decides where the analysis blocks are centred. The rules (RPM targets, interpolation, Sweep, Hysteresis, tacho cleaning) are the same as for the Spectrogram and are written once in [Tacho tracking](topic:shared/tracking). What is specific to Overall Level:
+The tracking decides where the analysis blocks are centred. The rules (RPM targets, interpolation, Ramp, tacho cleaning) are the same as for the Spectrogram and are written once in [Tacho tracking](topic:shared/tracking). What is specific to Overall Level:
 
-- **RPM Tracked:** one point per target speed; needs a tacho channel. Step default 50 RPM.
-- **Free Run (Time):** a block every *Step* seconds from the start of the record, no tacho needed. Step default 0.05 s, minimum 0.001 s.
-- **Sweep:** Up, Down or **Any (Both)**. The Spectrogram refuses Any because it must draw one regular image; Overall Level is a curve of $(x,y)$ points, so Any works and returns the points of both directions.
+- **RPM Tracked:** one point per target speed; needs a tacho channel. Step default 50 RPM. *Min* / *Max [RPM]* narrow the run-up or run-down to a [Tracking range](topic:shared/tracking); empty is auto, all of it. This tab keeps its own range, apart from the Spectrogram and Order Tracking.
+- **Free Run (Time):** a block every *Step* seconds from the start of the record, no tacho needed. Step default 0.05 s, minimum 0.001 s. *Start* / *End [s]* narrow the record to a [Tracking range](topic:shared/tracking) in the time of the time axis; this range is kept apart from the rpm one.
 - Block centres near the start or end of the record are corrected for the zero-filled part (gain at most $\sqrt2$), so the first and last points are not read low.
 
 **See also:** [Band](topic:overall_level/band), [Tacho tracking](topic:shared/tracking), [Order Tracking](topic:order_tracking/orders) (Overall Level + Residual)

@@ -1,6 +1,7 @@
 """
 The Highlight on GraphDock: with it on, the curve under the mouse is drawn thicker and
-every other curve is dimmed (CONTEXT.md "Highlight"). Independent of the Cursor.
+every other curve is dimmed (CONTEXT.md "Highlight"); the legend rows follow -- a thicker
+sample for that curve, the other rows' sample and text dimmed alike. Independent of the Cursor.
 
 Which curve is decided in view_models.cursor (the Cursor's nearest-curve rule); this
 mixin only swaps pens on the drawn items. Pens are touched only when the highlighted
@@ -10,7 +11,7 @@ puts the original pens back.
 Runs synchronously on the GUI thread (the pen swap measured in ADR §1.150).
 """
 
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pyqtgraph as pg
 from PySide6.QtCore import QEvent, QPointF, Qt, Signal
@@ -35,6 +36,34 @@ def _set_pen(item: Any, pen: Any, visible: bool = True, on_top: bool = False) ->
     item.setZValue(1 if on_top else 0)
 
 
+def _faded(color: QColor, keep: float) -> QColor:
+    """``color`` mixed toward the plot background, ``keep`` of it left."""
+    bg = QColor(GRAPH_TOKENS.background)
+    return QColor(*(round(b + (c - b) * keep) for c, b in (
+        (color.red(), bg.red()), (color.green(), bg.green()), (color.blue(), bg.blue()))))
+
+
+class HighlightSample(pg.ItemSample):
+    """Legend sample that draws the Highlight's look of its curve while one is set.
+
+    The plain sample paints from the curve item's own pen, which the Highlight leaves
+    alone (setting it shifts the graph, #579), so the look is handed over here instead.
+    """
+
+    def __init__(self, item: Any) -> None:
+        super().__init__(item)
+        self.highlight_look: Optional[Tuple[Any, bool]] = None  # (pen, visible); None = own
+
+    def paint(self, p, *args):
+        if self.highlight_look is None or not self.item.isVisible():
+            return super().paint(p, *args)
+        pen, visible = self.highlight_look
+        if visible:  # hidden still keeps its place in the legend
+            p.setRenderHint(p.RenderHint.Antialiasing)
+            p.setPen(pen)
+            p.drawLine(0, 11, 20, 11)
+
+
 class HighlightMixin:
     """Hover Highlight, mixed into GraphDock."""
 
@@ -57,6 +86,7 @@ class HighlightMixin:
         self._highlight_items.append((trace, item, pen))
         if self._highlighted is not None:  # a curve appended while highlighting joins in
             _set_pen(item, *self._highlight_look(trace, pen, self._highlighted))
+            self._paint_legend(self._highlighted)
 
     def forget_highlight_items(self) -> None:
         """The items were just destroyed by a redraw -- nothing left to restore."""
@@ -78,6 +108,7 @@ class HighlightMixin:
         self._highlighted = None
         for _, item, pen in self._highlight_items:
             _set_pen(item, pen)
+        self._paint_legend(None)
 
     def _highlight_look(self, trace: Trace, pen: Any, target: Trace) -> Tuple[Any, bool, bool]:
         """(pen, visible, on top) for a curve while ``target`` is highlighted.
@@ -90,17 +121,50 @@ class HighlightMixin:
         if trace is target:
             changed.setWidthF(pen.widthF() + HIGHLIGHT_EXTRA_WIDTH)
             return changed, True, True
-        percent = getattr(self.app_context, "highlight_other_opacity", None)
-        keep = HIGHLIGHT_DIM_ALPHA if percent is None else percent / 100
-        color, bg = changed.color(), QColor(GRAPH_TOKENS.background)
-        changed.setColor(QColor(*(round(b + (c - b) * keep) for c, b in (
-            (color.red(), bg.red()), (color.green(), bg.green()), (color.blue(), bg.blue())))))
+        keep = self._highlight_keep()
+        changed.setColor(_faded(changed.color(), keep))
         return changed, keep > 0, False
+
+    def _highlight_keep(self) -> float:
+        """How much of their own colour the other curves keep (the Settings percent)."""
+        percent = getattr(self.app_context, "highlight_other_opacity", None)
+        return HIGHLIGHT_DIM_ALPHA if percent is None else percent / 100
 
     def _apply_highlight(self, target: Trace) -> None:
         self._highlighted = target
         for trace, item, pen in self._highlight_items:
             _set_pen(item, *self._highlight_look(trace, pen, target))
+        self._paint_legend(target)
+
+    def _paint_legend(self, target: Optional[Trace]) -> None:
+        """Legend rows in the curves' look while ``target`` is highlighted; own look for None.
+
+        Text keeps its weight, so the legend never changes size; a row hidden at 0 %
+        keeps its place (opacity, not visibility).
+        """
+        legend = self.plot_widget.plotItem.legend
+        if legend is None or not legend.items:  # no legend above the curve limit
+            return
+        drawn: Dict[int, Tuple[Trace, Any]] = {
+            id(item): (trace, pen) for trace, item, pen in self._highlight_items}
+        text_color = legend.opts["labelTextColor"]
+        keep = self._highlight_keep()
+        for sample, label in legend.items:
+            entry = drawn.get(id(sample.item))
+            if entry is None or not isinstance(sample, HighlightSample):
+                continue
+            trace, pen = entry
+            if target is None:
+                sample.highlight_look, color, opacity = None, text_color, 1.0
+            else:
+                pen, visible, _ = self._highlight_look(trace, pen, target)
+                sample.highlight_look = (pen, visible)
+                dim = trace is not target
+                color = _faded(pg.mkColor(text_color), keep) if dim else text_color
+                opacity = 0.0 if dim and not visible else 1.0
+            label.setText(label.text, color=color)
+            label.setOpacity(opacity)
+            sample.update()
 
     def eventFilter(self, obj, event):
         # The Cursor installed the filter on the viewport; this only adds the restore.

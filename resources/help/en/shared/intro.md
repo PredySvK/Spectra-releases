@@ -7,7 +7,7 @@
 | FFT size $N$ | [FFT size](topic:shared/fft_size) | 4096 |
 | Window | [Windows](topic:shared/windows) | Hanning |
 | Format and amplitude | [Amplitude format](topic:shared/amplitude_format) | Linear, RMS |
-| Step, sweep, hysteresis | [Tacho tracking](topic:shared/tracking) | 50 RPM, Up, 10 RPM |
+| Step, ramp | [Tacho tracking](topic:shared/tracking) | 50 RPM, Up |
 | Remove DC Offset | [Remove DC Offset](topic:shared/remove_dc) | on |
 
 A result is stored as **energy per bin** $P_\text{canon}$ (squared unit, for example g²). Linear, Power, PSD, RMS and Peak are [views](topic:shared/amplitude_format) computed from it when the result is shown, so switching them never recomputes the FFT.

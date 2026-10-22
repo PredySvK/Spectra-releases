@@ -19,9 +19,9 @@ through an edit here rather than silently dropped.
 
 Its own file, not more lines in workflow_view.py, for the same reason
 `BlockParamForm` is: phase 8's canvas reuses it in a block's settings dialog.
-The channel-type vocabulary is `SAVE_CHANNEL_TYPE_OPTIONS` from the ribbon's
-save section -- the same dictionary, so the tree and the ribbon cannot disagree
-on what "Acceleration" filters to. The channel picker is the shared
+The channel-type vocabulary is `SAVE_CHANNEL_TYPE_OPTIONS` from
+`view_models.batch` -- the same dictionary the ribbon's dialog uses, so the
+tree and the ribbon cannot disagree on what "Acceleration" filters to. The channel picker is the shared
 `ChannelSelectionDialog`.
 
 All internal documentation strings and variable labels are standardly written
@@ -37,8 +37,7 @@ from PySide6.QtWidgets import (
 from core.workflow_graph import SaveSpec
 from gui.appearance import APP_TOKENS
 from gui.dialogs.channel_selection_dialog import ChannelSelectionDialog
-from gui.ribbon.save_section import SAVE_CHANNEL_TYPE_OPTIONS
-from io_modules.result_cache.cache_naming import sanitize_result_set_label
+from view_models.batch import SAVE_CHANNEL_TYPE_OPTIONS, resolve_channel_type_label, resolve_channel_types
 from view_models.result_sets import build_label_preview
 
 _ANY_TYPE = "Any type"
@@ -53,19 +52,13 @@ def _type_label_for(channel_types) -> str:
     """The combo label whose channel-type set matches `channel_types`. An
     unrecognised combination falls back to "Any type" -- a v1 limitation, since
     the combo only offers the three ribbon presets."""
-    wanted = set(channel_types)
-    if not wanted:
-        return _ANY_TYPE
-    for label, types in SAVE_CHANNEL_TYPE_OPTIONS.items():
-        if set(types) == wanted:
-            return label
-    return _ANY_TYPE
+    return resolve_channel_type_label(set(channel_types)) or _ANY_TYPE
 
 
 def _channel_types_for(label: str) -> tuple:
     if label == _ANY_TYPE:
         return ()
-    return tuple(sorted(SAVE_CHANNEL_TYPE_OPTIONS[label]))
+    return tuple(sorted(resolve_channel_types(label)))
 
 
 class SaveSpecEditor(QGroupBox):
@@ -194,7 +187,7 @@ class SaveSpecEditor(QGroupBox):
         channel_types = (self._carried_types if type_label == _ANY_TYPE and self._carried_types
                          else _channel_types_for(type_label))
         return SaveSpec(
-            label=sanitize_result_set_label(self.edit_label.text()),
+            label=build_label_preview(self.edit_label.text()).clean,
             all_channels=all_channels,
             channel_identities=identities,
             channel_types=channel_types,

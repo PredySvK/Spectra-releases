@@ -185,8 +185,7 @@ def resolve_schema_field(defaults: dict, stored: Optional[dict] = None) -> dict:
     manual = bool(stored.get("kind_is_manual", False))
     entry = {
         key: stored.get(key, defaults.get(key, fallback))
-        for key, fallback in (("custom_label", ""), ("is_active", True),
-                              ("usable_as_filter", True))
+        for key, fallback in (("custom_label", ""), ("is_active", False))
     }
     entry.update(
         layer=defaults.get("layer", stored.get("layer", "excel")),
@@ -306,8 +305,8 @@ def generate_baseline_schema_master(indexed_runs: List[MeasurementRunIndex]) -> 
                     raw_vals = excel_values.get(key, [])
                     inferred_kind = infer_field_kind(raw_vals)
                     field_def: Dict[str, Any] = {
-                        "custom_label": str(key), "is_active": True,
-                        "usable_as_filter": True, "layer": "excel",
+                        "custom_label": str(key),
+                        "is_active": True, "layer": "excel",
                         "kind": inferred_kind,
                     }
                     if inferred_kind == "date":
@@ -343,13 +342,14 @@ def generate_baseline_schema_master(indexed_runs: List[MeasurementRunIndex]) -> 
         # ANSYS's DP<n> file name prefix (reader_ansys).
         "design_point": ("Design point", True, "str"),
     }
-    # MASTA's Description N: as many as the scanned channels carry, off by default.
-    description_count = max(
-        (int(key.rsplit("_", 1)[1])
-         for run in indexed_runs for meta in (getattr(run, "available_channels", None) or {}).values()
-         for key in vars(meta) if re.fullmatch(r"description_\d+", key)),
-        default=0)
-    for number in range(1, description_count + 1):
+    # MASTA's Description N, off by default. The numbers are open-ended, so
+    # each is named as it is seen; whether it is offered is decided like every
+    # other Raw metadata field, when the Data Pool merges its schema.
+    description_numbers = sorted({
+        int(key.rsplit("_", 1)[1])
+        for run in indexed_runs for meta in (getattr(run, "available_channels", None) or {}).values()
+        for key in vars(meta) if re.fullmatch(r"description_\d+", key)})
+    for number in description_numbers:
         channel_expert_map[f"description_{number}"] = (f"Description {number}", False, "str")
 
     for key, (nice_label, default_active_state, kind) in channel_expert_map.items():
@@ -357,7 +357,6 @@ def generate_baseline_schema_master(indexed_runs: List[MeasurementRunIndex]) -> 
             schema[key] = resolve_schema_field({
                 "custom_label": nice_label,
                 "is_active": default_active_state,
-                "usable_as_filter": True,
                 "layer": "channel",
                 "kind": kind,
             })

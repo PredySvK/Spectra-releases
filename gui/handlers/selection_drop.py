@@ -14,6 +14,7 @@ later leaves the graph as it is.
 from PySide6.QtWidgets import QMessageBox
 
 from core.jobs import job_step
+from orchestration.channel_drop import resolve_dropped_channels
 from selection.measurement_selection import build_channel_drop_descriptors, resolve
 from selection.source_facets import all_pool_sources
 
@@ -66,9 +67,9 @@ class SelectionDropHandler:
         if len(descriptors) > CONFIRM_CHANNEL_COUNT and not self._confirm(name, len(descriptors)):
             return
         if dock is None:
-            from gui.file_explorer.actions.channel_drop import resolve_dropped_channels
             self._workspace.open_channels_tab(
-                resolve_dropped_channels(descriptors, context), what=f"Selection '{name}'")
+                resolve_dropped_channels(descriptors, context.pool.run_lookup, context.log),
+                what=f"Selection '{name}'")
         else:
             self._workspace.route_channel_drop(
                 dock, descriptors, batch_label=f"Order tracking — Selection '{name}'")

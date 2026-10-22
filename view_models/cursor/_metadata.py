@@ -4,15 +4,12 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 
-from core.filter_card_config import (
-    BUILTIN_COLUMN_LABELS, COLUMN_ANALYSIS_TYPE, COLUMN_CHANNEL, COLUMN_ORDER,
-)
-from selection.source_facets import curve_field_value, curve_range_value
-from selection.trace_filter import IDENTITY_FACET_ATTR, format_result_kind
+from core.filter_card_config import COLUMN_ANALYSIS_TYPE, COLUMN_PARAMETER_SET
+from selection.field_offer import resolve_field_label
+from selection.trace_filter import format_result_kind
+from view_models.curve_metadata import build_curve_metadata
+from view_models.display_prefix import resolve_number_format
 from view_models.plot import Trace
-from view_models.trace_filter import identity_for_trace
-
-from ._box import format_auto
 
 
 def read_curve_metadata(
@@ -23,29 +20,22 @@ def read_curve_metadata(
 
     Keys are Configure Filters column keys (built-ins and schema fields); a key
     the curve or the open project has no value for is simply absent, never "N/A".
-    Parameter set is not offered.
-    Numeric fields use the box's Auto format, dates show as stored ISO text.
+    Parameter set is not offered. Values come from the Curve metadata record
+   ; this only formats them: numbers in the box's Auto format,
+    dates as stored ISO text, Analysis type through its result-kind label.
     """
-    identity = identity_for_trace(trace, sources_by_path, result_set_labels)
+    (record,) = build_curve_metadata([trace], sources_by_path, result_set_labels or {}, schema)
     found: Dict[str, Tuple[str, str]] = {}
     for key in keys:
-        text: Optional[str] = None
-        if key == COLUMN_CHANNEL:
-            text = trace.channel_name or None
-        elif key in IDENTITY_FACET_ATTR:
-            text = getattr(identity, IDENTITY_FACET_ATTR[key])
-        elif key == COLUMN_ANALYSIS_TYPE:
-            text = format_result_kind(identity.result_kind) if identity.result_kind else None
-        elif key == COLUMN_ORDER:
-            text = None if identity.order is None else f"{identity.order:g}"
-        elif key in schema and identity.source is not None:
-            text = curve_field_value(
-                identity.source, dict(schema), key, identity.channel_identity, identity.channel_index)
-            if text is None:
-                value = curve_range_value(
-                    identity.source, dict(schema), key, identity.channel_identity, identity.channel_index)
-                text = format_auto(value) if isinstance(value, float) else value
+        value = record.get(key)
+        if value is None or key == COLUMN_PARAMETER_SET:
+            continue
+        if key == COLUMN_ANALYSIS_TYPE:
+            text = format_result_kind(value)
+        elif isinstance(value, float):
+            text = resolve_number_format("", None).format(value)
+        else:
+            text = str(value)
         if text:
-            label = BUILTIN_COLUMN_LABELS.get(key) or schema.get(key, {}).get("custom_label", key)
-            found[key] = (label, str(text))
+            found[key] = (resolve_field_label(key, schema), text)
     return found

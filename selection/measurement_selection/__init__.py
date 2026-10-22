@@ -21,6 +21,7 @@ from ._column_values import (
     build_column_values,
     build_selection_from_checks,
     resolve_checked_column_values,
+    resolve_selection_cardinalities,
     resolve_selection_facets,
 )
 from selection.measurement_selection._measurement_selection import (
@@ -44,6 +45,7 @@ __all__ = [
     "build_column_values",
     "build_selection_from_checks",
     "resolve_checked_column_values",
+    "resolve_selection_cardinalities",
     "resolve_selection_facets",
     "ChannelIdentity",
     "SaveSourceResolution",

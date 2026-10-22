@@ -215,6 +215,24 @@ def vertical_separator() -> QFrame:
     return line
 
 
+def labeled_column(rows):
+    """A vertical column of (label, widget) pairs. `label` may be a str or an
+    existing QLabel the tab keeps a reference to (for enable/disable)."""
+    column = QVBoxLayout()
+    column.setSpacing(4)
+    for label, widget in rows:
+        if isinstance(label, str):
+            label_widget = QLabel(label)
+            label_widget.setStyleSheet("color: palette(window-text); font-size: 11px;")
+        else:
+            label_widget = label
+            label_widget.setStyleSheet("color: palette(window-text); font-size: 11px;")
+        column.addWidget(label_widget)
+        column.addWidget(widget)
+        column.addSpacing(4)
+    return column
+
+
 def _field_label(text: str) -> QLabel:
     label = QLabel(text)
     label.setStyleSheet("color: palette(window-text); font-size: 11px;")

@@ -4,8 +4,8 @@
 """
 Atomic text-file writes shared by filesystem-facing io_modules.
 
-`project_store.save_project`, `cache_index.write` and
-`cache_writer.write_set_manifest` each grew their own copy of the same
+`project_store.save_project`, `_cache_index.write_cache_index` and
+`_cache_writer.write_set_manifest` each grew their own copy of the same
 tmp + flush + fsync + os.replace dance. Three copies is three places to fix
 when the sequence is wrong, and they had already drifted -- the project writer
 skipped deleting its `.tmp` after a failed write, so a failed Save Project left

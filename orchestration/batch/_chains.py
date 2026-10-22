@@ -28,13 +28,17 @@ class WorkflowChainBatch:
     batch: BatchPlan
 
 
+def _what(workflow: Workflow) -> str:
+    return f"Run workflow '{workflow.name}'"
+
+
 def plan_workflow_chains(workflow: Workflow, find_selection: Callable[[str], Optional[MeasurementSelection]], *,
                          block_id: Optional[str] = None) -> tuple[WorkflowChainPlan, ...]:
     """Plan all chains, or just the chain containing the selected block."""
     if block_id is not None:
         workflow.block(block_id)  # Reject a stale selection rather than run all.
     return tuple(
-        WorkflowChainPlan(chain, plan_workflow_run(chain, find_selection))
+        WorkflowChainPlan(chain, plan_workflow_run(chain, find_selection, what=_what(chain)))
         for chain in resolve_workflow_chains(workflow)
         if block_id is None or block_id in chain.block_ids
     )
@@ -47,10 +51,9 @@ def plan_chain_batches(chains: tuple[WorkflowChainPlan, ...], *, sources: Sequen
     batches = []
     for chain in chains:
         workflow = chain.workflow
-        what = f"Run workflow '{workflow.name}'"
+        what = _what(workflow)
         if not chain.run.runnable:
-            batch = BatchPlan(workflow.name, what, False,
-                              messages=(f"WARNING: {what} skipped -- {chain.run.message}",))
+            batch = BatchPlan(workflow.name, what, False, messages=chain.run.messages)
         else:
             assert chain.run.selection is not None
             batch = plan_batch(

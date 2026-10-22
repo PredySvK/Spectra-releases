@@ -8,7 +8,7 @@
 
 ## Kroky
 
-1. Otáčky dává kanál tacha. Triggery se kladou tam, kde protnou celé násobky *Step*, ve zvoleném směru *Sweep*: viz [Tacho tracking](topic:shared/tracking). **Order Tracking vždy sleduje otáčky**; časový režim neexistuje a kanál tacha je nutný.
+1. Otáčky dává kanál tacha. Triggery se kladou tam, kde protnou celé násobky *Step*, ve zvoleném směru *Ramp*, a pokud ho zadáte, uvnitř rozsahu *Min* / *Max [RPM]* ([Tracking range](topic:shared/tracking)): viz [Tacho tracking](topic:shared/tracking). **Order Tracking vždy sleduje otáčky**; časový režim neexistuje a kanál tacha je nutný.
 2. Blok $N$ vzorků (velikost FFT) se vyřízne **vystředěný na každý trigger** a okénkuje. Blok, který přesahuje začátek nebo konec záznamu, se doplní nulami a opraví o chybějící energii (zisk nejvýše $\sqrt2$).
 3. Každý blok se stane [energií po binech](topic:shared/amplitude_format) $P_\text{canon}[k]$, tedy stejnými čísly, jaká drží sloupec [Spektrogramu](topic:spectrogram/intro) se stejným nastavením.
 4. Pro každý řád se sečte energie pásma kolem $n\cdot\text{RPM}/60$ ([Extrakce řádů](topic:order_tracking/orders)). Hodnota křivky je její odmocnina, amplituda **Linear RMS**.
@@ -22,7 +22,8 @@
 | Target Orders | 1 (seznam oddělený čárkami) |
 | Order Width $\Delta O$ | 0,2 (rozsah 0,01–2) |
 | [Velikost FFT](topic:shared/fft_size) / [Okno](topic:shared/windows) | 4096 / Hanning |
-| Step / Sweep / Hystereze | 50 RPM / Up / 10 RPM |
+| Step / Ramp | 50 RPM / Up |
+| Min / Max [RPM] | prázdné (auto: celý rozjezd nebo dojezd) |
 | Amplituda | RMS |
 | Remove DC Offset | zapnuto (tacho se nikdy neupravuje) |
 | Overall Level + Residual | vypnuto |

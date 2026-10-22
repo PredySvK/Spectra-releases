@@ -3,8 +3,7 @@
 import dataclasses
 from typing import Iterable, Tuple
 
-from core.block_kinds import KIND_ORDER_CUT
-from core.models import resolve_channel_block_kind
+from core.models import READING_IMPORTED_RESULT, resolve_channel_reading
 from view_models.analysis_kinds._analysis_kind import ANALYSIS_ORDERS, resolve_analysis_kind
 from view_models.analysis_kinds._analysis_mode import ANALYSIS_MODE_ACC_ORDER_TRACKING, AnalysisMode
 
@@ -39,7 +38,7 @@ def resolve_open_plan(rows: Iterable[tuple], analysis_mode: AnalysisMode) -> Ope
     a fact about files, found by the background worker.
     """
     rows = list(rows)
-    imported = [resolve_channel_block_kind(meta) == KIND_ORDER_CUT for _, meta, _ in rows]
+    imported = [resolve_channel_reading(meta) == READING_IMPORTED_RESULT for _, meta, _ in rows]
     skipped = []
     if analysis_mode.name != ANALYSIS_MODE_ACC_ORDER_TRACKING and any(imported) and not all(imported):
         skipped = [(row, SKIP_IMPORTED) for row, is_imported in zip(rows, imported) if is_imported]

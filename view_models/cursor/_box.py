@@ -7,7 +7,9 @@ from typing import List, Mapping, Tuple
 from core.cursor_config import (
     CursorConfig, FIELD_AMPLITUDE, FIELD_CURVE, FIELD_X, FIELD_Y, FIELD_Z,
 )
-from view_models.plot import format_display_unit
+from core.units import UnitPreferences
+from view_models.display_prefix import resolve_number_format
+from view_models.plot import format_display_unit, resolve_ordinate_quantity
 
 from ._hit_test import CursorPoint
 from ._spectrogram import SpectrogramPoint
@@ -15,39 +17,37 @@ from ._spectrogram import SpectrogramPoint
 _GAP_PX = 14
 
 
-def format_auto(value: float, *, decibel: bool = False) -> str:
-    """4 significant digits; scientific below 1e-3 or from 1e5 (0 stays plain); dB 1 decimal."""
-    if decibel:
-        return f"{value:.1f}"
-    if value != 0 and (abs(value) < 1e-3 or abs(value) >= 1e5):
-        return f"{value:.3e}"
-    return f"{value:.4g}"
-
-
 def build_cursor_box_lines(
     point: CursorPoint | SpectrogramPoint,
     config: CursorConfig,
     *,
     x_unit: str = "",
+    x_quantity: str = "",
     two_axes: bool = False,
     metadata: Mapping[str, Tuple[str, str]] = {},
+    prefs: UnitPreferences | None = None,
 ) -> List[Tuple[str, str]]:
     """(label, text) lines in config order; fields this point cannot answer are skipped.
 
+    ``x_quantity`` is the graph's X domain; with the curve's own Y quantity it
+    picks the Display prefix row for a Hz value (speed or frequency).
     ``metadata`` is the curve's ``{key: (label, text)}`` (read_curve_metadata); a
     config key found neither there nor among the values is left out silently.
     """
+    def text(value: float, unit: str, *, quantity: str = "", db: bool = False) -> str:
+        return resolve_number_format(unit, prefs, quantity=quantity, db=db).format_with_unit(value)
+
     if isinstance(point, SpectrogramPoint):
         decibel = "dB" in (point.color_scale or "") or point.z_unit == "dB"
         x_u = x_unit or point.x_unit
         lines: List[Tuple[str, str]] = []
         for key in config.fields:
             if key == FIELD_X:
-                lines.append(("X", f"{format_auto(point.x)} {x_u}".strip()))
+                lines.append(("X", text(point.x, x_u, quantity=point.x_quantity)))
             elif key == FIELD_Y:
-                lines.append(("Y", f"{format_auto(point.y)} {point.y_unit}".strip()))
+                lines.append(("Y", text(point.y, point.y_unit, quantity="frequency")))
             elif key == FIELD_Z:
-                lines.append(("Z", f"{format_auto(point.z, decibel=decibel)} {point.z_unit}".strip()))
+                lines.append(("Z", text(point.z, point.z_unit, db=decibel)))
             elif key in metadata:
                 lines.append(metadata[key])
         return lines
@@ -55,14 +55,14 @@ def build_cursor_box_lines(
     trace = point.trace
     unit = format_display_unit(trace.unit)
     decibel = unit == "dB"
-    amplitude = (trace.compute_spec or {}).get("amplitude_mode", "")
+    amplitude = trace.amplitude_mode
     lines = []
     for key in config.fields:
         if key == FIELD_X:
-            lines.append(("X", f"{format_auto(point.x)} {x_unit}".strip()))
+            lines.append(("X", text(point.x, x_unit, quantity=x_quantity)))
         elif key == FIELD_Y:
             label = "Y (Secondary)" if two_axes and point.secondary else "Y"
-            lines.append((label, f"{format_auto(point.y, decibel=decibel)} {unit}".strip()))
+            lines.append((label, text(point.y, unit, quantity=resolve_ordinate_quantity(trace), db=decibel)))
         elif key == FIELD_CURVE and trace.label:
             lines.append(("Curve", trace.label))
         elif key == FIELD_AMPLITUDE and amplitude:

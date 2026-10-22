@@ -30,7 +30,7 @@ Nová karta má **jediný sloupec: Channel**. Vše ostatní přidáte přes **&#
 | Excel metadata | pole z tabulky metadat ([Metadata z Excelu](topic:import/metadata)) |
 | Calculated | Analysis type (spektrum, order cut, ...), Order, Parameter set |
 
-Pole Raw a Excel se tam objeví, až u nich v *[Metadata and Filter Settings](topic:import/metadata)* zaškrtnete **Use as Filter**. Každý řádek ukazuje, kolik různých hodnot sloupec právě má, *(N)*; sloupec s jednou hodnotou nebo s jinou hodnotou u každého měření je zešedlý („cannot narrow anything down"), ale vybrat jde.
+Pole Raw a Excel se tam objeví, jen pokud mají v *[Metadata and Filter Settings](topic:import/metadata)* zaškrtnutý **Active Status**. Každý řádek ukazuje, kolik různých hodnot sloupec právě má, *(N)*; sloupec s jednou hodnotou nebo s jinou hodnotou u každého měření je zešedlý („cannot narrow anything down"), ale vybrat jde.
 
 V *Configure Filters* dále volíte **pozici** každého sloupce, jak se kreslí, na kolik **sloupců vedle sebe** karta běží (1 až 4) a **Default**. Sloupec s *Default* se přidá na kartu každého nového grafu navíc ke Channel. **Auto apply** ukazuje každou změnu na grafu v popředí už při úpravě; Cancel kartu vrátí.
 

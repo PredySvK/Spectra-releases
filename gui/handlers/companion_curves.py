@@ -30,14 +30,7 @@ class CompanionCurvesHandler(QObject):
         session = getattr(self.app_context, "project_session", None)
         if session is None or not session.channel_pairs:
             return
-        current = _curve_identities(dock)
-        previous = getattr(dock, "_companion_seen", set())
-        # Partners never look for partners of their own (#509); a removed one
-        # is forgotten, so dropping it again by hand counts as the user's.
-        added = getattr(dock, "_companion_added", set()) - (previous - current)
-        dock._companion_added = added
-        fresh = current - previous - added
-        dock._companion_seen = current
+        fresh = dock.companion_curves.plan_fresh(_curve_identities(dock))
         if not fresh:
             return
 
@@ -56,9 +49,9 @@ class CompanionCurvesHandler(QObject):
                 if order not in descriptors[key]["orders_to_extract"]:
                     descriptors[key]["orders_to_extract"].append(order)
             if descriptors:
-                dock._companion_added = getattr(dock, "_companion_added", set()) | {
+                dock.companion_curves.record_added(
                     (*build_channel_key(d["file_path"], d["channel_index"]), order)
-                    for d in descriptors.values() for order in d["orders_to_extract"]}
+                    for d in descriptors.values() for order in d["orders_to_extract"])
                 self.route_channel_drop(dock, list(descriptors.values()))
 
         self.dock_tasks.run(

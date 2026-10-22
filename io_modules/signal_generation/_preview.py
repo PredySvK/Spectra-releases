@@ -7,7 +7,7 @@ vibration arrays for interactive UI plotting without disk I/O or Qt dependencies
 
 import numpy as np
 
-from io_modules.signal_generation.signal_generation_engine import (
+from io_modules.signal_generation._signal_generation_engine import (
     compose_vibration_signal,
     generate_rpm_profile,
     generate_tacho_pulse,
@@ -15,6 +15,9 @@ from io_modules.signal_generation.signal_generation_engine import (
 )
 
 PREVIEW_NOISE_SEED = 0
+# Grid the RPM profile is sampled on to read the speed at one instant: the profile
+# shape (ramps, plateaus, direction) is only defined over the whole record.
+_START_RPM_GRID_POINTS = 1000
 
 
 def compute_preview_arrays(params: dict, active_components: list) -> dict:
@@ -61,3 +64,18 @@ def compute_preview_arrays(params: dict, active_components: list) -> dict:
         result["vib"] = vib[idx_start:idx_end]
 
     return result
+
+
+def compute_preview_start_rpm(params: dict, start_time: float) -> float:
+    """
+    The RPM of the generated profile at `start_time`, whatever its shape
+    (ramp direction, plateaus). Sampled on a coarse grid over the whole
+    duration and interpolated. No Qt, no I/O.
+    """
+    t = np.linspace(0, params["duration"], _START_RPM_GRID_POINTS)
+    rpm = generate_rpm_profile(
+        t, params["rpm_start"], params["rpm_stop"],
+        params["direction"], params["plateaus_on"],
+        params["plateaus"], params["plateau_ratio"],
+    )
+    return float(np.interp(start_time, t, rpm))

@@ -27,11 +27,13 @@ from core.jobs import job_step
 from core.measurement_selection import MeasurementSelection
 from selection.measurement_selection import (
     SELECTION_EXCLUDED_COLUMNS, WHOLE_POOL_SELECTION_NAME, SelectionResolution,
-    build_checks_from_selection, build_selection_from_checks, resolve, resolve_selection_facets,
+    build_checks_from_selection, build_selection_from_checks, resolve, resolve_selection_cardinalities,
+    resolve_selection_facets,
 )
 from selection.source_facets import all_pool_sources
 from selection.trace_filter import (
-    build_column_for_key, resolve_card, resolve_panel_facets, write_checks,
+    build_column_for_key, resolve_card, resolve_card_cardinalities, resolve_panel_facets,
+    write_checks,
 )
 from session.trace_filter import FilterSelectionStore
 
@@ -132,8 +134,12 @@ class MeasurementSelectionDialog(QDialog):
         from gui.dialogs.filter_field_selection_dialog import FilterFieldSelectionDialog
 
         card = self._card
+        counts = resolve_card_cardinalities(
+            "global", self._schema, project=self._session.project, pool_sources=self._sources,
+            focused_identities=[], open_dock_identities=[])
         dialog = FilterFieldSelectionDialog(
-            self._schema, self._session.project, self, settings=self._settings, card=card,
+            self._schema, self, settings=self._settings, card=card,
+            cardinalities=resolve_selection_cardinalities(counts, self._sources),
             on_live_change=self._populate, excluded_columns=SELECTION_EXCLUDED_COLUMNS)
         try:
             updated = dialog.result_card() if dialog.exec() else card

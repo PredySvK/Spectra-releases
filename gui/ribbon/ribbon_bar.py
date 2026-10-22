@@ -6,7 +6,8 @@ from gui.ribbon.ribbon_widgets import RIBBON_TOOLTIP_QSS
 from gui.ribbon.tab_project import TabProject
 from gui.ribbon.tab_acc_spectrum import TabAccSpectrum
 from view_models.analysis_kinds import (
-    ANALYSIS_MODE_ACC_ORDER_TRACKING, ANALYSIS_MODE_ACC_OVERALL_LEVEL, ANALYSIS_MODE_ACC_SPECTROGRAM, ANALYSIS_MODE_ACC_SPECTRUM, ANALYSIS_MODE_PROJECT,
+    ANALYSIS_MODES, ANALYSIS_MODE_ACC_ORDER_TRACKING, ANALYSIS_MODE_ACC_OVERALL_LEVEL, ANALYSIS_MODE_ACC_SPECTROGRAM,
+    ANALYSIS_MODE_ACC_SPECTRUM, ANALYSIS_MODE_PROJECT, ANALYSIS_MODE_TOOLS, ANALYSIS_MODE_WORKFLOW,
 )
 from gui.ribbon.tab_acc_spectrogram import TabAccSpectrogram
 from gui.ribbon.tab_acc_order_tracking import TabAccOrderTracking
@@ -39,36 +40,36 @@ class RibbonBar(QTabWidget):
         self.tab_workflow = TabWorkflow(self)
         self.tab_tools = TabTools(self)
 
-        self.addTab(self.tab_project, "📁 Project")
-        self.addTab(self.tab_acc_overall_level, "📶 Overall Level")
-        self.addTab(self.tab_acc_order_tracking, "⚡ Order Tracking")
-        self.addTab(self.tab_acc_spectrogram, "🎛️ Spectrogram 2D")
-        self.addTab(self.tab_acc_spectrum, "📈 Spectrum 1D")
-        self.addTab(self.tab_workflow, "🧩 Workflow")
-        self.addTab(self.tab_tools, "🔧 Tools")
+        tabs = {
+            ANALYSIS_MODE_PROJECT: (self.tab_project, "📁 Project"),
+            ANALYSIS_MODE_ACC_OVERALL_LEVEL: (self.tab_acc_overall_level, "📶 Overall Level"),
+            ANALYSIS_MODE_ACC_ORDER_TRACKING: (self.tab_acc_order_tracking, "⚡ Order Tracking"),
+            ANALYSIS_MODE_ACC_SPECTROGRAM: (self.tab_acc_spectrogram, "🎛️ Spectrogram 2D"),
+            ANALYSIS_MODE_ACC_SPECTRUM: (self.tab_acc_spectrum, "📈 Spectrum 1D"),
+            ANALYSIS_MODE_WORKFLOW: (self.tab_workflow, "🧩 Workflow"),
+            ANALYSIS_MODE_TOOLS: (self.tab_tools, "🔧 Tools"),
+        }
+        # Tab order is the register's order, then the two non-analysis tabs;
+        # the tab index -> mode lookup below reads this same list.
+        self._tab_modes = [mode.name for mode in ANALYSIS_MODES] + [ANALYSIS_MODE_WORKFLOW, ANALYSIS_MODE_TOOLS]
+        for mode in self._tab_modes:
+            self.addTab(*tabs[mode])
 
         self.app_context.current_analysis_mode = ANALYSIS_MODE_PROJECT
         self.currentChanged.connect(self.handle_ribbon_tab_changed_routing)
 
     def handle_ribbon_tab_changed_routing(self, active_tab_index: int):
         tab_label = self.tabText(active_tab_index)
-        mode_mapping = {
-            0: ANALYSIS_MODE_PROJECT,
-            1: ANALYSIS_MODE_ACC_OVERALL_LEVEL,
-            2: ANALYSIS_MODE_ACC_ORDER_TRACKING,
-            3: ANALYSIS_MODE_ACC_SPECTROGRAM,
-            4: ANALYSIS_MODE_ACC_SPECTRUM,
-            5: "workflow",
-            6: "tools",
-        }
-        self.app_context.current_analysis_mode = mode_mapping.get(active_tab_index, ANALYSIS_MODE_PROJECT)
+        in_range = 0 <= active_tab_index < len(self._tab_modes)
+        self.app_context.current_analysis_mode = (
+            self._tab_modes[active_tab_index] if in_range else ANALYSIS_MODE_PROJECT)
         self.app_context.log(f"WORKSPACE: Mode shifted to [{self.app_context.current_analysis_mode.upper()}] via '{tab_label}'.")
 
         # The Workflow tab swaps sub_area's centre from the analysis docks to the
         # WorkflowView; every other tab swaps it back.
         show_workflow = getattr(self.parent(), "show_workflow_view", None)
         if callable(show_workflow):
-            show_workflow(self.app_context.current_analysis_mode == "workflow")
+            show_workflow(self.app_context.current_analysis_mode == ANALYSIS_MODE_WORKFLOW)
 
 
 

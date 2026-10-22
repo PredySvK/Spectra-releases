@@ -15,6 +15,8 @@ from core.data_block import NVHDataBlock
 from core.models import MeasurementRunIndex, ChannelMetadata
 from gui.workspace.channel_drop_target import ChannelDropTargetMixin
 from gui.workspace.cursor import SpectrogramCursorMixin
+from core.units import UnitPreferences
+from gui.workspace.display_prefix_axis import DisplayPrefixAxisItem
 from gui.workspace.plot_area import style_plot_area
 from orchestration.channel_drop import PendingDrops
 from view_models.analysis_kinds import ANALYSIS_SPECTROGRAM
@@ -48,22 +50,30 @@ class SpectrogramDock(ChannelDropTargetMixin, SpectrogramCursorMixin, QWidget):
         self.setAcceptDrops(True)
         self.init_ui()
 
+    def _unit_preferences(self) -> UnitPreferences:
+        if self.app_context is not None and hasattr(self.app_context, "unit_preferences"):
+            return self.app_context.unit_preferences()
+        return UnitPreferences()
+
+    @property
+    def color_bar_axis(self) -> DisplayPrefixAxisItem:
+        return self.lut_widget.item.axis
+
     def init_ui(self):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(2)
 
-        self.plot_widget = pg.PlotWidget()
+        self.plot_widget = pg.PlotWidget(
+            axisItems={
+                "bottom": DisplayPrefixAxisItem("bottom", unit_preferences_provider=self._unit_preferences),
+                "left": DisplayPrefixAxisItem("left", unit_preferences_provider=self._unit_preferences),
+            }
+        )
         style_plot_area(self.plot_widget)
-
-        bottom_axis = self.plot_widget.getAxis('bottom')
-        bottom_axis.enableAutoSIPrefix(False)
-        bottom_axis.autoSIPrefix = False
 
         left_axis = self.plot_widget.getAxis('left')
         left_axis.setLabel('Frequency', 'Hz')
-        left_axis.enableAutoSIPrefix(False)
-        left_axis.autoSIPrefix = False
 
         self.plot_widget.getViewBox().disableAutoRange()
         layout.addWidget(self.plot_widget)
@@ -74,6 +84,16 @@ class SpectrogramDock(ChannelDropTargetMixin, SpectrogramCursorMixin, QWidget):
         self.lut_widget = pg.HistogramLUTWidget()
         self.lut_widget.setImageItem(self.image_item)
         self.lut_widget.setFixedWidth(100)
+        item = self.lut_widget.item
+        item.layout.removeItem(item.axis)
+        item.axis = DisplayPrefixAxisItem(
+            'left',
+            unit_preferences_provider=self._unit_preferences,
+            linkView=item.vb,
+            maxTickLength=-10,
+            parent=item,
+        )
+        item.layout.addItem(item.axis, 0, 0)
         layout.addWidget(self.lut_widget)
 
         pos = np.array([0.0, 0.11, 0.34, 0.65, 0.89, 1.0])
@@ -132,11 +152,19 @@ class SpectrogramDock(ChannelDropTargetMixin, SpectrogramCursorMixin, QWidget):
         frequency_axis = resolve_x_axis_display("frequency", x_axis_unit)
         bottom_axis = resolve_x_axis_display(model.z_quantity, x_axis_unit)
         z_unit = bottom_axis.unit if bottom_axis.scale != 1.0 else model.z_unit
+        self.plot_widget.getAxis('left').set_quantity("frequency")
+        self.plot_widget.getAxis('bottom').set_quantity(model.z_quantity)
         self.plot_widget.getAxis('left').setLabel(frequency_axis.label, frequency_axis.unit)
+        color_scale = getattr(model, "color_scale", "") or ""
+        if "dB" in color_scale:
+            mag_unit = "dB"
+        else:
+            block = getattr(model, "block", None)
+            mag_unit = getattr(model, "value_unit", "") or getattr(block, "value_unit", "")
         with benchmark_step("draw"):
             self.render_spectrogram_matrix(
                 model.freqs * frequency_axis.scale, model.zvals * bottom_axis.scale, model.image,
-                z_label=model.z_label, z_unit=z_unit,
+                z_label=model.z_label, z_unit=z_unit, mag_unit=mag_unit,
             )
         self.plot_widget.setTitle(model.title)
 
@@ -145,6 +173,16 @@ class SpectrogramDock(ChannelDropTargetMixin, SpectrogramCursorMixin, QWidget):
         model = self.spectrogram.model
         if model is not None:
             self._on_spectrogram_changed(model)
+
+    def apply_unit_preferences(self) -> None:
+        """Update axes and colour bar display prefixes when unit preferences change."""
+        model = self.spectrogram.model
+        if model is not None:
+            self._on_spectrogram_changed(model)
+        else:
+            self.plot_widget.getAxis('left').update_display_prefix()
+            self.plot_widget.getAxis('bottom').update_display_prefix()
+            self.color_bar_axis.update_display_prefix()
 
     def rebuild_with_display_settings(
         self,
@@ -165,7 +203,7 @@ class SpectrogramDock(ChannelDropTargetMixin, SpectrogramCursorMixin, QWidget):
             decibel_scale=decibel_scale,
         )
 
-    def render_spectrogram_matrix(self, frequencies, times, magnitude_matrix, z_label="Time", z_unit="s"):
+    def render_spectrogram_matrix(self, frequencies, times, magnitude_matrix, z_label="Time", z_unit="s", mag_unit: str = ""):
         if len(times) > 1 and times[0] > times[-1]:
             times = times[::-1]
             magnitude_matrix = magnitude_matrix[:, ::-1]
@@ -187,11 +225,9 @@ class SpectrogramDock(ChannelDropTargetMixin, SpectrogramCursorMixin, QWidget):
         if f_max <= f_min: f_max = f_min + 1.0
 
         bottom_axis = self.plot_widget.getAxis('bottom')
-        bottom_axis.setLabel(f"{z_label} [{z_unit}]", units=None)
-        bottom_axis.enableAutoSIPrefix(False)
-        bottom_axis.autoSIPrefix = False
-        bottom_axis.setScale(1.0)
+        bottom_axis.setLabel(text=z_label, units=z_unit)
 
+        self.color_bar_axis.setLabel(units=mag_unit)
         self.lut_widget.setLevels(float(magnitude_matrix.min()), float(magnitude_matrix.max()))
         self.plot_widget.getViewBox().disableAutoRange()
         self.plot_widget.setXRange(t_min, t_max, padding=0.0)

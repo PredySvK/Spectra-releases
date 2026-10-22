@@ -43,6 +43,7 @@ from dataclasses import MISSING, asdict, dataclass, fields, replace
 from typing import Any, Callable, Dict, List, Mapping, MutableMapping, Optional, Set, Tuple, Union
 
 from core.block_kinds import KIND_OVERALL_LEVEL, KIND_TIME_RESPONSE, spec_for as kind_spec_for
+from core.curve_recipe import build_block_with_workflow_stamp, build_curve_recipe
 from core.data_block import NVHDataBlock
 from core.dsp_configs import (
     DSP_ALGORITHM_VERSIONS, OrderTrackingConfig, OverallLevelConfig, SpectrogramConfig,
@@ -71,6 +72,10 @@ PRIMARY_PORT = ""
 # The input block id `workflow_from_configs` builds. A hand-authored graph (phase
 # 7C) may name its input block anything; the ribbon fast path uses this one.
 INPUT_BLOCK_ID = "input"
+
+# The refusal text for a graph that has blocks but no input block; shared with
+# `workflow_readiness`, which reports the same fact as a readiness issue.
+NO_INPUT_BLOCK_MESSAGE = "A workflow needs at least one input block."
 
 
 @dataclass(frozen=True)
@@ -429,7 +434,7 @@ def validate_graph(workflow: Workflow) -> None:
     passes `resolve_wire_refusal`; a multi-output block has no outgoing wire.
     """
     if workflow.blocks and not any(block.is_input for block in workflow.blocks):
-        raise ValueError("A workflow needs at least one input block.")
+        raise ValueError(NO_INPUT_BLOCK_MESSAGE)
     errors = resolve_block_errors(workflow)
     if errors:
         raise ValueError(next(iter(errors.values())))
@@ -721,6 +726,9 @@ def run_graph(workflow: Workflow, inputs: Mapping[str, NVHDataBlock],
         bound = _resolve_extra_ports(workflow, workflow_block, spec, single, bound_channels)
 
         result = spec.fn(primary_block, bound, dict(workflow_block.params), scratch)
+        # The computation stamps the curve recipe; only the graph knows the
+        # version this block is identified by and the steps above it.
+        version, lineage = _identity_version(workflow_block), lineage_hash(workflow, block_id)
 
         if isinstance(result, list):
             if not spec.multi_output:
@@ -728,8 +736,10 @@ def run_graph(workflow: Workflow, inputs: Mapping[str, NVHDataBlock],
                     f"Block '{block_id}' ('{workflow_block.block_type}') produced a list but is not "
                     f"multi_output; validate_graph should have refused this workflow."
                 )
-            produced[block_id] = list(result)
+            produced[block_id] = [build_block_with_workflow_stamp(block, version, lineage)
+                                  for block in result]
         else:
+            result = build_block_with_workflow_stamp(result, version, lineage)
             single[block_id] = result
             produced[block_id] = [result]
 
@@ -749,12 +759,13 @@ def _config_defaults(config_cls: type) -> Dict[str, Any]:
     return out
 
 
-def identity_params(workflow_block: WorkflowBlock) -> Dict[str, Any]:
+def identity_params(workflow_block: WorkflowBlock, lineage: str = "") -> Dict[str, Any]:
     """
     A block's params as they count for identity: display-only fields dropped,
     every remaining field pinned to an explicit value, the algorithm version
-    stamped. The same rule `result_params_from_block` uses, minus the lineage key
-    it adds on top.
+    stamped, and `lineage` when there is one -- the curve recipe
+    (`core.curve_recipe.build_curve_recipe`) of the whole config, the same
+    rule the computation stamps onto the blocks it makes.
 
     Missing keys are backfilled from the `config_cls` defaults so a block that
     was dropped but never "Apply"-ed (empty `params`, audit 02 finding 2.11) and
@@ -763,17 +774,19 @@ def identity_params(workflow_block: WorkflowBlock) -> Dict[str, Any]:
     hit for the other.
     """
     spec = spec_for(workflow_block.block_type)
-    params = resolve_block_params(workflow_block.block_type, {
+    return build_curve_recipe(spec.produces, {
         **_config_defaults(spec.config_cls), **workflow_block.params,
-    })
-    version = workflow_block.algorithm_version
-    if version is None:
+    }, algorithm_version=_identity_version(workflow_block), lineage=lineage)
+
+
+def _identity_version(workflow_block: WorkflowBlock) -> Optional[int]:
+    """The algorithm version a block is identified by."""
+    if workflow_block.algorithm_version is None:
         # A block authored before its kind was versioned, or before this backfill
         # existed: stamp the kind's current version so it hashes the same as a
         # freshly authored one rather than becoming its own result set.
-        version = authoring_version(workflow_block.block_type)
-    params["algorithm_version"] = version
-    return params
+        return authoring_version(workflow_block.block_type)
+    return workflow_block.algorithm_version
 
 
 def _identity_port(workflow: Workflow, wire: WorkflowWire) -> str:

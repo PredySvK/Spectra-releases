@@ -5,7 +5,7 @@ Layout (HDF5)::
 
     /                 attrs: format, format_version, channel_name, recipe_json
     /blocks/k0000     attrs: kind   -- one group per block, in Live result order
-        b0000/...     the block, written by result_cache.block_io
+        b0000/...     the block, written by result_cache.write_channel_group
 
 Each block gets its own group because one channel's Live result may mix kinds
 (an order tab with Overall Level holds order cuts and an Overall Level curve),
@@ -22,8 +22,9 @@ from typing import Any, Iterable, Iterator, List, Mapping, Optional, Sequence, T
 import h5py
 
 from core.data_block import NVHDataBlock
-from io_modules.result_cache import block_io
-from io_modules.result_cache.cache_naming import sanitize_for_filename
+from io_modules.result_cache import (
+    block_from_stored, read_channel_blocks, sanitize_for_filename, write_channel_group,
+)
 
 TAB_CACHE_FORMAT = "nvh_tab_cache"
 TAB_CACHE_FORMAT_VERSION = 1
@@ -101,7 +102,7 @@ def write_tab_cache_file(path: str, blocks: Sequence[NVHDataBlock],
             for position, block in enumerate(blocks):
                 group = container.create_group(f"k{position:04d}")
                 group.attrs[_ATTR_KIND] = block.kind
-                block_io.write_channel_group(group, channel_name, [block])
+                write_channel_group(group, channel_name, [block])
             handle.flush()
         os.replace(temp_path, path)
     except BaseException:
@@ -146,10 +147,10 @@ def _read_content(handle) -> TabCacheContent:
     for key in sorted(container.keys()):
         group = container[key]
         kind = _text(group.attrs.get(_ATTR_KIND))
-        stored = block_io.read_channel_blocks(group)
+        stored = read_channel_blocks(group)
         if len(stored) != 1:
             raise TabCacheMiss(f"block {key} is incomplete")
-        blocks.append(block_io.block_from_stored(stored[0], kind))
+        blocks.append(block_from_stored(stored[0], kind))
 
     recipe = json.loads(_text(handle.attrs.get(_ATTR_RECIPE_JSON)) or "null")
     return TabCacheContent(blocks=tuple(blocks), recipe=recipe if isinstance(recipe, dict) else None)

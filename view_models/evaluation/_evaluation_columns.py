@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from core.filter_card_config import BUILTIN_COLUMN_KEYS, BUILTIN_COLUMN_LABELS
+from selection.field_offer import is_active_field, resolve_field_label
 
 
 @dataclass(frozen=True)
@@ -24,8 +25,9 @@ def build_schema_field_descriptor(key: str, field_cfg: Mapping[str, Any]) -> Col
     """A Metadata Editor schema field: label is custom_label, else field_name, else the key."""
     return ColumnDescriptor(
         key=key,
-        label=field_cfg.get("custom_label") or field_cfg.get("field_name") or key,
-        is_active=field_cfg.get("is_active", True) is not False,
+        label=resolve_field_label(key, {key: field_cfg}),
+        # Active Status, the same gate as the Filters panel and the Cursor Box.
+        is_active=is_active_field(field_cfg),
         is_builtin=False,
     )
 

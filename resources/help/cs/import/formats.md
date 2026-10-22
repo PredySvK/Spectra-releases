@@ -50,9 +50,17 @@ Surový časový záznam uložený programem Simcenter Testlab, čte se bez Test
 | Název kanálu | název kanálu v Testlabu, bez `Time for `, které před něj dává export do UNV |
 | Jednotka | jednotka kanálu |
 | Vzorkovací frekvence, počet bodů | hlavička a index souboru |
-| Začátek času | vždy 0 s |
+| Začátek času | časová osa souboru (0 s, když ji soubor neukládá) |
+| Uzel, směr | číslované jako v UNV exportu Testlabu: body 1.. v seřazeném pořadí části názvu před posledním `:`, směr z přípony `:+X`, `:+Y`, `:+Z` (bez přípony: 0) |
 
-Čte se jen to, co bylo ověřeno proti vlastnímu UNV exportu Testlabu: verze formátu 13 se vzorky uloženými jako 32bitová čísla s plovoucí čárkou ve fyzikálních jednotkách. Jiný soubor (jiná verze, jiný typ vzorků nebo více proudů) se přeskočí a v Data Poolu se neobjeví. Uzel a směr se zatím nečtou.
+Čte se jen to, co bylo ověřeno proti vlastnímu UNV exportu Testlabu:
+
+| Podporováno | Vzorky uložené jako |
+|---|---|
+| verze formátu 13 (např. signály vygenerované v Testlabu) | 32bitová čísla s plovoucí čárkou ve fyzikálních jednotkách |
+| verze formátu 21 (záznamy z měřicího front-endu) | 24bitová celá čísla s měřítkem, převedená na jednotku kanálu (`g`, `rpm`, …) |
+
+Zatím se nečte: jiné typy vzorků (16bitová nebo 32bitová celá čísla, 64bitová čísla s plovoucí čárkou), více proudů (kanály s různou vzorkovací frekvencí), jiné verze formátu. Takový soubor se přeskočí a v Data Poolu se neobjeví. Citlivost, rozsah a sériová čísla front-endu uložená v souboru se nezobrazují.
 
 ## .txt (zpracované měření)
 

@@ -16,7 +16,9 @@ teardown() / sweep_clip(); the ViewBox, the sync handlers and the legend
 bookkeeping never leak past that interface.
 """
 
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, Callable, List, Optional, Sequence, Tuple
+from core.units import UnitPreferences
+from gui.workspace.display_prefix_axis import DisplayPrefixAxisItem
 
 import numpy as np
 import pyqtgraph as pg
@@ -55,8 +57,16 @@ def project_synced_range(
 class SecondaryAxis:
     """The dock's secondary right Y axis: ViewBox lifecycle + range sync + legend."""
 
-    def __init__(self, plot_widget: pg.PlotWidget) -> None:
+    def __init__(
+        self,
+        plot_widget: pg.PlotWidget,
+        unit_preferences_provider: Optional[Callable[[], UnitPreferences]] = None,
+    ) -> None:
         self._plot_widget = plot_widget
+        self._unit_preferences_provider = unit_preferences_provider
+        right_axis = plot_widget.plotItem.getAxis("right")
+        if isinstance(right_axis, DisplayPrefixAxisItem) and unit_preferences_provider is not None:
+            right_axis._unit_preferences_provider = unit_preferences_provider
         self._view_box: Optional[pg.ViewBox] = None
         self._unit: str = ""
         # (signal, handler) pairs, so teardown can undo exactly these rather
@@ -96,13 +106,17 @@ class SecondaryAxis:
 
     # -- lifecycle -------------------------------------------------------------
 
-    def ensure(self, unit: str) -> None:
+    def ensure(self, unit: str, quantity: str = "") -> None:
         """Build (or rebuild for a new unit) the right axis and its ViewBox.
 
         Already built for the same unit: no-op. Built for a different unit: torn
         down and rebuilt -- a second incompatible unit needs a fresh axis, not
-        one stacked on top of the first.
+        one stacked on top of the first. ``quantity`` is the curve's Y quantity
+        (resolve_ordinate_quantity), the Display prefix row for a Hz axis.
         """
+        right_axis = self._plot_widget.plotItem.getAxis("right")
+        if isinstance(right_axis, DisplayPrefixAxisItem):
+            right_axis.set_quantity(quantity)
         if self._view_box is not None:
             if self._unit == unit:
                 return

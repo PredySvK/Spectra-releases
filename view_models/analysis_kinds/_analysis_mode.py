@@ -16,6 +16,9 @@ ANALYSIS_MODE_ACC_OVERALL_LEVEL = "acc_overall_level"
 ANALYSIS_MODE_ACC_ORDER_TRACKING = "acc_order_tracking"
 ANALYSIS_MODE_ACC_SPECTROGRAM = "acc_spectrogram"
 ANALYSIS_MODE_ACC_SPECTRUM = "acc_spectrum"
+# Ribbon tabs that open no Analysis kind; deliberately not in ANALYSIS_MODES.
+ANALYSIS_MODE_WORKFLOW = "workflow"
+ANALYSIS_MODE_TOOLS = "tools"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -46,7 +49,7 @@ _BY_KIND: Dict[str, AnalysisMode] = {mode.analysis_kind: mode for mode in ANALYS
 
 
 def resolve_analysis_mode(name: str) -> AnalysisMode:
-    """The register entry for `name`; an unknown or non-analysis name (Workflow, Settings, Tools) is Project."""
+    """The register entry for `name`; an unknown or non-analysis name (Workflow, Tools) is Project."""
     return _BY_NAME.get(name, _BY_NAME[ANALYSIS_MODE_PROJECT])
 
 

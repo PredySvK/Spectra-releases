@@ -7,7 +7,7 @@ The live-channel-drop half of a result-content dock (ARCHITECTURE_DECISIONS
 in ADR §1.43 -- the two only ever shared a file, never a concern.
 
 Dropping a channel onto a dock that already has multi-source h5 content has no
-single dock-wide tacho to reuse (gui.file_explorer.actions.channel_drop routes
+single dock-wide tacho to reuse (gui.workspace.channel_drop routes
 it here instead of the ordinary single-tacho order-overlay path), and a
 result-content dock's Parameter Set may already fix which FFT/tracking settings
 a newly-dropped channel should be computed with.
@@ -114,7 +114,7 @@ class LiveChannelDropHandler:
     def handle_dropped_channel(self, dock, desc: dict) -> bool:
         """
         Routes a channel dropped from the File Explorer onto a result-content dock
-        (see gui.file_explorer.actions.channel_drop). Unlike an ordinary
+        (see gui.workspace.channel_drop). Unlike an ordinary
         order-overlay drop, such a dock can hold channels from several different
         source files at once, so there is no single dock-wide tacho to reuse --
         this resolves its own file's tacho instead.

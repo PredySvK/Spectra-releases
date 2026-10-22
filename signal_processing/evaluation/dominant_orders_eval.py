@@ -237,7 +237,7 @@ def extract_dominant_orders(
     )
     if not orders:
         return ()
-    rows = order_rows_from_spectrogram(block, identity, orders, order_width, f"{{:.{ORDER_DECIMALS}f}}")
+    rows = order_rows_from_spectrogram(block, identity, orders, order_width)
     return tuple(sorted(rows, key=_amplitude_rank))
 
 

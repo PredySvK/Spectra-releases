@@ -30,7 +30,7 @@ A fresh card has **one column: Channel**. Everything else you add with **&#9881;
 | Excel metadata | fields from the metadata spreadsheet ([Metadata from Excel](topic:import/metadata)) |
 | Calculated | Analysis type (spectrum, order cut, ...), Order, Parameter set |
 
-Raw and Excel fields appear there only after you tick **Use as Filter** for them in *Metadata and Filter Settings* ([Metadata from Excel](topic:import/metadata)). Every row shows how many distinct values the column has now, *(N)*; a column with one value, or a different value on every measurement, is greyed ("cannot narrow anything down") but stays selectable.
+Raw and Excel fields appear there only while their **Active Status** is ticked in *Metadata and Filter Settings* ([Metadata from Excel](topic:import/metadata)). Every row shows how many distinct values the column has now, *(N)*; a column with one value, or a different value on every measurement, is greyed ("cannot narrow anything down") but stays selectable.
 
 In *Configure Filters* you also choose each column's **position**, how it is drawn, how many **columns side by side** the card uses (1 to 4) and **Default**. A column marked *Default* is added to every new graph's card on top of Channel. **Auto apply** shows each change on the graph in focus while you make it; Cancel restores the card.
 

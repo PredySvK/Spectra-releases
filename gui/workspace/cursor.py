@@ -82,6 +82,7 @@ class CursorMixin:
         _set_box_draggable(self._cursor_box, False)
         self._cursor_box.setZValue(1000)
         self._cursor_box.hide()
+        self._last_cursor_point = None
         self._cursor_proxy = pg.SignalProxy(
             self.plot_widget.scene().sigMouseMoved, rateLimit=CURSOR_MOUSE_RATE_HZ,
             slot=lambda args: self.update_cursor_at(args[0]))
@@ -117,15 +118,21 @@ class CursorMixin:
 
     def update_cursor_at(self, scene_pos: QPointF) -> None:
         """Show, move or hide the Cursor Box for a mouse at ``scene_pos``."""
+        try:
+            vb = self.plot_widget.plotItem.vb
+            if vb is None:
+                return
+            bounding_rect = vb.sceneBoundingRect()
+        except RuntimeError:
+            return
         ctx = self.app_context
-        vb = self.plot_widget.plotItem.vb
         pinned = bool(getattr(ctx, "cursor_pinned", False))
         _set_box_draggable(self._cursor_box, pinned)
         if not getattr(ctx, "cursor_enabled", False) or self.curves.model is None:
             self.hide_cursor_box()
             return
         if (QApplication.mouseButtons() != Qt.MouseButton.NoButton
-                or not vb.sceneBoundingRect().contains(scene_pos)):
+                or not bounding_rect.contains(scene_pos)):
             if not pinned:
                 self.hide_cursor_box()
             return
@@ -144,9 +151,10 @@ class CursorMixin:
         metadata = read_curve_metadata(
             point.trace, config.fields, ctx.pool.schema().master, identity_context.sources_by_path,
             identity_context.result_set_labels)
+        self._last_cursor_point = point
         lines = build_cursor_box_lines(
-            point, config, x_unit=self._x_axis.unit, two_axes=self.secondary_axis.is_active,
-            metadata=metadata)
+            point, config, x_unit=self._x_axis.unit, x_quantity=self.curves.model.x_domain,
+            two_axes=self.secondary_axis.is_active, metadata=metadata, prefs=self._unit_preferences())
         if not lines:
             if not pinned:
                 self.hide_cursor_box()
@@ -157,6 +165,23 @@ class CursorMixin:
             x, y = resolve_box_position((rect.width(), rect.height()), mouse_px, (0, 0, vb.width(), vb.height()))
             self._cursor_box.setPos(x, y)
         self._cursor_box.show()
+
+    def _refresh_cursor_box(self) -> None:
+        if self._last_cursor_point is None or not self.cursor_box_visible():
+            return
+        ctx = self.app_context
+        config = getattr(ctx, "cursor_config", None) or CursorConfig()
+        identity_context = build_identity_context(ctx.project_session)
+        metadata = read_curve_metadata(
+            self._last_cursor_point.trace, config.fields, ctx.pool.schema().master,
+            identity_context.sources_by_path, identity_context.result_set_labels)
+        lines = build_cursor_box_lines(
+            self._last_cursor_point, config, x_unit=self._x_axis.unit,
+            x_quantity=self.curves.model.x_domain,
+            two_axes=self.secondary_axis.is_active, metadata=metadata,
+            prefs=self._unit_preferences())
+        if lines:
+            self._cursor_box.setText("\n".join(f"{label}: {text}" for label, text in lines))
 
 
 class SpectrogramCursorMixin:
@@ -220,8 +245,14 @@ class SpectrogramCursorMixin:
 
     def update_cursor_at(self, scene_pos: QPointF) -> None:
         """Show, move or hide the Cursor Box and crosshair for a mouse at ``scene_pos``."""
+        try:
+            vb = self.plot_widget.plotItem.vb
+            if vb is None:
+                return
+            bounding_rect = vb.sceneBoundingRect()
+        except RuntimeError:
+            return
         ctx = self.app_context
-        vb = self.plot_widget.plotItem.vb
         model = self.spectrogram.model
         pinned = bool(getattr(ctx, "cursor_pinned", False))
         _set_box_draggable(self._cursor_box, pinned)
@@ -229,7 +260,7 @@ class SpectrogramCursorMixin:
             self.hide_cursor_box()
             return
         if (QApplication.mouseButtons() != Qt.MouseButton.NoButton
-                or not vb.sceneBoundingRect().contains(scene_pos)):
+                or not bounding_rect.contains(scene_pos)):
             if not pinned:
                 self.hide_cursor_box()
             return
@@ -265,7 +296,10 @@ class SpectrogramCursorMixin:
         self._crosshair_h.show()
 
         config = getattr(ctx, "cursor_config", None) or CursorConfig()
-        lines = build_cursor_box_lines(point, config)
+        self._last_cursor_point = point
+        lines = build_cursor_box_lines(
+            point, config,
+            prefs=ctx.unit_preferences() if ctx and hasattr(ctx, "unit_preferences") else None)
         if not lines:
             if not pinned:
                 self._cursor_box.hide()
@@ -276,3 +310,14 @@ class SpectrogramCursorMixin:
             bx, by = resolve_box_position((rect.width(), rect.height()), mouse_px, (0, 0, vb.width(), vb.height()))
             self._cursor_box.setPos(bx, by)
         self._cursor_box.show()
+
+    def _refresh_cursor_box(self) -> None:
+        if self._last_cursor_point is None or not self.cursor_box_visible():
+            return
+        ctx = self.app_context
+        config = getattr(ctx, "cursor_config", None) or CursorConfig()
+        lines = build_cursor_box_lines(
+            self._last_cursor_point, config,
+            prefs=ctx.unit_preferences() if ctx and hasattr(ctx, "unit_preferences") else None)
+        if lines:
+            self._cursor_box.setText("\n".join(f"{label}: {text}" for label, text in lines))

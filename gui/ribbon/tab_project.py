@@ -7,12 +7,12 @@ Data, Tools, then Help. The widgets are declared here and wired in MainWindowFra
 matching every other ribbon tab.
 """
 
+import os
+
 from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
+from core.recent_projects import RECENT_PROJECT_LIMIT
 from gui.ribbon.ribbon_widgets import RibbonGroup, build_tab_layout, make_ribbon_button, vertical_separator
-
-# How many recent projects the drop-down offers.
-RECENT_LIMIT = 10
 
 
 class TabProject(QWidget):
@@ -69,7 +69,7 @@ class TabProject(QWidget):
         self.btn_select_dir.setObjectName("AddDataDirectoryButton")  # Help figure target
         self.btn_edit_meta = make_ribbon_button(
             "Metadata and Filter Settings", "list",
-            tooltip="Edit per-measurement metadata, the schema, and which fields are usable as filters")
+            tooltip="Edit per-measurement metadata, the schema, and which fields are active")
         data = RibbonGroup("Data")
         data.add_column(self.btn_select_dir, self.btn_edit_meta, spacing=4)
         layout.addWidget(data)
@@ -109,13 +109,23 @@ class TabProject(QWidget):
         self.combo_recent.clear()
         self.combo_recent.addItem("— select —", None)
 
-        import os
-        for path in project_paths[:RECENT_LIMIT]:
+        for path in project_paths[:RECENT_PROJECT_LIMIT]:
             self.combo_recent.addItem(os.path.basename(path), path)
 
         self.combo_recent.setCurrentIndex(0)
         self.combo_recent.setEnabled(bool(project_paths))
         self.combo_recent.blockSignals(False)
+
+    def mark_recent_checked(self, path, exists):
+        """
+        Greys out a recent project that is no longer on disk, the same way the
+        Welcome screen does (#773); an existing one is left as it is.
+        """
+        index = self.combo_recent.findData(path)
+        if index < 0 or exists:
+            return
+        self.combo_recent.setItemText(index, f"{os.path.basename(path)}   (missing)")
+        self.combo_recent.model().item(index).setEnabled(False)
 
     def selected_recent_path(self):
         """The project path chosen in the drop-down, or None for the placeholder."""

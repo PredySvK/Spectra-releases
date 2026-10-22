@@ -15,7 +15,8 @@ from typing import List, Optional
 from PySide6.QtCore import QObject, QSettings, Signal
 
 from session.project import ProjectSession
-from io_modules.project_store import DirectoryIndex, prune_untitled_scan_cache
+from io_modules.project_store import prune_untitled_scan_cache
+from io_modules.scan_cache import ScannedDirectory
 from session.data_pool import DataPool, IntegrateResult
 from session.settings import SettingsStore
 from core.app_metadata import SETTINGS_ORGANIZATION, SETTINGS_ROOT, SETTINGS_SHARED
@@ -74,6 +75,18 @@ class AppContext(QObject):
     global_unit_pressure = _setting("global_unit_pressure")
     global_unit_voltage = _setting("global_unit_voltage")
     global_unit_speed = _setting("global_unit_speed")
+    prefix_acceleration = _setting("prefix_acceleration")
+    prefix_pressure = _setting("prefix_pressure")
+    prefix_voltage = _setting("prefix_voltage")
+    prefix_speed = _setting("prefix_speed")
+    prefix_frequency = _setting("prefix_frequency")
+    prefix_time = _setting("prefix_time")
+    decimals_acceleration = _setting("decimals_acceleration")
+    decimals_pressure = _setting("decimals_pressure")
+    decimals_voltage = _setting("decimals_voltage")
+    decimals_speed = _setting("decimals_speed")
+    decimals_frequency = _setting("decimals_frequency")
+    decimals_time = _setting("decimals_time")
     highlight_other_opacity = _setting("highlight_other_opacity")
     theme = _setting("theme")
     graph_theme = _setting("graph_theme")
@@ -156,6 +169,18 @@ class AppContext(QObject):
             voltage=self.global_unit_voltage,
             speed=self.global_unit_speed,
             x_axis_unit=self.project_session.x_axis_unit,
+            prefix_acceleration=self.prefix_acceleration,
+            prefix_pressure=self.prefix_pressure,
+            prefix_voltage=self.prefix_voltage,
+            prefix_speed=self.prefix_speed,
+            prefix_frequency=self.prefix_frequency,
+            prefix_time=self.prefix_time,
+            decimals_acceleration=self.decimals_acceleration,
+            decimals_pressure=self.decimals_pressure,
+            decimals_voltage=self.decimals_voltage,
+            decimals_speed=self.decimals_speed,
+            decimals_frequency=self.decimals_frequency,
+            decimals_time=self.decimals_time,
         )
 
     # ---- recent projects ----------------------------------------------
@@ -259,9 +284,8 @@ class AppContext(QObject):
             self.active_directory = result.stored_path
             self.settings.setValue("primary_startup_data_directory", result.stored_path)
 
-    def integrate_scanned_directory(self, directory_path: str, runs_list, schema_master: dict,
-                                    only_files=None, admit_unknown: bool = False,
-                                    *, index: DirectoryIndex) -> int:
+    def integrate_scanned_directory(self, directory_path: str, scanned: ScannedDirectory, *,
+                                    only_files=None, admit_unknown: bool = False) -> int:
         """
         Folds a scanned folder into the pool and applies the shell-only effects.
 
@@ -279,16 +303,7 @@ class AppContext(QObject):
         a job -- and the seam the §1.24 rules above are tested against.
         """
         result = self.pool.integrate_scanned_directory(
-            directory_path, runs_list, schema_master, only_files, admit_unknown,
-            index=index
-        )
-        self.apply_integrate_effects(result)
-        return result.gained
-
-    def add_pool_directory(self, directory_path: str, only_files=None,
-                           admit_unknown: bool = False) -> int:
-        """Scans a folder and adds it to the pool, keeping what is already there."""
-        result = self.pool.add_pool_directory(directory_path, only_files, admit_unknown)
+            directory_path, scanned, only_files=only_files, admit_unknown=admit_unknown)
         self.apply_integrate_effects(result)
         return result.gained
 

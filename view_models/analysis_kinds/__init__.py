@@ -10,10 +10,18 @@ Architecture:
 - Register: AnalysisKind, ANALYSIS_KINDS, resolve_analysis_kind and the
   ANALYSIS_* name constants; AnalysisMode, ANALYSIS_MODES,
   resolve_analysis_mode, resolve_analysis_mode_of_kind and the
-  ANALYSIS_MODE_* name constants.
+  ANALYSIS_MODE_* name constants (ANALYSIS_MODE_WORKFLOW / _TOOLS name the
+  two ribbon tabs that open no Analysis kind and are not in ANALYSIS_MODES).
 - Open plan: resolve_open_plan decides, from channels and an Analysis mode,
   which kind opens, as one tab or a comparison tab, and which channels are
   skipped.
+- DSP choices: resolve_dsp_choices (by Analysis kind) and
+  resolve_dsp_choices_of_config (by DSP config DTO class) give a DSP kind's
+  DspChoices -- every DSP parameter's ParameterChoices as ordered (label,
+  value) pairs with label <-> value translation and the default (the DTO's
+  field default), and its tracking StepRule per tracking mode. An editor of
+  DSP parameters reads its lists from here instead of carrying a copy
+ .
 
 Analysis kind is not Block kind (CONTEXT.md "Kind"): an entry *points at* its
 Block kind and reads `display_only_params` from `core.block_kinds`, it never
@@ -41,13 +49,27 @@ from ._analysis_mode import (
     ANALYSIS_MODE_ACC_SPECTROGRAM,
     ANALYSIS_MODE_ACC_SPECTRUM,
     ANALYSIS_MODE_PROJECT,
+    ANALYSIS_MODE_TOOLS,
+    ANALYSIS_MODE_WORKFLOW,
     AnalysisMode,
     resolve_analysis_mode,
     resolve_analysis_mode_of_kind,
 )
+from ._dsp_choices import (
+    DspChoices,
+    ParameterChoices,
+    StepRule,
+    resolve_dsp_choices,
+    resolve_dsp_choices_of_config,
+)
 from ._open_plan import SKIP_CAPACITY, SKIP_IMPORTED, OpenPlan, resolve_open_plan
 
 __all__ = [
+    "DspChoices",
+    "ParameterChoices",
+    "StepRule",
+    "resolve_dsp_choices",
+    "resolve_dsp_choices_of_config",
     "ANALYSIS_MODES",
     "AnalysisMode",
     "ANALYSIS_MODE_ACC_ORDER_TRACKING",
@@ -55,6 +77,8 @@ __all__ = [
     "ANALYSIS_MODE_ACC_SPECTROGRAM",
     "ANALYSIS_MODE_ACC_SPECTRUM",
     "ANALYSIS_MODE_PROJECT",
+    "ANALYSIS_MODE_TOOLS",
+    "ANALYSIS_MODE_WORKFLOW",
     "OpenPlan",
     "SKIP_CAPACITY",
     "SKIP_IMPORTED",

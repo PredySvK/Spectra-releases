@@ -7,10 +7,13 @@ Planning ribbon Calculate & Save and Workflow-tab Run as data.
 Pure functions (no Qt, no AppContext) coordinating:
 - `plan_calculate_and_save`: whether a fast-path ribbon batch run can happen
   (checks loaded runs, channel types, chosen channels), and if so, constructs the
-  workflow, selection, and label; otherwise returns the refusal reason.
+  workflow, selection, and label.
 - `plan_workflow_run`: whether a workflow can run (validates the graph, sole input
   block, input selection resolution, save blocks), and if so, resolves the input
-  selection; otherwise returns the refusal reason and error message.
+  selection.
+
+Both say "no" the way `BatchPlan` does:
+`runnable=False` with `messages` that are the log lines saying why.
 """
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence, Tuple
@@ -24,38 +27,33 @@ from selection.measurement_selection import (
 )
 from selection.source_facets import EMPTY_FACET_VALUE, channel_identity_sort_key, pool_source_entries
 from signal_processing.workflow import workflow_from_configs
-from signal_processing.workflow_readiness import (
-    ISSUE_INPUT_NOT_CHOSEN,
-    ISSUE_INVALID_GRAPH,
-    ISSUE_MULTIPLE_INPUTS,
-    ISSUE_NO_SAVE_BLOCKS,
-    ISSUE_NO_SAVE_CHANNELS,
-    ISSUE_SELECTION_MISSING,
-    resolve_chain_readiness,
-)
+from signal_processing.workflow_readiness import resolve_chain_readiness
 
 from orchestration.batch._label import default_result_set_label
 
-# Refusal reasons for plan_calculate_and_save
-REFUSAL_NO_LOADED_FOLDER = "no_loaded_folder"
-REFUSAL_NO_MATCHING_CHANNELS = "no_matching_channels"
-REFUSAL_NO_CHANNELS_CHOSEN = "no_channels_chosen"
+CALCULATE_AND_SAVE_WHAT = "Calculate & Save Data"
 
-# Refusal reasons for plan_workflow_run
-REFUSAL_INVALID_GRAPH = "invalid_graph"
-REFUSAL_MULTIPLE_INPUTS = "multiple_inputs_not_supported"
-REFUSAL_MISSING_SELECTION = "missing_selection"
-REFUSAL_NO_SAVE_BLOCKS = "no_save_blocks"
-REFUSAL_NO_SAVE_CHANNELS = "no_save_channels"
 
-_REFUSAL_BY_ISSUE = {
-    ISSUE_MULTIPLE_INPUTS: REFUSAL_MULTIPLE_INPUTS,
-    ISSUE_INVALID_GRAPH: REFUSAL_INVALID_GRAPH,
-    ISSUE_INPUT_NOT_CHOSEN: REFUSAL_MISSING_SELECTION,
-    ISSUE_SELECTION_MISSING: REFUSAL_MISSING_SELECTION,
-    ISSUE_NO_SAVE_BLOCKS: REFUSAL_NO_SAVE_BLOCKS,
-    ISSUE_NO_SAVE_CHANNELS: REFUSAL_NO_SAVE_CHANNELS,
-}
+def _skipped(what: str, why: str) -> Tuple[str, ...]:
+    return (f"WARNING: {what} skipped -- {why}",)
+
+
+@dataclass(frozen=True)
+class CalculateAndSaveRequest:
+    """
+    What the user asked a ribbon Calculate & Save run for -- the Compute Result
+    Set dialog's answer, handed to the batch as a value (#770).
+
+    It used to travel through QSettings: the dialog wrote it, the ribbon read
+    it back, and the only contract was a key name three files had to spell the
+    same way. `channel_types=None` means any type. `orders` is Order Tracking
+    only; the handler swaps it into that tab's config.
+    """
+    channel_types: Optional[frozenset] = None
+    all_channels: bool = True
+    picked_identities: frozenset = frozenset()
+    orders: Tuple[float, ...] = ()
+    custom_label: str = ""
 
 
 @dataclass(frozen=True)
@@ -65,11 +63,7 @@ class CalculateAndSavePlan:
     selection: Optional[MeasurementSelection] = None
     label: str = ""
     runnable: bool = True
-    refusal_reason: Optional[str] = None
-
-    @property
-    def is_refused(self) -> bool:
-        return not self.runnable
+    messages: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -77,45 +71,39 @@ class WorkflowRunPlan:
     """The planned outcome of a Workflow tab Run request."""
     selection: Optional[MeasurementSelection] = None
     runnable: bool = True
-    refusal_reason: Optional[str] = None
-    message: str = ""
-
-    @property
-    def is_refused(self) -> bool:
-        return not self.runnable
+    messages: Tuple[str, ...] = ()
 
 
 def resolve_calculate_and_save_refusal(
     loaded_runs: Sequence[Any],
     all_channels: bool,
     picked_identities: Iterable[Tuple[str, Optional[str]]],
-) -> Optional[str]:
+) -> Tuple[str, ...]:
     """
-    The refusals of a "Calculate & Save Data" run that need no source
-    lookup, so the GUI can give them before registering any folder.
+    The log lines refusing a "Calculate & Save Data" run for what needs no
+    source lookup, so the GUI can give them before registering any folder;
+    empty when nothing refuses it yet.
     """
     if not loaded_runs:
-        return REFUSAL_NO_LOADED_FOLDER
+        return _skipped(CALCULATE_AND_SAVE_WHAT, "no folder is loaded.")
     if not all_channels and not set(picked_identities):
-        return REFUSAL_NO_CHANNELS_CHOSEN
-    return None
+        return _skipped(CALCULATE_AND_SAVE_WHAT, "no channels chosen. Use 'Choose…' first.")
+    return ()
 
 
 def plan_calculate_and_save(
     block_type: str,
     config: Any,
+    request: CalculateAndSaveRequest = CalculateAndSaveRequest(),
     *,
     loaded_runs: Sequence[Any] = (),
-    channel_types: Optional[Iterable[str]] = None,
-    all_channels: bool = True,
-    picked_identities: Iterable[Tuple[str, Optional[str]]] = (),
     sources_by_path: Optional[Mapping[str, Any]] = None,
-    custom_label: str = "",
 ) -> CalculateAndSavePlan:
     """
     Plan a fast-path ribbon batch run ("Calculate & Save Data") as pure data.
 
-    Decides whether the run can proceed given the loaded files and channel scope.
+    Decides whether the run can proceed given the loaded files and the
+    request's channel scope.
     If valid, constructs:
     - SaveSpec with channel scope and custom label
     - Workflow from config with the SaveSpec on the terminal block
@@ -123,14 +111,16 @@ def plan_calculate_and_save(
     - The label for the result set
 
     Returns a CalculateAndSavePlan with runnable=True and the built objects,
-    or runnable=False with refusal_reason ("no_loaded_folder", "no_matching_channels",
-    or "no_channels_chosen").
+    or runnable=False with the log lines saying why.
     """
     runs = list(loaded_runs)
-    picked_identities = set(picked_identities)
+    channel_types = request.channel_types
+    all_channels = request.all_channels
+    picked_identities = set(request.picked_identities)
+    custom_label = request.custom_label
     refusal = resolve_calculate_and_save_refusal(runs, all_channels, picked_identities)
-    if refusal is not None:
-        return CalculateAndSavePlan(runnable=False, refusal_reason=refusal)
+    if refusal:
+        return CalculateAndSavePlan(runnable=False, messages=refusal)
 
     sources_map = sources_by_path or {}
     available = channel_identities_by_type(
@@ -139,7 +129,7 @@ def plan_calculate_and_save(
     if not available:
         return CalculateAndSavePlan(
             runnable=False,
-            refusal_reason=REFUSAL_NO_MATCHING_CHANNELS,
+            messages=_skipped(CALCULATE_AND_SAVE_WHAT, "no matching channels in the loaded folder."),
         )
 
     if all_channels:
@@ -201,13 +191,14 @@ def plan_calculate_and_save(
         selection=selection,
         label=final_label,
         runnable=True,
-        refusal_reason=None,
     )
 
 
 def plan_workflow_run(
     workflow: Workflow,
     find_selection: Callable[[str], Optional[MeasurementSelection]],
+    *,
+    what: str = "Run workflow",
 ) -> WorkflowRunPlan:
     """
     Plan a Workflow-tab Run as pure data.
@@ -217,24 +208,14 @@ def plan_workflow_run(
     Pool or a named selection).
 
     Returns a WorkflowRunPlan with runnable=True and resolved selection, or
-    runnable=False with refusal_reason ("invalid_graph",
-    "multiple_inputs_not_supported", "missing_selection", "no_save_blocks" or
-    "no_save_channels") and message.
+    runnable=False with the log line saying why; `what` is the run it names.
     """
     issues = resolve_chain_readiness(workflow, find_selection)
     if issues:
-        return WorkflowRunPlan(
-            runnable=False, refusal_reason=_REFUSAL_BY_ISSUE[issues[0].code],
-            message=issues[0].text,
-        )
+        return WorkflowRunPlan(runnable=False, messages=_skipped(what, issues[0].text))
 
     input_spec = next(block for block in workflow.blocks if block.is_input).input
     selection = (whole_pool_selection() if input_spec.whole_pool
                  else find_selection(input_spec.selection_name))
 
-    return WorkflowRunPlan(
-        selection=selection,
-        runnable=True,
-        refusal_reason=None,
-        message="",
-    )
+    return WorkflowRunPlan(selection=selection, runnable=True)

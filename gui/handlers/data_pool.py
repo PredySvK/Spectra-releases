@@ -47,7 +47,7 @@ import os
 from PySide6.QtCore import QObject, Qt
 from PySide6.QtWidgets import QMessageBox, QProgressDialog
 
-from orchestration.data_pool import PoolIngestUseCase, plan_pool_ingest
+from orchestration.data_pool import MissingMeasurementCheck, PoolIngestUseCase, plan_pool_ingest
 
 
 class DataPoolHandler(QObject):
@@ -71,14 +71,18 @@ class DataPoolHandler(QObject):
     call it, while the panel it refreshes is that same explorer.
     """
 
-    def __init__(self, app_context, job_runner, parent_widget):
+    def __init__(self, app_context, job_runner, parent_widget, *, read_folder=None):
         super().__init__(parent_widget)
         self.app_context = app_context
         self.parent_widget = parent_widget
         self.explorer_panel = None
         self.job_runner = job_runner
+        self._missing_check = MissingMeasurementCheck(
+            app_context.pool, job_runner, on_checked=self._on_missing_checked
+        )
         self._use_case = PoolIngestUseCase(
-            app_context.pool, app_context.project_session, job_runner
+            app_context.pool, app_context.project_session, job_runner,
+            missing_check=self._missing_check, read_folder=read_folder,
         )
         self._dialog = None
         job_runner.job_changed.connect(self._on_job_changed)
@@ -121,6 +125,13 @@ class DataPoolHandler(QObject):
         plan = {directory: set() for directory in directories}
         self._start([], plan=plan, quiet=quiet, admit_unknown=True,
                     on_finished=on_finished)
+
+    def check_missing_after_project_open(self) -> None:
+        """
+        Finds the restored pool's Missing measurements on a worker; the tree
+        marks them, and the log counts them, once the check lands.
+        """
+        self._missing_check.start(after_project_open=True)
 
     def _ask_source_amplitude(self, questions):
         """The Source amplitude question, with the progress dialog out of its way."""
@@ -240,6 +251,14 @@ class DataPoolHandler(QObject):
         self._report_conflicts(outcome)
         self._report_failures(outcome)
 
+    def _on_missing_checked(self, outcome):
+        """The pool's Missing measurements changed: redraw the tree, say what is owed."""
+        for message in outcome.log_messages:
+            self.app_context.log(message)
+        panel = getattr(self.explorer_panel, "pool_panel", None)
+        if panel is not None:
+            panel.rebuild_tree_view()
+
     # ---- reporting ----------------------------------------------------
 
     def _refresh_explorer(self):
@@ -277,9 +296,11 @@ class DataPoolHandler(QObject):
         and marks that project unsaved. add_paths() already supersedes a previous
         ingest, but the paths that only sometimes queue a scan -- opening a project
         whose data roots do not resolve, or New Project, which queues none at all
-        -- would otherwise leave the old one running.
+        -- would otherwise leave the old one running. The existence check of
+        the old pool goes too, so its answer cannot mark the new one.
         """
         self._cancel_running()
+        self._missing_check.cancel()
 
     def _cancel_running(self):
         """

@@ -45,12 +45,12 @@ from ._display_rebuild import (
     rebuild_with_units,
 )
 from ._plot_model_builder import (
-    _base_trace_index,
     build_base_model,
     build_order_cuts_model,
     build_scaled_overlay_trace,
     traces_kept_after_unload,
 )
+from ._trace_display import base_trace_index
 from ._visible_traces import (
     AcceptOutcome,
     Mask,
@@ -223,6 +223,9 @@ class GraphCurves:
         self._applied_mask_key: Optional[tuple] = None
         self._awaited_restore: PendingRestore = NOTHING_PENDING
         self._batch: Optional[_Batch] = None
+        # The display settings last applied, for a rebuild that is not handed
+        # any (the base curve leaving with its result set, #757).
+        self._applied_settings: DisplaySettings = DisplaySettings()
 
     # ------------------------------------------------------------------ reads
 
@@ -292,7 +295,7 @@ class GraphCurves:
         """The base curve (the one flagged ``is_base``), or None when empty."""
         if self.is_empty:
             return None
-        return self._model.traces[_base_trace_index(self._model)]
+        return self._model.traces[base_trace_index(self._model)]
 
     def descriptors(self) -> List[Dict[str, Any]]:
         """``build_trace_descriptor`` for every curve held, hidden ones included."""
@@ -425,6 +428,7 @@ class GraphCurves:
         (``capture_overlays_before_reset``), so a pending Refresh or saved
         restore gets them back once this lands."""
         self.capture_overlays_before_reset()
+        self._applied_settings = settings
         first = blocks[0]
         if getattr(first, "kind", None) == KIND_ORDER_CUT:
             # Any other kind riding along (the Overall Level and Residual curves, ADR §1.141) is an
@@ -478,6 +482,7 @@ class GraphCurves:
             source_label = source_label or block.name
         curve = dict(x=x, y=y, source_label=source_label, incoming_unit=incoming_unit,
                      source_meta=source_meta, compute_spec=compute_spec, x_quantity=x_quantity)
+        self._applied_settings = settings
 
         if self.is_empty:
             model = build_base_model(block, settings, result_set_id=result_set_id, title=title,
@@ -576,9 +581,9 @@ class GraphCurves:
         return trace
 
     def rebuild_units(self, prefs: UnitPreferences) -> None:
-        """Every curve again in the display units of ``prefs``, from its raw data."""
-        if self._model is not None:
-            self.replace(rebuild_with_units(self._model, prefs))
+        """Every curve again in the display units of ``prefs``, from its raw data,
+        in the display settings last applied otherwise."""
+        self._rebuild_in(replace(self._applied_settings, prefs=prefs), rebuild_with_units)
 
     def rebuild_domain(self, to_quantity: str) -> None:
         """Every curve again against the X quantity ``to_quantity``, projected
@@ -587,22 +592,20 @@ class GraphCurves:
             self.replace(rebuild_with_domain(self._model, to_quantity))
 
     def rebuild_spectrum_display(self, settings: DisplaySettings) -> None:
-        """Every spectrum curve again in a Format x Amplitude, from canonical power."""
-        if self._model is not None:
-            self.replace(rebuild_spectrum_with_display_settings(
-                self._model,
-                spectrum_format=settings.spectrum_format,
-                amplitude_mode=settings.spectrum_amplitude_mode,
-                decibel_scale=settings.decibel_scale,
-                prefs=settings.prefs,
-            ))
+        """Every curve again in ``settings`` after a spectrum Format, Amplitude or dB change."""
+        self._rebuild_in(settings, rebuild_spectrum_with_display_settings)
 
     def rebuild_amplitude_display(self, settings: DisplaySettings) -> None:
-        """Every order cut / Overall Level curve again in an amplitude mode."""
+        """Every curve again in ``settings`` after an order cut / Overall Level RMS/Peak change."""
+        self._rebuild_in(settings, rebuild_amplitude_mode_display)
+
+    def _rebuild_in(self, settings: DisplaySettings,
+                    rebuild: Callable[[PlotModel, DisplaySettings], PlotModel]) -> None:
+        """Every curve rebuilt from its raw data in ``settings``, which become the
+        ones a later rebuild (the base curve leaving) starts from (#757)."""
+        self._applied_settings = settings
         if self._model is not None:
-            self.replace(rebuild_amplitude_mode_display(
-                self._model, amplitude_mode=settings.amplitude_mode, prefs=settings.prefs,
-            ))
+            self.replace(rebuild(self._model, settings))
 
     def remove_overlays(self, matches: Callable[[Trace], bool]) -> None:
         """Drop every held overlay curve ``matches`` accepts, keeping the base
@@ -663,9 +666,10 @@ class GraphCurves:
         """Forget ``ref_ids`` (loaded and queued) and drop every curve read
         from them (Trace.result_set_id) -- the base curve too, since a loaded
         curve can become the base one. Its place goes to the first curve left
-        on the primary axis, else the first one left, and every other curve is
-        re-routed onto the axes against it (#693), so two incompatible units
-        never end up sharing one. True when that leaves the graph without a curve: the curves are left
+        on the primary axis, else the first one left, and every curve is
+        rebuilt from its raw data in the display settings last applied,
+        placed against the new base as if added that way (#693, #757).
+        True when that leaves the graph without a curve: the curves are left
         as they were and the caller empties the canvas rather than rendering
         a model with none."""
         ids = set(ref_ids)
@@ -682,7 +686,8 @@ class GraphCurves:
             self._model.traces = kept
         else:
             base_index = next((i for i, t in enumerate(kept) if t.axis == "primary"), 0)
-            self._model = rebuild_with_base(replace(self._model, traces=kept), base_index)
+            self._model = rebuild_with_base(
+                replace(self._model, traces=kept), base_index, self._applied_settings)
         self._resolve()
         self._notify(CurvesReplaced())
         return False

@@ -8,8 +8,10 @@ from core.filter_card_config import (
 from core.frozen import freeze_str_map
 from core.measurement_selection import MODE_QUERY, MeasurementSelection
 from core.project_model import FilterSelection
-from selection.source_facets import EMPTY_FACET_VALUE, POOL_IDENTITY_COLUMNS
-from selection.trace_filter import ResolvedFacets
+from selection.source_facets import (
+    EMPTY_FACET_VALUE, POOL_IDENTITY_COLUMNS, build_channel_facet, field_cardinality,
+)
+from selection.trace_filter import CardCardinalities, ResolvedFacets
 
 # Result columns say nothing about which measurement a channel came from, so
 # the Selection editor neither draws nor offers them.
@@ -95,6 +97,18 @@ def resolve_selection_facets(facets: ResolvedFacets) -> ResolvedFacets:
                   if key in POOL_IDENTITY_COLUMNS},
         identities=None,
     )
+
+
+def resolve_selection_cardinalities(counts: CardCardinalities, pool_sources: Iterable
+                                    ) -> CardCardinalities:
+    """`counts` in the Selection editor's shape: Channel is counted by base
+    name, as `resolve_selection_facets` offers it, so its "(N)" matches the
+    rows the editor draws. Every other count is the card resolver's own."""
+    bases = {base for base, _direction in build_channel_facet(pool_sources)}
+    return replace(counts, builtins={
+        **counts.builtins,
+        COLUMN_CHANNEL: field_cardinality(bases, per_measurement=False),
+    })
 
 
 def _with_empty(values: Iterable[str], key: str, checks: FilterSelection) -> Set[str]:

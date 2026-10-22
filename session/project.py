@@ -29,15 +29,13 @@ from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 from core.axis_projections import X_AXIS_NATIVE, X_AXIS_UNITS
 from core.measurement_selection import MeasurementSelection
 from core.models import ChannelIdentity
-from core.project_model import DataRoot, NVHProject, SourceEntry
+from core.project_model import DataRoot, NVHProject, SourceEntry, is_channel_layer
 from core.source_amplitude import VALID_SOURCE_AMPLITUDES
 from core.workflow_graph import Workflow
 from selection.measurement_selection import WHOLE_POOL_SELECTION_NAME
 from io_modules.project_store import (
     DirectoryIndex,
     IndexReport,
-    adopt_untitled_scan_caches,
-    index_all_roots,
     index_root_listing,
     load_project,
     reanchor_roots,
@@ -52,7 +50,8 @@ from io_modules.tab_cache import remove_unreferenced_tab_cache_files
 from .tab_cache import build_referenced_tab_cache_names
 from core.units import determine_channel_type
 from io_modules.measurement_files import canonical_path, file_exists, file_stamp
-from session.result_sets import ResultSetCopyPlan, ResultSetsMixin
+from session.project_folder import ProjectFolderMixin, ProjectFolderCopy
+from session.result_sets import ResultSetsMixin
 from session.source_location import SourceLocation, build_source_location
 
 UNTITLED_NAME = "Untitled"
@@ -138,7 +137,7 @@ def correct_entry_channel(entry: SourceEntry, channel_label: str, unit: str) -> 
     return True
 
 
-class ProjectSession(ResultSetsMixin):
+class ProjectSession(ProjectFolderMixin, ResultSetsMixin):
     """
     Holds the open project, where it is stored, and whether it needs saving.
 
@@ -330,37 +329,33 @@ class ProjectSession(ResultSetsMixin):
         """
         Loads a project's stored state without reading its data folders.
 
-        The GUI opens a project this way and then re-indexes the folders in the
-        background (ProjectDocumentHandler.open_project), which is what
+        The GUI opens a project the same way, in two steps (read_project_file,
+        then install_project_file, so a failed read changes nothing), and then
+        re-indexes the folders in the background (orchestration/project_swap), which is what
         keeps a project whose measurements sit on a slow or unmounted drive from
-        freezing the window on open. open_project() below keeps doing both, for
-        headless callers and tests that need the project reconciled with disk by
-        the time the call returns.
+        freezing the window on open. Each folder's re-index lands through
+        add_data_directory.
         """
-        self._project = load_project(project_path)
+        self.install_project_file(project_path, self.read_project_file(project_path))
+
+    @staticmethod
+    def read_project_file(project_path: str) -> NVHProject:
+        """
+        Reads a stored project without installing it: a file that cannot be
+        read raises (OSError, ValueError, ProjectFormatError) and leaves the
+        open project as it was -- the first step of a project swap (#771).
+        """
+        return load_project(project_path)
+
+    def install_project_file(self, project_path: str, project: NVHProject) -> None:
+        """Makes a project read by read_project_file the open one, clean."""
+        self._project = project
         self._workflow_history.clear()
         self._channel_pairs = []
         self._path = os.path.abspath(project_path)
         self._dirty = False
         self._source_location = SourceLocation()
         self._remove_unreferenced_tab_cache()
-
-    def open_project(self, project_path: str) -> Dict[str, IndexReport]:
-        """
-        Loads a project and brings its source list in line with disk.
-
-        Re-indexing on open is what keeps the project honest about files that
-        were added, edited, renamed or removed while it was closed. Any of
-        those leaves the stored list behind, so the project is marked as
-        needing a save; an untouched folder leaves it clean.
-        """
-        self.load_project_file(project_path)
-
-        reports = index_all_roots(self._project, self._path)
-        self.refresh_source_location(read_root_directories(self._path, self._project.data_roots))
-        if any(report.changed for report in reports.values()):
-            self._dirty = True
-        return reports
 
     def save(self) -> str:
         """Saves to the existing path. Use save_as() when there is none yet."""
@@ -423,7 +418,7 @@ class ProjectSession(ResultSetsMixin):
         return True
 
     def save_as(self, project_path: str,
-                result_set_copy: Optional[ResultSetCopyPlan] = None) -> str:
+                folder_copy: Optional[ProjectFolderCopy] = None) -> str:
         """
         Saves to a new location, re-expressing the data roots against it.
 
@@ -434,7 +429,7 @@ class ProjectSession(ResultSetsMixin):
 
         Result sets are the same problem one level down: they live in the
         folder's `cache/`. A move into another folder with result sets needs
-        `result_set_copy` -- a plan from `build_result_set_copy` whose copies
+        `folder_copy` -- a plan from `build_project_folder_copy` whose copies
         have already been made -- or it is refused, and so is a folder that
         already holds another project.
         """
@@ -447,7 +442,7 @@ class ProjectSession(ResultSetsMixin):
             (root, root.relpath, root.absolute_fallback)
             for root in self._project.data_roots
         ]
-        result_set_snapshot = self._apply_result_set_copy(new_path, result_set_copy)
+        result_set_snapshot = self._apply_project_folder_copy(new_path, folder_copy)
 
         try:
             self._capture_open_tabs()
@@ -465,30 +460,13 @@ class ProjectSession(ResultSetsMixin):
             self._restore_result_sets(result_set_snapshot)
             raise
 
-        if result_set_copy is not None and result_set_copy.copies:
+        if folder_copy is not None and folder_copy.copies:
             self._write_cache_index()
         if was_untitled:
-            if self._cache_adopter is not None:
-                self._cache_adopter(new_path, list(self._project.data_roots))
-            else:
-                self.adopt_untitled_scan_caches()
+            self._carry_untitled_scan_caches()
         self._dirty = False
         self._notify_saved()
         return new_path
-
-    def adopt_untitled_scan_caches(self) -> List[str]:
-        """
-        Moves scan caches built while the project was Untitled into its own
-        cache/scan/ folder, so the first rescan after a save is a cache hit
-        rather than a full re-parse.
-
-        Only the caches for this project's data roots are taken: the temp area
-        is shared and may hold caches for folders that belong to a different
-        session.
-        """
-        if not self._path:
-            return []
-        return adopt_untitled_scan_caches(self._path, self._project.data_roots)
 
     def ensure_saved(self, path_provider: PathProvider) -> bool:
         """
@@ -734,21 +712,16 @@ class ProjectSession(ResultSetsMixin):
         the schema on purpose (ProjectDocumentHandler.open_metadata_editor)
         already marks dirty itself via set_metadata_schema before calling this.
         """
-        from selection.source_facets import channel_summary_value
         from io_modules.metadata_schema import parsed_metadata_for_row
 
+        # Channel-layer fields are per channel: typed source metadata
+        # carries only Excel- and file-layer fields.
+        file_schema = {key: config for key, config in (schema or {}).items()
+                       if not is_channel_layer(config)}
         changed = 0
         for entry in self._project.sources:
-            # Channel-layer fields (BUGS.md N1/N2) live in entry.channels, not
-            # file_metadata/excel_metadata -- fold in one representative value
-            # per field the same way source_facets reads it for a facet.
-            channel_raw = {
-                key: channel_summary_value(entry, key)
-                for key, config in (schema or {}).items()
-                if config.get("layer") == "channel"
-            }
-            raw_by_key = {**channel_raw, **entry.file_metadata, **entry.excel_metadata}
-            parsed = parsed_metadata_for_row(raw_by_key, schema or {})
+            raw_by_key = {**entry.file_metadata, **entry.excel_metadata}
+            parsed = parsed_metadata_for_row(raw_by_key, file_schema)
             if parsed != entry.parsed_metadata:
                 entry.parsed_metadata = parsed
                 changed += 1
@@ -999,12 +972,12 @@ class ProjectSession(ResultSetsMixin):
         result set with matching settings, or a requested block not present),
         and never persists `cache/index.json`.
 
-        See io_modules.result_cache.cache_lookup for what "matching" means.
+        See io_modules.result_cache.find_cached_result for what "matching" means.
         `channel_index` (the channel's ChannelMetadata.index) tells two
         same-named channels of one file apart; every caller that has the
         channel's metadata in hand should pass it.
         """
-        from io_modules.result_cache.cache_lookup import find_cached_result
+        from io_modules.result_cache import find_cached_result
 
         project, project_path, location = self._project, self._path, self._source_location
 

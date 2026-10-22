@@ -8,7 +8,7 @@ An **order** is a vibration whose frequency is a fixed multiple of the shaft spe
 
 ## Steps
 
-1. The tacho channel gives the speed. Triggers are placed where it crosses whole multiples of *Step*, in the chosen *Sweep* direction: see [Tacho tracking](topic:shared/tracking). **Order Tracking always tracks against rpm**; there is no time mode and a tacho channel is required.
+1. The tacho channel gives the speed. Triggers are placed where it crosses whole multiples of *Step*, in the chosen *Ramp* direction, within the *Min* / *Max [RPM]* [Tracking range](topic:shared/tracking) when you set one: see [Tacho tracking](topic:shared/tracking). **Order Tracking always tracks against rpm**; there is no time mode and a tacho channel is required.
 2. A block of $N$ samples (FFT size) is cut **centred on each trigger** and windowed. A block that runs off the start or end of the record is zero-filled and corrected for the missing energy (gain at most $\sqrt2$).
 3. Every block becomes [energy per bin](topic:shared/amplitude_format) $P_\text{canon}[k]$, the same numbers a [Spectrogram](topic:spectrogram/intro) with the same settings holds in that column.
 4. Per order, the energy of a band around $n\cdot\text{RPM}/60$ is summed ([Order extraction](topic:order_tracking/orders)). The curve value is its square root, a **Linear RMS** amplitude.
@@ -22,7 +22,8 @@ An **order** is a vibration whose frequency is a fixed multiple of the shaft spe
 | Target Orders | 1 (comma-separated list) |
 | Order Width $\Delta O$ | 0.2 (range 0.01–2) |
 | FFT size / Window | 4096 / Hanning |
-| Step / Sweep / Hysteresis | 50 RPM / Up / 10 RPM |
+| Step / Ramp | 50 RPM / Up |
+| Min / Max [RPM] | empty (auto: the whole run-up or run-down) |
 | Amplitude | RMS |
 | Remove DC Offset | on (the tacho is never touched) |
 | Overall Level + Residual | off |

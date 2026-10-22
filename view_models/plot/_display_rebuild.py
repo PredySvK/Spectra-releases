@@ -5,274 +5,141 @@ global units, X domain -- without disk I/O or DSP recomputation.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from dataclasses import replace
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 
 from core.axis_projections import can_project, project_x
-from core.block_kinds import LEVEL_CURVE_KINDS, RMS_PEAK_CURVE_KINDS
-from core.units import (
-    UnitPreferences,
-    check_units_compatibility,
-    convert_numeric_array,
-    convert_signal_to_global_unit,
-    is_squared_format,
-    sanitize_unit_string,
-)
+from core.block_kinds import RMS_PEAK_CURVE_KINDS
 
-from ._legend_settings import build_legend_text, format_display_unit
+from ._block_values import BlockValues, resolve_block_values
+from ._display_settings import DisplaySettings
 from ._plot_model import PlotModel, Trace
-from ._plot_model_builder import (
-    _base_trace_index,
-    _linear_amplitude_display,
-    _level_legend_text,
-    _y_axis_label,
-    resolve_overlay_axis,
-    to_decibels,
+from ._trace_display import (
+    BaseCurve,
+    resolve_base_curve,
+    base_trace_index,
+    linear_amplitude_display,
+    resolve_ordinate,
+    resolve_ordinate_quantity,
+    build_trace_in_display_settings,
 )
 
 
-@dataclass(frozen=True)
-class _RebuildRules:
+def _linear_values(tr: Trace, values: Optional[BlockValues],
+                   settings: DisplaySettings) -> Tuple[np.ndarray, str]:
     """
-    What differs between the three in-memory rebuilds of a finished model; the
-    pass itself (``_rebuild_traces``) is the same for all of them.
-
-    ``linear`` -> a trace's (values, unit) before the global-unit conversion.
-    ``is_db`` / ``is_squared`` -> whether a trace ends in dB, and with which dB
-    formula. ``legend`` -> its legend for a unit label. ``new_spec`` -> its new
-    compute_spec, or None to leave it. ``writes_source``: the linear values
-    become the trace's ``y_raw`` / ``source_unit``. ``align_in_db``: a dB
-    overlay that shares the primary axis is first converted to the base unit
-    (only the units rebuild does, ADR §1.89).
+    ``tr``'s (values, unit) before the global-unit conversion in ``settings`` --
+    the values an added curve gets (``build_scaled_overlay_trace``): a canonical
+    spectrum's Format x Amplitude from its block, an order cut's or an Overall
+    Level's RMS/Peak from its block, anything else its own ``y_raw``.
     """
-
-    linear: Callable[[Trace], Tuple[np.ndarray, str]]
-    is_db: Callable[[Trace], bool]
-    is_squared: Callable[[Trace], bool]
-    legend: Callable[[Trace, str], str]
-    new_spec: Callable[[Trace], Optional[Dict[str, Any]]]
-    writes_source: bool
-    align_in_db: bool
+    if values is not None and values.rescaled:
+        return values.values, values.unit
+    if getattr(tr.block, "kind", None) in RMS_PEAK_CURVE_KINDS:
+        return linear_amplitude_display(tr.block.values, tr.block.value_unit, settings.amplitude_mode)
+    return tr.y_raw, tr.source_unit
 
 
-def _rebuild_traces(model: PlotModel, prefs: UnitPreferences, rules: _RebuildRules) -> PlotModel:
+def _rebuild_traces(model: PlotModel, settings: DisplaySettings, *,
+                    shown_as: Optional[Callable[[Trace], Trace]] = None,
+                    base_index: Optional[int] = None) -> PlotModel:
     """
-    The one pass over ``model``'s traces in the display units of ``prefs`` (ADR
-    §1.60, §1.89): physical unit conversion first, dB from the converted values
-    last. The base curve fixes the primary axis unit; a compatible overlay is
-    re-aligned onto it, an incompatible one keeps its own on the secondary axis;
-    legend and the ordinate label follow.
+    The one pass over ``model``'s traces: every trace
+    is rebuilt from its raw data in ``settings`` as a whole and shown by
+    ``build_trace_in_display_settings`` -- dB for a spectrum only, with the formula its block names --
+    the base curve (trace ``base_index``, by default the one flagged
+    ``is_base``) first fixing what the others are placed against, wherever it
+    sits in the list; the ordinate label follows. ``shown_as`` records on a
+    trace the display settings it is now shown in.
     """
-    new_traces: List[Trace] = []
-    base_unit: Optional[str] = None
-    base_channel_type: Optional[str] = None
-    base_is_db = False
-    base_idx = _base_trace_index(model)
+    if not model.traces:
+        return model
+    base_idx = base_trace_index(model) if base_index is None else base_index
 
-    for i, tr in enumerate(model.traces):
-        y_lin, unit_lin = rules.linear(tr)
-        render_y, target_unit = convert_signal_to_global_unit(y_lin, unit_lin, tr.channel_type, prefs)
-        sanitized = sanitize_unit_string(target_unit)
-        was_db = rules.is_db(tr)
+    def shown(tr: Trace, against: Optional[BaseCurve]) -> Trace:
+        values = resolve_block_values(tr.block, settings.spectrum_format, settings.spectrum_amplitude_mode)
+        y_lin, unit_lin = _linear_values(tr, values, settings)
+        if shown_as is not None:
+            tr = shown_as(tr)
+        db_squared = values.db_is_squared if settings.decibel_scale and values is not None else None
+        return build_trace_in_display_settings(
+            tr, y_lin, unit_lin, settings.prefs, db_squared=db_squared, against=against)
 
-        changes: Dict[str, Any] = {}
-        if rules.writes_source:
-            changes.update(y_raw=y_lin, source_unit=unit_lin)
-        compute = rules.new_spec(tr)
-        if compute is not None:
-            changes["compute_spec"] = compute
-
-        y, unit = render_y, sanitized
-        if tr.is_base or i == base_idx:
-            base_unit, base_channel_type, base_is_db = sanitized, tr.channel_type, was_db
-            changes.update(is_base=True, axis="primary")
-        else:
-            axis = resolve_overlay_axis(base_unit, sanitized, base_is_db=base_is_db, overlay_is_db=was_db)
-            if (axis == "primary" and base_unit and check_units_compatibility(base_unit, sanitized)
-                    and (rules.align_in_db or not was_db)):
-                y = convert_numeric_array(render_y, from_unit=sanitized, to_unit=base_unit)
-                unit = base_unit
-            changes["axis"] = axis
-        if was_db:
-            y, unit = to_decibels(y, rules.is_squared(tr)), "dB"
-        new_traces.append(replace(tr, y=y, unit=unit, label=rules.legend(tr, unit), **changes))
-
-    if base_unit is None:
-        view = model.view
-    elif base_is_db:
-        view = replace(model.view, y_label="Amplitude", y_unit="dB")
-    else:
-        view = replace(model.view, y_label=_y_axis_label(base_channel_type or ""),
-                       y_unit=format_display_unit(base_unit))
-    return replace(model, traces=new_traces, view=view)
+    base = shown(model.traces[base_idx], None)
+    against = resolve_base_curve(base, settings.prefs)
+    new_traces = [base if i == base_idx else shown(tr, against) for i, tr in enumerate(model.traces)]
+    y_label, y_unit = resolve_ordinate(base)
+    return replace(model, traces=new_traces, view=replace(
+        model.view, y_label=y_label, y_unit=y_unit, y_quantity=resolve_ordinate_quantity(base)))
 
 
-def _plain_legend(tr: Trace, unit: str) -> str:
-    return build_legend_text(tr.file_name, tr.channel_name, unit, tr.meta_ref)
-
-
-def _kind_legend(tr: Trace, unit: str) -> str:
-    """The legend of ``tr`` for ``unit`` -- a level curve keeps its band text."""
-    base_legend = _plain_legend(tr, unit)
-    if tr.block is not None and getattr(tr.block, "kind", None) in LEVEL_CURVE_KINDS:
-        return _level_legend_text(tr.block, base_legend)
-    return base_legend
-
-
-def rebuild_with_base(model: PlotModel, base_index: int) -> PlotModel:
+def rebuild_with_base(model: PlotModel, base_index: int, settings: DisplaySettings) -> PlotModel:
     """
-    ``model`` with trace ``base_index`` as its base curve and every other trace
-    re-routed onto the primary or secondary axis against it (#693) -- for when
-    the base curve left the graph. Works on the units the traces are already
-    shown in (no unit preferences, no raw data): a trace sharing the new
-    primary axis in a compatible unit spelled differently is converted onto
-    the base unit; values, dB state and pens are otherwise left as they are.
-    The ordinate label follows the new base.
+    ``model`` with trace ``base_index`` as its base curve -- for when the base
+    curve left the graph (#693). Every trace is rebuilt from its raw data in
+    ``settings`` (the ones the graph last applied), the new base first and
+    every other trace placed against it, exactly as if they had been added in
+    ``settings`` onto the new base. The ordinate label follows the new base.
     """
-    base = model.traces[base_index]
-    base_unit = base.unit
-    base_is_db = base_unit == "dB"
-    new_traces: List[Trace] = []
-    for i, tr in enumerate(model.traces):
-        if i == base_index:
-            new_traces.append(replace(tr, is_base=True, axis="primary"))
-            continue
-        is_db = tr.unit == "dB"
-        axis = resolve_overlay_axis(base_unit, tr.unit, base_is_db=base_is_db, overlay_is_db=is_db)
-        changes: Dict[str, Any] = dict(is_base=False, axis=axis)
-        if axis == "primary" and not is_db and tr.unit != base_unit:
-            changes.update(y=convert_numeric_array(tr.y, from_unit=tr.unit, to_unit=base_unit),
-                           unit=base_unit, label=_kind_legend(tr, base_unit))
-        new_traces.append(replace(tr, **changes))
-
-    if base_is_db:
-        view = replace(model.view, y_label="Amplitude", y_unit="dB")
-    else:
-        view = replace(model.view, y_label=_y_axis_label(base.channel_type or ""),
-                       y_unit=format_display_unit(base_unit))
-    return replace(model, traces=new_traces, view=view)
+    return _rebuild_traces(model, settings, base_index=base_index)
 
 
-def _is_canonical(tr: Trace) -> bool:
-    return tr.block is not None and getattr(tr.block, "is_canonical", False)
-
-
-def rebuild_spectrum_with_display_settings(
-    model: PlotModel,
-    *,
-    spectrum_format: str = "linear",
-    amplitude_mode: str = "rms",
-    decibel_scale: bool = False,
-    prefs: Optional[UnitPreferences] = None,
-) -> PlotModel:
+def rebuild_spectrum_with_display_settings(model: PlotModel, settings: DisplaySettings) -> PlotModel:
     """
-    Re-scales a spectrum PlotModel on the fly from its canonical blocks.
-    Runs purely in-memory (< 1 ms), without disk I/O or DSP recomputation.
+    Every trace of ``model`` again in ``settings`` after a spectrum Format,
+    Amplitude or dB change; each trace and band RMS cursor records
+    the new Format x Amplitude. Runs purely in-memory (< 1 ms), without disk
+    I/O or DSP recomputation.
     """
-    def linear(tr: Trace):
-        if _is_canonical(tr):
-            return tr.block.to_display_values(spectrum_format=spectrum_format, amplitude_mode=amplitude_mode)
-        return tr.y_raw, tr.source_unit
+    def shown_as(tr: Trace) -> Trace:
+        return replace(tr, spectrum_format=settings.spectrum_format,
+                       amplitude_mode=settings.spectrum_amplitude_mode)
 
-    def is_squared(tr: Trace) -> bool:
-        if _is_canonical(tr):
-            return is_squared_format(spectrum_format)
-        return bool(tr.compute_spec and is_squared_format(tr.compute_spec.get("spectrum_format")))
-
-    def new_spec(tr: Trace) -> Dict[str, Any]:
-        updated = dict(tr.compute_spec or {})
-        updated["spectrum_format"] = spectrum_format
-        updated["amplitude_mode"] = amplitude_mode
-        return updated
-
-    rebuilt = _rebuild_traces(model, prefs or UnitPreferences(), _RebuildRules(
-        linear=linear,
-        is_db=lambda tr: decibel_scale,
-        is_squared=is_squared,
-        legend=_plain_legend,
-        new_spec=new_spec,
-        writes_source=True,
-        align_in_db=False,
-    ))
+    rebuilt = _rebuild_traces(model, settings, shown_as=shown_as)
 
     new_band_rms_cursors = []
     for c in model.band_rms_cursors:
         if c.kind == "band_rms":
             p = dict(c.processing or {})
-            p["amplitude_mode"] = amplitude_mode
-            p["spectrum_format"] = spectrum_format
+            p["amplitude_mode"] = settings.spectrum_amplitude_mode
+            p["spectrum_format"] = settings.spectrum_format
             new_band_rms_cursors.append(replace(c, processing=p))
         else:
             new_band_rms_cursors.append(c)
     return replace(rebuilt, band_rms_cursors=new_band_rms_cursors)
 
 
-def rebuild_amplitude_mode_display(
-    model: PlotModel,
-    *,
-    amplitude_mode: str = "rms",
-    prefs: Optional[UnitPreferences] = None,
-) -> PlotModel:
+def rebuild_amplitude_mode_display(model: PlotModel, settings: DisplaySettings) -> PlotModel:
     """
-    Re-scales every order-cut or Overall Level trace in ``model`` between RMS
-    and Peak. Runs purely in-memory (< 1 ms),
-    without disk I/O or DSP recomputation.
+    Every trace of ``model`` again in ``settings`` after an RMS/Peak change
+   ; each trace records the new amplitude mode.
+    Runs purely in-memory (< 1 ms), without disk I/O or DSP recomputation.
 
-    Keyed on each trace's own block kind, not the dock's ``analysis_kind``: a
-    dock can carry both kinds at once (an Overall Level set loaded from the
-    Result Pool into an order-tracking dock, or an order-cut set loaded into
-    an Overall Level dock -- issue #128), and toggling Amplitude in either
-    dock's View group must rescale every such trace, not just the ones
-    matching this dock's own kind. Any other trace rescales from its own
-    ``y_raw``/``source_unit``.
+    Peak applies by each trace's own block kind, not the dock's
+    ``analysis_kind``: a dock can carry both kinds at once (an Overall Level
+    set loaded from the Result Pool into an order-tracking dock, or an
+    order-cut set loaded into an Overall Level dock -- issue #128), and
+    toggling Amplitude in either dock's View group must rescale every such
+    trace. Any other trace keeps the values it was added with (§1.185).
     """
-    def linear(tr: Trace):
-        block = tr.block
-        kind = getattr(block, "kind", None) if block is not None else None
-        if kind in RMS_PEAK_CURVE_KINDS:
-            raw, raw_unit = block.values, block.value_unit
-        else:
-            raw, raw_unit = tr.y_raw, tr.source_unit
-        return _linear_amplitude_display(raw, raw_unit, amplitude_mode)
+    def shown_as(tr: Trace) -> Trace:
+        return replace(tr, amplitude_mode=settings.amplitude_mode)
 
-    def new_spec(tr: Trace) -> Dict[str, Any]:
-        updated = dict(tr.compute_spec or {})
-        updated["amplitude_mode"] = amplitude_mode
-        return updated
-
-    return _rebuild_traces(model, prefs or UnitPreferences(), _RebuildRules(
-        linear=linear,
-        is_db=lambda tr: False,
-        is_squared=lambda tr: False,
-        legend=_kind_legend,
-        new_spec=new_spec,
-        writes_source=True,
-        align_in_db=False,
-    ))
+    return _rebuild_traces(model, settings, shown_as=shown_as)
 
 
-def rebuild_with_units(model: PlotModel, prefs: UnitPreferences) -> PlotModel:
+def rebuild_with_units(model: PlotModel, settings: DisplaySettings) -> PlotModel:
     """
-    A fresh model with every trace re-scaled from its untouched ``y_raw`` for the
-    new global units -- no disk, no DSP. The base curve fixes the primary axis
-    unit; a compatible overlay is re-reconciled onto it, an incompatible one
-    keeps its own (secondary) unit. Legend text and the ordinate label follow.
-
-    A trace already shown in dB stays in dB, re-derived from its new-unit
-    linear value last, off its own pre-rebuild ``unit`` and its
-    ``compute_spec["spectrum_format"]``.
+    A fresh model with every trace rebuilt from its raw data in ``settings``
+    after a global unit change -- no disk, no DSP. The base curve fixes the
+    primary axis unit; a compatible overlay is re-reconciled onto it, an
+    incompatible one keeps its own (secondary) unit. Legend text and the
+    ordinate label follow; a spectrum in dB is re-derived from its new-unit
+    linear value last.
     """
-    return _rebuild_traces(model, prefs, _RebuildRules(
-        linear=lambda tr: (tr.y_raw, tr.source_unit),
-        is_db=lambda tr: tr.unit == "dB",
-        is_squared=lambda tr: is_squared_format((tr.compute_spec or {}).get("spectrum_format")),
-        legend=_plain_legend,
-        new_spec=lambda tr: None,
-        writes_source=False,
-        align_in_db=True,
-    ))
+    return _rebuild_traces(model, settings)
 
 
 def rebuild_with_domain(model: PlotModel, to_quantity: str) -> PlotModel:

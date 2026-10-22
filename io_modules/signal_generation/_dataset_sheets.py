@@ -2,7 +2,7 @@
 
 import os
 
-from io_modules.signal_generation.signal_library import DatasetSpec
+from io_modules.signal_generation._signal_library import DatasetSpec
 
 
 def _run_date(run_idx: int) -> str:

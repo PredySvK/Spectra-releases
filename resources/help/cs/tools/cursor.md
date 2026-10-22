@@ -25,7 +25,7 @@ Na křivkových grafech se kurzor přichytí k nejbližšímu **skutečnému vzo
 | **Z** | amplituda pod myší na spektrogramu v zobrazené jednotce a barevné škále |
 | **Amplitude** | **RMS** nebo **Peak** ([Formát amplitudy](topic:shared/amplitude_format)), má-li křivka takovou hodnotu |
 
-Čísla mají 4 platné číslice; velmi malé (pod 0,001) nebo velké (od 100 000) hodnoty přejdou na vědecký zápis a hodnoty v dB mají jedno desetinné místo.
+Čísla se řídí předponou a počtem desetinných míst nastavenými v Settings → Units. Při desetinných místech Auto mají 4 platné číslice a vědecký zápis použijí jen tehdy, když je předpona Scientific; číslo bez řádku v Units (například hodnota PSD nebo pole metadat) přejde na vědecký zápis pod 0,001 nebo od 100 000. Hodnoty v dB mají jedno desetinné místo.
 
 Zvažují se jen křivky, které právě vidíte: křivky skryté [filtrem Trace](topic:filtering/intro) nebo X doménou grafu se nikdy nevyberou, stejně jako [Band RMS](topic:tools/band_rms) Cursory.
 
@@ -55,7 +55,7 @@ Všechny křivky se vrátí do normálu, když myš opustí graf, vzdálí se od
 
 ## Nastavení kurzoru
 
-Tlačítkem **Cursor Settings…** ve skupině **Cursors** vyberete, co box zobrazuje. Zaškrtněte pole, které se má zobrazit; jeho **Priority** (šipky nebo zadané číslo) je jeho řádek, 1 je nahoře. Sekce **Values** obsahuje X, Y, Z, název křivky a RMS / Peak; sekce metadat nabízejí pole označená **Use as Filter** v [Metadata and Filter Settings](topic:import/metadata), s hodnotami dané křivky (například Direction, File name nebo pole z Excelu).
+Tlačítkem **Cursor Settings…** ve skupině **Cursors** vyberete, co box zobrazuje. Zaškrtněte pole, které se má zobrazit; jeho **Priority** (šipky nebo zadané číslo) je jeho řádek, 1 je nahoře. Sekce **Values** obsahuje X, Y, Z, název křivky a RMS / Peak; sekce metadat nabízejí pole se zaškrtnutým **Active Status** v [Metadata and Filter Settings](topic:import/metadata), s hodnotami dané křivky (například Direction, File name nebo pole z Excelu).
 
 Jeden seznam platí pro křivkové grafy i spektrogramy; pole, které se nehodí (Z na křivkovém grafu, metadata na spektrogramu), se přeskočí. Volba se ukládá pro **všechny projekty** a přežije restart. Metadatové pole, které otevřený projekt nemá, se v boxu jednoduše vynechá.
 

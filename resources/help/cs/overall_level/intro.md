@@ -20,8 +20,9 @@ $b_k$ popisují [Zlomkové biny](topic:overall_level/band) a proč je součet RM
 |---|---|
 | $F_\text{min}$ / $F_\text{max}$ | 10 Hz / Full Bandwidth (Nyquist souboru) |
 | [Velikost FFT](topic:shared/fft_size) / [Okno](topic:shared/windows) | 4096 / Hanning |
-| Tracking | RPM Tracked, Step 50 RPM, Sweep Up, Hystereze 10 RPM |
+| Tracking | RPM Tracked, Step 50 RPM, Ramp Up |
 | Krok Free Run (Time) | 0,05 s |
+| Min / Max [RPM] | prázdné (auto: celý rozjezd nebo dojezd) |
 | [Amplituda](topic:shared/amplitude_format) | RMS |
 | Remove DC Offset | zapnuto ([Spektrum](topic:spectrum/intro)) |
 
@@ -29,11 +30,10 @@ Volba Linear / Power / PSD neexistuje ([Formát amplitudy](topic:shared/amplitud
 
 ## Tracking
 
-Tracking určuje, kde jsou vystředěny analyzované bloky. Pravidla (cílové RPM, interpolace, Sweep, Hystereze, čištění tacha) jsou stejná jako u Spektrogramu a jsou popsána jednou v [Tacho tracking](topic:shared/tracking). Specifické pro Overall Level:
+Tracking určuje, kde jsou vystředěny analyzované bloky. Pravidla (cílové RPM, interpolace, Ramp, čištění tacha) jsou stejná jako u Spektrogramu a jsou popsána jednou v [Tacho tracking](topic:shared/tracking). Specifické pro Overall Level:
 
-- **RPM Tracked:** jeden bod na cílové otáčky; vyžaduje kanál tacha. Výchozí Step 50 RPM.
-- **Free Run (Time):** blok každých *Step* sekund od začátku záznamu, tacho není třeba. Výchozí Step 0,05 s, minimum 0,001 s.
-- **Sweep:** Up, Down nebo **Any (Both)**. Spektrogram Any odmítá, protože musí kreslit jeden pravidelný obraz; Overall Level je křivka bodů $(x,y)$, takže Any funguje a vrací body obou směrů.
+- **RPM Tracked:** jeden bod na cílové otáčky; vyžaduje kanál tacha. Výchozí Step 50 RPM. *Min* / *Max [RPM]* zúží rozjezd nebo dojezd na [Tracking range](topic:shared/tracking); prázdná pole jsou auto, celý rozjezd nebo dojezd. Tato záložka má vlastní rozsah, nezávislý na Spektrogramu a Order Trackingu.
+- **Free Run (Time):** blok každých *Step* sekund od začátku záznamu, tacho není třeba. Výchozí Step 0,05 s, minimum 0,001 s. *Start* / *End [s]* zúží záznam na [Tracking range](topic:shared/tracking) v čase časové osy; tento rozsah se pamatuje zvlášť od rozsahu otáček.
 - Středy bloků u začátku či konce záznamu se opraví o část doplněnou nulami (zisk nejvýše $\sqrt2$), takže první a poslední bod se nečtou nízko.
 
 **Viz také:** [Pásmo](topic:overall_level/band), [Tacho tracking](topic:shared/tracking), [Order Tracking](topic:order_tracking/orders) (Overall Level + Residual)

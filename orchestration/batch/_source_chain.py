@@ -20,7 +20,7 @@ from core.models import is_time_response
 from core.workflow_graph import SaveSpec, Workflow
 from io_modules.data_accessor import DataAccessor
 from io_modules.measurement_files import file_stamp
-from io_modules.result_cache.cache_writer import ChannelBlocks, SourceResult, write_result_shard
+from io_modules.result_cache import ChannelBlocks, SourceResult, write_result_shard
 from selection.measurement_selection import resolve_run_channel_type, save_spec_allows_channel
 from session.data_pool import run_from_entry
 from signal_processing.workflow import (
@@ -98,7 +98,7 @@ def _read_bound_channels(entry, run, port_bound_types: Dict[str, bool]):
     missing_required: Dict[str, str] = {}
     for channel_type, required in port_bound_types.items():
         meta = next(
-            (m for m in run.readable_channels() if m.type == channel_type), None
+            (m for m in run.computable_channels() if m.type == channel_type), None
         )
         if meta is None:
             if required:

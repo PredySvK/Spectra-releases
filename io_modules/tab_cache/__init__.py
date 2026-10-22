@@ -10,7 +10,7 @@ the blocks back or raises `TabCacheMiss` with the reason;
 `read_tab_cache_names` lists the complete files (what a Save As copies) and
 `remove_unreferenced_tab_cache_files` deletes what no saved tab names. `resolve_tab_cache_path`
 is the one way from a saved name to a path, and refuses names that leave the
-folder. Blocks <-> HDF5 goes through `result_cache.block_io` only.
+folder. Blocks <-> HDF5 goes through the result cache's block functions only.
 
 What does NOT belong here: deciding which tabs go into the Tab cache or when a
 file is written (gui/workspace), the saved name itself (session.open_tabs),

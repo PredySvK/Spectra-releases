@@ -273,7 +273,7 @@ def _read_measurement_index(path: str):
 
 def resolve_benchmark_channels(run_index, tacho, count) -> List:
     """The case's channels: the first `count` non-tacho readable channels, or all."""
-    channels = [meta for meta in run_index.readable_channels() if meta is not tacho]
+    channels = [meta for meta in run_index.computable_channels() if meta is not tacho]
     return channels if count == "all" else channels[:int(count)]
 
 

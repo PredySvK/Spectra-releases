@@ -21,6 +21,8 @@ class SpectrogramPoint:
     y_unit: str = ""
     z_unit: str = ""
     color_scale: str = ""
+    # The bottom axis's quantity (SpectrogramModel.z_quantity: "time" or "rpm").
+    x_quantity: str = ""
 
 
 def _cell_under(values: np.ndarray, position: float) -> Optional[int]:
@@ -95,4 +97,5 @@ def resolve_spectrogram_pixel(
         y_unit=actual_y_unit,
         z_unit=actual_z_unit,
         color_scale=color_scale,
+        x_quantity=getattr(model, "z_quantity", ""),
     )
