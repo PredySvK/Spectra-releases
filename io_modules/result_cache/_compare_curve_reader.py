@@ -20,6 +20,7 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.block_kinds import KIND_ORDER_CUT, KIND_SPECTRUM, PARAM_ORDER
+from core.channel_types import CHANNEL_TYPE_GENERAL_DYNAMIC
 from selection.source_facets import order_matches
 from io_modules.result_cache._block_io import block_from_stored
 from io_modules.result_cache._cache_reader import ResultCacheReader
@@ -107,7 +108,7 @@ def read_result_curves(
                             )
                             continue
 
-                        channel_type = source["channel_types"].get(label, "general_dynamic")
+                        channel_type = source["channel_types"].get(label, CHANNEL_TYPE_GENERAL_DYNAMIC)
                         meta = {"file_name": file_display_name, "channel_type": channel_type}
                         for block in blocks:
                             if kind == KIND_ORDER_CUT and order_selection is not None:

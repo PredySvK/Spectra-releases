@@ -11,8 +11,7 @@ All/Selected switch, a "Choose..." dialog, plus a second "Input Data..."
 button -- crammed into the ribbon's fixed height, where the lower half was
 clipped off. All of that moved into the dialog, and the dialog's answer goes
 to the batch as a value (#770). What stays here is the button, a one-line
-status label under it, and the helpers the dialog uses to remember its last
-choice in QSettings.
+status label under it.
 
 `settings_prefix` ("order" / "spec1d" / "spec2d") keys the QSettings entries so
 each tab keeps its own remembered choice -- under the key it already used,
@@ -26,33 +25,6 @@ from typing import Optional
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from gui.ribbon.ribbon_widgets import _STACK_SIZE, make_ribbon_button
-
-_IDENTITY_SEP = "\x1f"  # base <sep> direction, inside one QSettings list entry
-
-
-def identities_to_settings(identities) -> list:
-    out = []
-    for base, direction in identities:
-        out.append(f"{base}{_IDENTITY_SEP}{'' if direction is None else direction}")
-    return sorted(out)
-
-
-def identities_from_settings(raw) -> set:
-    result = set()
-    for entry in raw or []:
-        base, _, direction = str(entry).partition(_IDENTITY_SEP)
-        result.add((base, direction or None))
-    return result
-
-
-def read_selected_identities(settings, settings_prefix) -> set:
-    """Load the remembered batch channel-identity pick from QSettings."""
-    if not settings:
-        return set()
-    raw = settings.value(f"{settings_prefix}_save_selected_identities", [])
-    if isinstance(raw, str):  # QSettings collapses a one-item list to a bare str
-        raw = [raw]
-    return identities_from_settings(raw)
 
 
 class ComputeResultSetButton(QWidget):

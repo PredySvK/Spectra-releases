@@ -18,7 +18,7 @@ class SettingsField:
 
     key: str
     label: str
-    kind: str  # "choice", "flag", "integer" or immediate "toggle"
+    kind: str  # "choice", "flag", "integer", non-negative "number" or immediate "toggle"
     choices: tuple[tuple[str, object], ...] = ()
     description: str = ""
     group: str = ""  # heading above the field on the page; "" = none
@@ -164,6 +164,21 @@ SETTINGS_PAGES: tuple[SettingsPage, ...] = (
                 "Use cached results",
                 "flag",
                 description="Reuse a result already in the cache instead of computing it again.",
+            ),
+        ),
+    ),
+    SettingsPage(
+        "computation/dsp",
+        ("Computation", "DSP"),
+        (
+            SettingsField(
+                "tacho_smoothing_ms",
+                "Tacho smoothing window [ms]",
+                "number",
+                description="Moving average the tacho is smoothed with before an RPM Tracked "
+                            "calculation places its blocks; 0 = no smoothing.",
+                group="Tacho cleaning",
+                note="Applies from the next RPM Tracked calculation.",
             ),
         ),
     ),

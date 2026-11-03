@@ -11,6 +11,11 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Dict, Mapping, Optional, Tuple
 
+from core.tacho_cleaning import (
+    DEFAULT_TACHO_CLEANING, DEFAULT_TACHO_SMOOTHING_MS, TACHO_CLEANING_PARAMS, TachoCleaning,
+    resolve_tacho_cleaning, resolve_tacho_cleaning_params,
+)
+
 # Numeric algorithm version per result kind. io_modules.result_cache folds a
 # kind's version into every saved result set's params, so a stale result computed
 # by older math is never mistaken for a valid cache hit just because the
@@ -47,7 +52,6 @@ VALID_SPECTRUM_FORMATS = ("linear", "power", "psd")
 VALID_AVERAGING_TYPES = ("linear", "peak_hold", "exponential")
 VALID_TRACKING_MODES = ("rpm", "time")
 VALID_SWEEP_DIRECTIONS = ("up", "down")
-
 
 def normalize_dsp_choice(value: str, valid: tuple, field_name: str) -> str:
     """Lower-case and strip a string-valued DSP mode, rejecting an unknown one.
@@ -100,6 +104,7 @@ class SpectrogramConfig:
     time_end: Optional[float] = None
     remove_dc: bool = True
     color_scale: str = "Linear"
+    tacho_smoothing_ms: float = DEFAULT_TACHO_SMOOTHING_MS
 
 @dataclass
 class OrderTrackingConfig:
@@ -113,6 +118,7 @@ class OrderTrackingConfig:
     rpm_min: Optional[float] = None    # Tracking range, as in SpectrogramConfig
     rpm_max: Optional[float] = None
     remove_dc: bool = True
+    tacho_smoothing_ms: float = DEFAULT_TACHO_SMOOTHING_MS
 
 @dataclass
 class OverallLevelConfig:
@@ -133,6 +139,7 @@ class OverallLevelConfig:
     time_start: Optional[float] = None
     time_end: Optional[float] = None
     remove_dc: bool = True
+    tacho_smoothing_ms: float = DEFAULT_TACHO_SMOOTHING_MS
 
 
 # The Tracking range fields of a tracked config, per tracking mode. Only the
@@ -157,6 +164,8 @@ class TrackingSweep:
     Only the range of `mode` is kept; the other pair is always None (auto).
     A workflow block shows both pairs whatever its mode, and a filled-in pair
     of the other mode must not make the same computation another result.
+    The Tacho cleaning is the same: time mode cleans no tacho, so it holds the
+    default there.
     """
 
     mode: str = "rpm"
@@ -166,6 +175,7 @@ class TrackingSweep:
     rpm_max: Optional[float] = None
     time_start: Optional[float] = None
     time_end: Optional[float] = None
+    tacho_cleaning: TachoCleaning = DEFAULT_TACHO_CLEANING
 
     @property
     def bounds(self) -> Tuple[Optional[float], ...]:
@@ -182,11 +192,16 @@ def resolve_tracking_sweep(config: Any) -> TrackingSweep:
         "time_start": getattr(config, "time_start", None),
         "time_end": getattr(config, "time_end", None),
     })
+    mode = _resolve_tracking_mode(params["tracking_mode"])
     return TrackingSweep(
-        mode=_resolve_tracking_mode(params["tracking_mode"]),
+        mode=mode,
         step=config.step, direction=_resolve_tracking_mode(config.direction),
         rpm_min=params["rpm_min"], rpm_max=params["rpm_max"],
         time_start=params["time_start"], time_end=params["time_end"],
+        tacho_cleaning=resolve_tacho_cleaning({
+            "tracking_mode": mode,
+            **{name: getattr(config, name) for name in TACHO_CLEANING_PARAMS if hasattr(config, name)},
+        }),
     )
 
 
@@ -197,9 +212,13 @@ def resolve_active_tracking_params(params: Mapping[str, Any]) -> Dict[str, Any]:
     A config without a tracking mode is rpm-tracked; one without range fields
     comes back unchanged. The curve recipe goes through here, so a result's
     identity holds only the range that shaped it, however the config was made.
+
+    The Tacho cleaning values are dropped unless they shaped the result and
+    are not the default (`resolve_tacho_cleaning_params`), so a default keeps
+    the identity every older result was saved with.
     """
     mode = _resolve_tracking_mode(params.get("tracking_mode", "rpm"))
-    out = dict(params)
+    out = resolve_tacho_cleaning_params(params)
     for other_mode, names in _TRACKING_RANGE_FIELDS.items():
         if other_mode != mode:
             for name in names:

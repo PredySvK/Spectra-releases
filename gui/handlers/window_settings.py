@@ -23,34 +23,19 @@ in English.
 from typing import Callable, Optional
 from PySide6.QtWidgets import QMessageBox, QWidget
 
+from app_context import STARTUP_DIRECTORY_KEY
 from core.settings import SETTING_DEFINITIONS
+from gui.dialogs.dialog_state import is_dialog_geometry_key
+from gui.workspace.workspace_layout import layout_settings_keys
 
 __all__ = [
     "WindowSettingsHandler",
-    "_LAYOUT_KEY_PREFIXES",
-    "_LAYOUT_KEYS",
     "_RESET_LAYOUT_DETAILS",
     "_RESET_ALL_DETAILS",
 ]
 
-# Keys in the per-window (Root/Spawns) QSettings that describe *where things are*,
-# as opposed to how the DSP is configured. "Reset Layout" removes exactly these;
-# "Reset All Settings" clears the whole group anyway.
-_LAYOUT_KEY_PREFIXES = (
-    "window_layout_state_",
-    "explorer_dock_width_",
-    "bottom_dock_height_",
-    "bottom_tabs_visible_",
-    "last_directory_",
-    # Per-dialog remembered size/position (gui/dialogs/dialog_state.py).
-    "dialog_geometry_",
-)
 _RESTART_KEYS = frozenset(key for key, definition in SETTING_DEFINITIONS.items()
                            if definition.applies_after_restart)
-_LAYOUT_KEYS = (
-    "primary_startup_data_directory",
-)
-
 _RESET_LAYOUT_DETAILS = (
     "Reset Layout returns this window to its factory dock arrangement. It clears:\n"
     "\n"
@@ -227,9 +212,11 @@ class WindowSettingsHandler:
             self.log_panel.log_message("SYSTEM: Reset Layout cancelled.")
             return False
 
+        # Each writer names its own keys; this only asks.
         settings = self.app_context.settings
+        layout_keys = {*layout_settings_keys(), STARTUP_DIRECTORY_KEY}
         for key in settings.allKeys():
-            if key in _LAYOUT_KEYS or key.startswith(_LAYOUT_KEY_PREFIXES):
+            if key in layout_keys or is_dialog_geometry_key(key):
                 settings.remove(key)
 
         self.workspace_layout.restore_factory()

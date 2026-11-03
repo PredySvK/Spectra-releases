@@ -17,12 +17,11 @@ class IdentityContext:
     """
     What `identity_for_trace` and the curve-identity builders read off the
     project: measurements by path, Result set labels (without them the Result
-    set Identity facet stays None, §1.33) and the metadata schema.
+    set Identity facet stays None, §1.33).
     """
 
     sources_by_path: Dict[str, SourceEntry] = field(default_factory=dict)
     result_set_labels: Dict[str, str] = field(default_factory=dict)
-    schema: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
 
 def build_identity_context(session: Optional[Any]) -> IdentityContext:
@@ -33,5 +32,4 @@ def build_identity_context(session: Optional[Any]) -> IdentityContext:
     return IdentityContext(
         sources_by_path=session.source_location.entries_by_path,
         result_set_labels={ref.id: ref.label for ref in project.result_sets},
-        schema=project.metadata_schema,
     )

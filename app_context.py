@@ -10,6 +10,7 @@ Does NOT perform any direct Data I/O.
 
 import json
 import os
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import List, Optional
 from PySide6.QtCore import QObject, QSettings, Signal
@@ -23,6 +24,7 @@ from core.app_metadata import SETTINGS_ORGANIZATION, SETTINGS_ROOT, SETTINGS_SHA
 from core.cursor_config import CursorConfig
 from core.units import UnitPreferences
 from core.dsp_configs import SpectrumConfig, SpectrogramConfig, OrderTrackingConfig, OverallLevelConfig
+from core.tacho_cleaning import TACHO_CLEANING_PARAMS, TachoCleaning, resolve_tacho_cleaning
 from core.recent_projects import (
     RecentProject, parse_recent, serialize_recent, promote as _promote_recent,
 )
@@ -31,6 +33,8 @@ from core.recent_projects import (
 # QSettings key (shared_settings) for how many curves "Load Result Sets…" reads
 # without asking first -- an application-wide tuning knob, not a per-window one.
 # 500 is a starting point to revisit once a real project's limits are known.
+# The data folder this window reopens on; Reset Layout removes it.
+STARTUP_DIRECTORY_KEY = "primary_startup_data_directory"
 _RESULT_CONTENT_CURVE_LIMIT_KEY = "result_content_curve_limit"
 _DEFAULT_RESULT_CONTENT_CURVE_LIMIT = 500
 
@@ -59,6 +63,18 @@ def build_settings_store() -> SettingsStore:
 def _setting(key: str) -> property:
     return property(lambda self: self.settings_store.value(key),
                     doc=f"The applied '{key}' setting; written only through settings_store.")
+
+
+def _tracked_config(name: str) -> property:
+    """A tracked DSP config as the ribbon wrote it, handed out with the applied
+    Tacho cleaning: it is a setting of the whole program, not of the ribbon
+   , and every calculation reads its config here. Tacho cleaning
+    values in an assigned config are therefore never the ones read back."""
+    stored = f"_{name}"
+    return property(
+        lambda self: replace(getattr(self, stored), **self.tacho_cleaning.params),
+        lambda self, config: setattr(self, stored, config),
+        doc=f"The ribbon's '{name}' with the applied Tacho cleaning.")
 
 
 class AppContext(QObject):
@@ -90,6 +106,15 @@ class AppContext(QObject):
     highlight_other_opacity = _setting("highlight_other_opacity")
     theme = _setting("theme")
     graph_theme = _setting("graph_theme")
+    spectrogram_settings = _tracked_config("spectrogram_settings")
+    order_tracking_settings = _tracked_config("order_tracking_settings")
+    overall_level_settings = _tracked_config("overall_level_settings")
+
+    @property
+    def tacho_cleaning(self) -> TachoCleaning:
+        """The applied Tacho cleaning; each value is the setting of its name."""
+        return resolve_tacho_cleaning(
+            {name: self.settings_store.value(name) for name in TACHO_CLEANING_PARAMS})
 
     def __init__(self):
         super().__init__()
@@ -263,7 +288,7 @@ class AppContext(QObject):
         # ones once per primary-window start.
         prune_untitled_scan_cache()
 
-        saved_dir = self.settings.value("primary_startup_data_directory", None)
+        saved_dir = self.settings.value(STARTUP_DIRECTORY_KEY, None)
         if saved_dir and os.path.exists(str(saved_dir)):
             self.active_directory = str(saved_dir)
 
@@ -282,7 +307,7 @@ class AppContext(QObject):
             self.log(f"PROJECT: Synced metadata for {result.metadata_synced} source(s).")
         if result.is_new_folder:
             self.active_directory = result.stored_path
-            self.settings.setValue("primary_startup_data_directory", result.stored_path)
+            self.settings.setValue(STARTUP_DIRECTORY_KEY, result.stored_path)
 
     def integrate_scanned_directory(self, directory_path: str, scanned: ScannedDirectory, *,
                                     only_files=None, admit_unknown: bool = False) -> int:

@@ -9,7 +9,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from core.workflow_graph import INPUT_BLOCK_TYPE, InputSpec, SaveSpec, Workflow, with_block_replaced
-from signal_processing.workflow import BLOCKS, resolve_block_params
+from signal_processing.workflow import BLOCKS, resolve_block_params, resolve_block_params_refusal
 from ._block_add import resolve_block_add
 from ._block_delete import resolve_block_delete
 from ._block_move import resolve_block_move
@@ -124,6 +124,9 @@ def _resolve(workflow: Workflow, edit: WorkflowEdit) -> WorkflowEditResult:
         if block.block_type not in BLOCKS:
             return _refused(workflow, f"Unknown block type '{block.block_type}'.")
         params = resolve_block_params(block.block_type, edit.params)
+        refusal = resolve_block_params_refusal(block.block_type, params)
+        if refusal:
+            return _refused(workflow, refusal)
         if dict(block.params) == params and block.save == edit.save:
             return WorkflowEditResult(workflow, selected_block_id=edit.block_id)
         return WorkflowEditResult(

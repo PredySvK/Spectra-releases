@@ -7,9 +7,8 @@ state, and routing the active profile's in-memory mask onto the open docks.
 
 Named `compare_actions` until ADR §1.43 folded in the one-file
 `filter_actions` module (`apply_active_filter_to_dock`) and lifted the
-unrelated live-channel-drop half out to
-`gui.handlers.live_channel_drop` -- the Compare dock it was named for
-stopped being special at §1.30, and the file was one concern by then.
+unrelated channel-drop half out -- the Compare dock it was named for stopped
+being special at §1.30, and the file was one concern by then.
 
 Since §1.76 (#234) the whole module is one handler, `FilterRoutingHandler`,
 built once by the composition root (`gui/main_window.py`) with the five things

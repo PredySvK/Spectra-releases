@@ -4,6 +4,7 @@ import dataclasses
 from typing import Callable, Optional
 
 from orchestration.live_compute._live_result import LiveResult, run_live_compute
+from orchestration.tacho_interpolation import is_tacho_interpolation_line
 from signal_processing.result_blocks import TrackingScratch
 
 
@@ -25,6 +26,7 @@ class FileTracking:
     def __init__(self):
         self._tacho_by_path: dict = {}
         self._tracking_by_path: dict = {}
+        self._said: set = set()
 
     def seed_tacho(self, file_path, tacho_block) -> None:
         """Reuse a tacho block the dock already holds for `file_path`."""
@@ -44,6 +46,17 @@ class FileTracking:
             request = dataclasses.replace(request, tacho_block=tacho_block)
         tracking = self._tracking_by_path.setdefault(file_path, TrackingScratch())
         result = run_live_compute(request, finder, tracking)
+        if isinstance(result, LiveResult):
+            result = self._say_tacho_interpolation_once(result)
         if isinstance(result, LiveResult) and result.tacho_block is not None:
             self._tacho_by_path[file_path] = result.tacho_block
         return result
+
+    def _say_tacho_interpolation_once(self, result):
+        """Keeps a Tacho interpolation line once per file and rate; the channels after the first repeat it."""
+        kept = tuple(
+            line for line in result.notices
+            if not (is_tacho_interpolation_line(line) and line in self._said)
+        )
+        self._said.update(line for line in kept if is_tacho_interpolation_line(line))
+        return dataclasses.replace(result, notices=kept)

@@ -43,9 +43,10 @@ def build_base_trace_spec(curves: GraphCurves,
                           loaded_runs: Iterable[MeasurementRunIndex]) -> Optional[TraceSpec]:
     """The ``TraceSpec`` of the base curve, read off the curve itself -- for a
     graph opened with several channels at once, which has no run of its own.
-    None when the base curve names no channel (none yet, or an h5 curve)."""
+    None when the base curve names no channel (none yet, or a curve only a
+    result set holds); an Adopted curve still names its channel (§1.244)."""
     base = curves.base_trace
-    if base is None or base.result_set_id or not (base.meta_ref or {}).get("file_path"):
+    if base is None or base.is_set_only or not (base.meta_ref or {}).get("file_path"):
         return None
     source_lookup = build_source_lookup(list(loaded_runs))
     return _trace_spec(base, source_lookup, compute_spec=base.compute_spec, is_base=True)

@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -46,6 +47,8 @@ from gui.appearance import APP_TOKENS
 _PAGE_KEY = "settings_window_page"
 _PAGE_ROLE = Qt.ItemDataRole.UserRole
 _PREVIEW_WIDTH = 130
+_NUMBER_DECIMALS = 1
+_NUMBER_MAXIMUM = 1e9
 
 
 def _build_highlighted_text(parts: tuple[tuple[str, bool], ...]) -> str:
@@ -429,6 +432,15 @@ class SettingsWindow(QDialog):
                 editor.setSuffix(field.suffix)
                 editor.valueChanged.connect(lambda value, key=field.key: self._on_edited(key, value))
                 layout.addWidget(label)
+            elif field.kind == "number":
+                label = QLabel(field.label)
+                editor = QDoubleSpinBox()
+                editor.setDecimals(_NUMBER_DECIMALS)
+                # Non-negative with no upper limit of its own; a spin box needs one.
+                editor.setRange(0.0, _NUMBER_MAXIMUM)
+                editor.setSuffix(field.suffix)
+                editor.valueChanged.connect(lambda value, key=field.key: self._on_edited(key, value))
+                layout.addWidget(label)
             elif field.kind == "toggle":
                 editor = label = QPushButton(field.label)
                 editor.setCheckable(True)
@@ -513,7 +525,7 @@ class SettingsWindow(QDialog):
             editor.blockSignals(True)
             if isinstance(editor, QComboBox):
                 editor.setCurrentIndex(max(0, editor.findData(self._draft.value(key))))
-            elif isinstance(editor, QSpinBox):
+            elif isinstance(editor, (QSpinBox, QDoubleSpinBox)):
                 editor.setValue(self._draft.value(key))
             else:
                 editor.setChecked(bool(self._draft.value(key)))

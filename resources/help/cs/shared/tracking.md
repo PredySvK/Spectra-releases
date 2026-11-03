@@ -77,6 +77,26 @@ Tacho se nejdřív vyčistí: vzorky strmější než 200 000 RPM/s a nekonečn�
 
 Průměr otáčky vyhladí, takže otáčky čtené v triggeru jsou vyhlazené; změna rychlejší než 50 ms se rozmaže.
 
+Délka průměru se nastavuje v **Settings › Computation › DSP**, v poli **Tacho smoothing window [ms]**. Výchozí hodnota je 50 ms; 0 znamená bez vyhlazení. Výsledky spočtené s různým oknem jsou různé [Parameter Sety](topic:filtering/intro). Obrázek a čísla níže platí pro 50 ms.
+
 ![Co udělá klouzavý průměr 50 ms s krátkým poklesem a se skokem](tracking_cleaning.png)
 
 Dvě rychlé události v surovém tachu (šedě) a vyčištěné otáčky, které triggery používají (modře). Průměrování odstraní šum, ale změnu také rozprostře přes okno 50 ms. Skok o 200 ot/min za 5 ms se změní na rampu dlouhou 50 ms. Pokles dlouhý 30 ms a hluboký 200 ot/min se stane mělčím (tady asi 140 ot/min) a širším. Pomalý rozjezd nebo dojezd to neovlivní: průměr přímé rampy je tatáž rampa.
+
+## Tacho s jinou vzorkovací frekvencí
+
+Tacho nemusí být zaznamenáno se stejnou frekvencí jako vibrační kanál. Pokud se obě liší o více než 1 %, program otáčky před umístěním triggerů lineárně interpoluje na časovou osu analyzovaného kanálu. Rychlejší tacho se nejprve zprůměruje přes jeden vzorek kanálu, aby šum tacha nad polovinou frekvence kanálu nevytvořil falešné pomalé změny otáček; pomalejší se neprůměruje. Interpolace nepřidává informaci: pomalé tacho zůstane stejně hrubé, jen na jemnější časové ose. Běží vždy sama, nic se nezapíná, a System Log ji zmíní jednou pro soubor a frekvenci. Soubor s tachem na frekvenci kanálu se počítá přesně jako dřív.
+
+Tacho, které začíná v jiném čase než kanál nebo končí o více než jeden krok tacha dříve, se odmítne zprávou se jmény obou kanálů a oběma časy.
+
+**Jen jedno tacho.** Program používá jedno tacho na soubor. Pokud jich soubor obsahuje víc, vezme první v pořadí souboru, a to se může mezi formáty téhož měření (UNV, LSDF) lišit.
+
+## Otáčky z CAN
+
+**Co je CAN.** CAN je datová sběrnice ve vozidle, přes kterou si řídicí jednotky posílají údaje, například otáčky motoru. Takové otáčky tedy neměří samostatný snímač připojený k záznamníku. Záznamník jen čte hodnotu, kterou vypočetla a poslala jednotka vozidla. V seznamu kanálů je často poznáte podle názvu, například `EM_SPEED (CAN...`.
+
+**Rpm z CAN zaostává za vibrací.** Řídicí jednotka otáčky nejprve vypočte a pošle je v pravidelném intervalu, teprve potom je zapíše záznamník. Vibrace se zaznamenává přímo. V našich nahrávkách je to odhadem 25-40 ms, nejde o přesnou hodnotu.
+
+Na ustálených otáčkách to nevadí. Při 1 650 ot/min za sekundu je osa rpm posunutá asi o 40-66 ot/min, při rozjezdu a dojezdu v opačném směru, takže se stejná rezonance mezi nimi rozejde.
+
+**Program to nekompenzuje.** Zpoždění závisí na autě, jednotce i záznamníku a ze souboru se nedá zjistit. Pevný posun by mohl chybu zvětšit, a to bez toho, aby to bylo vidět. Pokud potřebujete přesnou osu rpm, použijte analogové tacho.

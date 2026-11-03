@@ -46,6 +46,10 @@ from io_modules.project_store import (
     save_project,
     tab_cache_folder,
 )
+from core.import_template import ImportTemplate
+from io_modules.import_template import (
+    install_project_templates, resolve_installed_template, resolve_installed_templates,
+)
 from io_modules.tab_cache import remove_unreferenced_tab_cache_files
 from .tab_cache import build_referenced_tab_cache_names
 from core.units import determine_channel_type
@@ -323,6 +327,7 @@ class ProjectSession(ProjectFolderMixin, ResultSetsMixin):
         self._path = None
         self._dirty = False
         self._source_location = SourceLocation()
+        self._install_import_templates()
         return self._project
 
     def load_project_file(self, project_path: str) -> None:
@@ -355,6 +360,7 @@ class ProjectSession(ProjectFolderMixin, ResultSetsMixin):
         self._path = os.path.abspath(project_path)
         self._dirty = False
         self._source_location = SourceLocation()
+        self._install_import_templates()
         self._remove_unreferenced_tab_cache()
 
     def save(self) -> str:
@@ -387,6 +393,12 @@ class ProjectSession(ProjectFolderMixin, ResultSetsMixin):
         remove_unreferenced_tab_cache_files(
             tab_cache_folder(self._path),
             build_referenced_tab_cache_names(self._project.open_tabs))
+
+    def current_open_tabs(self) -> List[Dict]:
+        """The open graphs as they are now (`TabSpec.to_dict()` each), without writing them anywhere."""
+        if self._open_tabs_capture is not None:
+            return [dict(spec) for spec in self._open_tabs_capture()]
+        return [dict(spec) for spec in self._project.open_tabs]
 
     def _capture_open_tabs(self) -> None:
         if self._open_tabs_capture is not None:
@@ -578,20 +590,76 @@ class ProjectSession(ProjectFolderMixin, ResultSetsMixin):
         self.mark_work_changed()
         return True
 
-    def apply_source_amplitudes(self, runs) -> int:
+    def resolve_import_templates(self) -> Mapping[str, ImportTemplate]:
+        """The project's copies of Import templates by name, as its readers use them (a snapshot; do not edit)."""
+        return resolve_installed_templates()
+
+    def resolve_import_template(self, name: str) -> Optional[ImportTemplate]:
+        """The project's copy of the Import template of this name, None when it holds none (or cannot read it)."""
+        return resolve_installed_template(name)
+
+    def _install_import_templates(self) -> None:
+        """Hands the project's copies to the readers (readers §1.233): after every change of the copies."""
+        install_project_templates(self._project.import_templates)
+
+    def adopt_import_template(self, template) -> bool:
         """
-        Lays the project's Source amplitude answers over freshly loaded runs,
-        the way apply_unit_overrides lays unit corrections: the scan reports
-        the file, the project restates what the user said about it. Returns
-        how many runs were touched.
+        Gives the project its own copy of an Import template, so its sources
+        read from the copy and never from the built-in or the library.
+
+        A copy the project already holds under the name stays: a library change
+        reaches a project only when the user confirms replacing the copy
+        (`replace_import_template`). Returns whether a copy was added (a Work
+        change).
+        """
+        if template.name in self._project.import_templates:
+            return False
+        self._project.import_templates[template.name] = template.to_dict()
+        self._install_import_templates()
+        self.mark_work_changed()
+        return True
+
+    def replace_import_template(self, template) -> bool:
+        """
+        Replaces the project's copy of the Import template of this name by an
+        edited one -- the user's confirmed edit of the copy, never a library
+        change on its own. Returns whether the copy changed (a Work change);
+        the files it reads are re-read by the caller.
+        """
+        copy = template.to_dict()
+        if self._project.import_templates.get(template.name) == copy:
+            return False
+        self._project.import_templates[template.name] = copy
+        self._install_import_templates()
+        self.mark_work_changed()
+        return True
+
+    def set_import_template(self, source_id: str, import_template: str) -> bool:
+        """Assigns an Import template (by name) to a source. A Work change; False if nothing changed."""
+        entry = self._project.source_by_id(source_id)
+        if entry is None or entry.import_template == import_template:
+            return False
+        entry.import_template = import_template
+        self.mark_work_changed()
+        return True
+
+    def apply_source_assignments(self, runs) -> int:
+        """
+        Lays the project's Source amplitude answers and assigned Import
+        templates over freshly loaded runs, the way apply_unit_overrides lays
+        unit corrections: the scan reports the file, the project restates what
+        the user said about it. Returns how many runs were touched.
         """
         touched = 0
         for run in runs:
             entry = self._source_location.entry_for_run(run)
-            if entry is None or not entry.source_amplitude:
+            if entry is None or not (entry.source_amplitude or entry.import_template):
                 continue
             for channel_meta in getattr(run, "available_channels", {}).values():
-                channel_meta.source_amplitude = entry.source_amplitude
+                if entry.source_amplitude:
+                    channel_meta.source_amplitude = entry.source_amplitude
+                if entry.import_template:
+                    channel_meta.import_template = entry.import_template
             touched += 1
         return touched
 

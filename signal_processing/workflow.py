@@ -39,17 +39,25 @@ in English.
 """
 import hashlib
 import json
+import math
 from dataclasses import MISSING, asdict, dataclass, fields, replace
-from typing import Any, Callable, Dict, List, Mapping, MutableMapping, Optional, Set, Tuple, Union
+from numbers import Integral, Real
+from typing import (
+    Any, Callable, Dict, List, Mapping, MutableMapping, Optional, Set, Tuple, Union, get_args,
+    get_type_hints,
+)
 
 from core.block_kinds import KIND_OVERALL_LEVEL, KIND_TIME_RESPONSE, spec_for as kind_spec_for
+from core.channel_types import CHANNEL_TYPE_TACHO
 from core.curve_recipe import build_block_with_workflow_stamp, build_curve_recipe
 from core.data_block import NVHDataBlock
 from core.dsp_configs import (
-    DSP_ALGORITHM_VERSIONS, OrderTrackingConfig, OverallLevelConfig, SpectrogramConfig,
-    SpectrumConfig,
+    DSP_ALGORITHM_VERSIONS, VALID_AMPLITUDE_MODES, VALID_AVERAGING_TYPES, VALID_SPECTRUM_FORMATS,
+    VALID_SWEEP_DIRECTIONS, VALID_TRACKING_MODES, OrderTrackingConfig, OverallLevelConfig,
+    SpectrogramConfig, SpectrumConfig, normalize_dsp_choice,
 )
 from core.jobs import CancelToken
+from core.tacho_cleaning import TACHO_CLEANING_PARAMS, TachoCleaning
 from core.workflow_graph import (
     INPUT_BLOCK_TYPE, InputSpec, PortBinding, SaveSpec, Workflow, WorkflowWire, WorkflowBlock,
     with_wire, with_block,
@@ -122,6 +130,14 @@ class BlockSpec:
         return kind_spec_for(self.produces).display_only_params
 
     @property
+    def settings_params(self) -> Tuple[str, ...]:
+        """Fields of `config_cls` the Settings window owns: the block's form
+        does not show them, and a run stamps them in from Settings
+        (`build_workflow_with_tacho_cleaning`, ADR §1.211)."""
+        names = {f.name for f in fields(self.config_cls)}
+        return tuple(name for name in TACHO_CLEANING_PARAMS if name in names)
+
+    @property
     def primary(self) -> Port:
         return self.inputs[0]
 
@@ -155,24 +171,26 @@ def _spectrum(primary: NVHDataBlock, bound: Mapping[str, NVHDataBlock],
 
 def _spectrogram(primary: NVHDataBlock, bound: Mapping[str, NVHDataBlock],
                  params: Mapping[str, Any], scratch: MutableMapping[str, Any]) -> NVHDataBlock:
-    return compute_spectrogram(primary, bound.get("tacho"), SpectrogramConfig(**params),
+    return compute_spectrogram(primary, bound.get(_TACHO_PORT), SpectrogramConfig(**params),
                                scratch=scratch)
 
 
 def _order_tracking(primary: NVHDataBlock, bound: Mapping[str, NVHDataBlock],
                     params: Mapping[str, Any],
                     scratch: MutableMapping[str, Any]) -> List[NVHDataBlock]:
-    return compute_order_cuts(primary, bound["tacho"], OrderTrackingConfig(**params),
+    return compute_order_cuts(primary, bound[_TACHO_PORT], OrderTrackingConfig(**params),
                               scratch=scratch)
 
 
 def _overall_level(primary: NVHDataBlock, bound: Mapping[str, NVHDataBlock],
                    params: Mapping[str, Any], scratch: MutableMapping[str, Any]) -> NVHDataBlock:
-    return compute_overall_level(primary, bound.get("tacho"), OverallLevelConfig(**params),
+    return compute_overall_level(primary, bound.get(_TACHO_PORT), OverallLevelConfig(**params),
                                  scratch=scratch)
 
 
 _TIME = (KIND_TIME_RESPONSE,)
+# A measurement port is named after the Channel type it binds (`new_workflow_block`).
+_TACHO_PORT = CHANNEL_TYPE_TACHO
 
 BLOCKS: Mapping[str, BlockSpec] = {
     "remove_dc": BlockSpec(
@@ -184,16 +202,16 @@ BLOCKS: Mapping[str, BlockSpec] = {
         fn=_spectrum, config_cls=SpectrumConfig,
     ),
     "spectrogram": BlockSpec(
-        inputs=(Port("in", _TIME), Port("tacho", _TIME, optional=True, from_measurement=True)),
+        inputs=(Port("in", _TIME), Port(_TACHO_PORT, _TIME, optional=True, from_measurement=True)),
         produces="spectrogram", fn=_spectrogram, config_cls=SpectrogramConfig,
     ),
     "order_tracking": BlockSpec(
-        inputs=(Port("in", _TIME), Port("tacho", _TIME, from_measurement=True)),
+        inputs=(Port("in", _TIME), Port(_TACHO_PORT, _TIME, from_measurement=True)),
         produces="order_cut", fn=_order_tracking, config_cls=OrderTrackingConfig,
         multi_output=True,
     ),
     "overall_level": BlockSpec(
-        inputs=(Port("in", _TIME), Port("tacho", _TIME, optional=True, from_measurement=True)),
+        inputs=(Port("in", _TIME), Port(_TACHO_PORT, _TIME, optional=True, from_measurement=True)),
         produces=KIND_OVERALL_LEVEL, fn=_overall_level, config_cls=OverallLevelConfig,
     ),
 }
@@ -235,6 +253,27 @@ def resolve_block_params(block_type: str, params: Mapping[str, Any]) -> Dict[str
     return {key: value for key, value in params.items() if key not in display_only}
 
 
+def build_workflow_with_tacho_cleaning(workflow: Workflow, tacho_cleaning: TachoCleaning) -> Workflow:
+    """
+    `workflow` with the Tacho cleaning from Settings in every block whose
+    config has it, replacing any values the block carries -- before it is run
+    and before its identity is taken, so a workflow run is the same result,
+    curve recipe and result set as the live computation with those values
+   . A Free Run block holds them too; the computation and
+    its recipe ignore them there.
+    """
+    def stamped(workflow_block: WorkflowBlock) -> WorkflowBlock:
+        # An unknown block type is left for `validate_graph` to refuse.
+        spec = BLOCKS.get(workflow_block.block_type)
+        if spec is None or not spec.settings_params:
+            return workflow_block
+        values = tacho_cleaning.params
+        return replace(workflow_block, params={
+            **workflow_block.params, **{name: values[name] for name in spec.settings_params}})
+
+    return replace(workflow, blocks=tuple(stamped(block) for block in workflow.blocks))
+
+
 def build_workflow_with_block(workflow: Workflow, block_type: str,
                               source_id: Optional[str] = None) -> Tuple[Workflow, str]:
     """Append a block, wiring its primary port only to a compatible single output.
@@ -268,6 +307,72 @@ def authoring_version(block_type: str) -> Optional[int]:
     stamps nothing.
     """
     return DSP_ALGORITHM_VERSIONS.get(spec_for(block_type).produces)
+
+
+# -- block params --------------------------------------------------------------
+
+# The config fields with a closed set of values the computation would refuse.
+_PARAM_CHOICES: Mapping[str, Tuple[str, ...]] = {
+    "amplitude_mode": VALID_AMPLITUDE_MODES,
+    "spectrum_format": VALID_SPECTRUM_FORMATS,
+    "averaging_type": VALID_AVERAGING_TYPES,
+    "tracking_mode": VALID_TRACKING_MODES,
+    "direction": VALID_SWEEP_DIRECTIONS,
+}
+
+
+def _is_finite_number(value: Any) -> bool:
+    return isinstance(value, Real) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _is_whole_number(value: Any) -> bool:
+    return isinstance(value, Integral) and not isinstance(value, bool)
+
+
+def _is_list_of_numbers(value: Any) -> bool:
+    # A `list` config field is a list of numbers (`orders_to_extract`).
+    return isinstance(value, (list, tuple)) and all(_is_finite_number(item) for item in value)
+
+
+_PARAM_TYPE_RULES: Mapping[type, Tuple[Callable[[Any], bool], str]] = {
+    bool: (lambda value: isinstance(value, bool), "true or false"),
+    int: (_is_whole_number, "a whole number"),
+    float: (_is_finite_number, "a number"),
+    str: (lambda value: isinstance(value, str), "text"),
+    list: (_is_list_of_numbers, "a list of numbers"),
+}
+
+
+def resolve_block_params_refusal(block_type: str, params: Mapping[str, Any]) -> str:
+    """
+    Why `params` cannot be a `block_type` block's params, or "" when they can. The
+    one params rule: Apply and `validate_graph` (so also readiness and Run) ask it.
+
+    Read from `config_cls`: every key must be one of its fields, with a value of
+    that field's type, and `None` only in an `Optional` field (an empty `f_stop`
+    is Full Bandwidth). Missing keys are fine, they take the config's default.
+    Whether values fit one another or a file (F max above F min, a band below
+    Nyquist) stays the computation's to report.
+    """
+    hints = get_type_hints(spec_for(block_type).config_cls)
+    for name, value in params.items():
+        if name not in hints:
+            return f"Parameter '{name}' does not exist on this block."
+        declared = hints[name]
+        optional = type(None) in get_args(declared)
+        if optional:
+            if value is None:
+                continue
+            declared = next(arg for arg in get_args(declared) if arg is not type(None))
+        is_valid, expected = _PARAM_TYPE_RULES[declared]
+        if not is_valid(value):
+            return f"Parameter '{name}' must be {expected}{' or empty' if optional else ''}, not {value!r}."
+        if name in _PARAM_CHOICES:
+            try:
+                normalize_dsp_choice(value, _PARAM_CHOICES[name], name)
+            except ValueError as exc:
+                return f"Parameter refused: {exc}"
+    return ""
 
 
 # -- graph shape ---------------------------------------------------------------
@@ -431,7 +536,8 @@ def validate_graph(workflow: Workflow) -> None:
     every non-input block type is registered; each block's primary port is fed;
     every mandatory extra port is fed by a wire or a binding, and no binding names
     a port the block does not have; a port is not both wired and bound; every wire
-    passes `resolve_wire_refusal`; a multi-output block has no outgoing wire.
+    passes `resolve_wire_refusal`; a multi-output block has no outgoing wire; a
+    block's params pass `resolve_block_params_refusal`.
     """
     if workflow.blocks and not any(block.is_input for block in workflow.blocks):
         raise ValueError(NO_INPUT_BLOCK_MESSAGE)
@@ -538,6 +644,9 @@ def _validate_block(workflow: Workflow, workflow_block: WorkflowBlock) -> None:
         refusal = _resolve_multi_output_refusal(workflow_block)
         if refusal:
             raise ValueError(refusal)
+    refusal = resolve_block_params_refusal(workflow_block.block_type, workflow_block.params)
+    if refusal:
+        raise ValueError(f"Block '{workflow_block.block_id}' ('{workflow_block.block_type}'): {refusal}")
 
 
 def _resolve_multi_output_refusal(workflow_block: WorkflowBlock) -> str:

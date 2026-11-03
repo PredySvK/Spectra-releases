@@ -19,6 +19,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from core.channel_types import CHANNEL_TYPE_GENERAL_DYNAMIC
+
 from view_models.analysis_kinds import ANALYSIS_TIME
 
 
@@ -61,7 +63,7 @@ class Trace:
     # "Global branch offered an empty Channel facet".
     x_quantity: str = ""
     source_unit: str = ""
-    channel_type: str = "general_dynamic"
+    channel_type: str = CHANNEL_TYPE_GENERAL_DYNAMIC
     unit: str = ""
     label: str = ""  # rendered legend text, regenerated on a unit change
     # Kept apart from ``label`` so the legend text and the drop/capture
@@ -75,12 +77,15 @@ class Trace:
     # Id of the h5 result set this curve was read from, or "" for a curve with
     # no result-set origin -- a dropped channel, a live compute, a base curve
     # off a measurement. The Result Pool panel unchecks a set by dropping every
-    # trace that carries its id (gui.handlers.result_content.
+    # trace only it holds (gui.handlers.result_content.
     # unload_result_sets_from_dock); a "" curve is never touched that way.
     # Typed field rather than a meta_ref key: meta_ref flows into drop
     # descriptors and overlay persistence, this must not (ARCHITECTURE_DECISIONS
     # §1.31).
     result_set_id: str = ""
+    # An Adopted curve (CONTEXT.md): the result set holds it, and the channel is
+    # still the user's. Stamped by the adoption and nothing else.
+    adopted: bool = False
     meta_ref: Optional[Dict[str, Any]] = None
     # The Curve recipe this curve was computed with, plus an order cut's
     # order (build_compute_spec) -- None for a raw time trace, where no DSP
@@ -98,6 +103,17 @@ class Trace:
     # without re-running FFT or background jobs.
     block: Optional[Any] = None
     data_block: Optional[Any] = None
+
+    @property
+    def is_set_only(self) -> bool:
+        """Whether only a result set holds this curve: no channel of the user's."""
+        return bool(self.result_set_id) and not self.adopted
+
+    @property
+    def is_dropped_channel(self) -> bool:
+        """Whether this is an overlay whose channel the user dropped, an Adopted
+        curve too: what Refresh recomputes and a Save writes (§1.241)."""
+        return not self.is_base and not self.is_set_only
 
 
 @dataclass

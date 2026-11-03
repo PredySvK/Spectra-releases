@@ -12,13 +12,24 @@ here, not in the widget.
 
 import os
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple
+from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple, Type
 
+from core.channel_types import (
+    CHANNEL_TYPE_GENERAL_DYNAMIC, CHANNEL_TYPE_MICROPHONE, CHANNEL_TYPE_TACHO, CHANNEL_TYPE_VOLTAGE,
+)
 from core.models import READING_IMPORTED_RESULT, READING_UNREADABLE, resolve_channel_reading
 from core.units import strip_channel_name_prefix
 from io_modules.measurement_files import canonical_path
 
 from ._group_by_setup import UNASSIGNED_SETUP, group_by_setup
+from ._measurement_flag import (
+    MEASUREMENT_FLAG_KINDS,
+    MeasurementFlag,
+    build_flag_glyphs,
+    build_flag_labels,
+    build_flag_tooltip,
+    build_measurement_flags,
+)
 
 
 NODE_SETUP = "setup"
@@ -31,16 +42,15 @@ NODE_UNREADABLE_FILE = "unreadable_file"
 # What the panel styles a row by; the colours behind them stay GUI tokens.
 MARKER_NONE = ""
 MARKER_MISSING = "missing"
-MARKER_PARTIALLY_READ = "partially_read"
 MARKER_IMPORTED_RESULT = "imported_result"
 MARKER_UNREADABLE = "unreadable"
 MARKER_UNASSIGNED = "unassigned"
 
 _CHANNEL_ICONS = {
-    "tacho": "🔄",
-    "voltage": "⚡",
-    "microphone": "🔊",
-    "general_dynamic": "📐",
+    CHANNEL_TYPE_TACHO: "🔄",
+    CHANNEL_TYPE_VOLTAGE: "⚡",
+    CHANNEL_TYPE_MICROPHONE: "🔊",
+    CHANNEL_TYPE_GENERAL_DYNAMIC: "📐",
 }
 _DEFAULT_CHANNEL_ICON = "📊"
 
@@ -55,6 +65,8 @@ class PoolTreeNode:
     its kind are set: `setup_label` on a setup, `run` on a measurement and its
     sheets and channels, `channel` and `unique_label` on a channel, `sheet` on
     a sheet, `directory` on an unreadable folder, `unreadable` on its files.
+    `flags` are a measurement's Measurement flags, already part of its text and
+    tooltip. `search_text` is what a search reads when that is not `text`.
     """
 
     kind: str
@@ -62,6 +74,8 @@ class PoolTreeNode:
     key: tuple
     tooltip: str = ""
     marker: str = MARKER_NONE
+    flags: Tuple[MeasurementFlag, ...] = ()
+    search_text: Optional[str] = None
     children: Tuple["PoolTreeNode", ...] = ()
     setup_label: Optional[str] = None
     run: Any = None
@@ -85,6 +99,7 @@ def build_pool_tree(
     entries_by_path: Optional[Mapping[str, Any]] = None,
     unreadable_by_folder: Iterable[Tuple[str, Sequence[Any]]] = (),
     missing_paths: frozenset = frozenset(),
+    flag_kinds: Sequence[Type[MeasurementFlag]] = MEASUREMENT_FLAG_KINDS,
 ) -> PoolTree:
     """
     The Data Pool tree for a pool: setups in the order they were defined with
@@ -93,10 +108,11 @@ def build_pool_tree(
 
     `entries_by_path` maps canonical paths to source location entries (their
     `setup_label` files a measurement under a setup); `missing_paths` are the
-    canonical paths of the pool's Missing measurements.
+    canonical paths of the pool's Missing measurements; `flag_kinds` are the
+    kinds of Measurement flag to derive from each run.
     """
     roots = [
-        _setup_node(label, setup_runs, missing_paths)
+        _setup_node(label, setup_runs, missing_paths, flag_kinds)
         for label, setup_runs in group_by_setup(setup_labels, runs, entries_by_path).items()
     ]
     roots.extend(
@@ -106,7 +122,7 @@ def build_pool_tree(
     return PoolTree(roots=tuple(roots))
 
 
-def _setup_node(label, runs, missing_paths) -> PoolTreeNode:
+def _setup_node(label, runs, missing_paths, flag_kinds) -> PoolTreeNode:
     seen = set()
     folders = []
     for run in runs:
@@ -126,26 +142,29 @@ def _setup_node(label, runs, missing_paths) -> PoolTreeNode:
         key=(NODE_SETUP, label),
         tooltip=tooltip,
         marker=MARKER_UNASSIGNED if label is UNASSIGNED_SETUP else MARKER_NONE,
-        children=tuple(_measurement_node(run, missing_paths) for run in runs),
+        children=tuple(_measurement_node(run, missing_paths, flag_kinds) for run in runs),
         setup_label=label,
     )
 
 
-def _measurement_node(run, missing_paths) -> PoolTreeNode:
+def _measurement_node(run, missing_paths, flag_kinds) -> PoolTreeNode:
     path = canonical_path(run.file_path)
+    flags = ()
+    search_text = None
     if path in missing_paths:  # the project still lists it, but it is not on disk any more
         text = f"⚠ {run.file_name}"
         marker = MARKER_MISSING
         tooltip = (f"Not found on disk:\n{run.file_path}\n\n"
                    f"Right-click to locate it. Its metadata and results are still in the project.")
-    elif run.lost_parts:  # a Partially read measurement: the healthy channels stay usable
-        lost = "\n".join(f"  {part.describe()}" for part in run.lost_parts)
-        text = f"◐ {run.file_name}"
-        marker = MARKER_PARTIALLY_READ
-        tooltip = (f"Incomplete: part of this file could not be read.\n{lost}\n\n"
-                   "The channels shown are complete and can be used.")
     else:
-        text, marker, tooltip = run.file_name, MARKER_NONE, ""
+        flags = build_measurement_flags(run, flag_kinds)
+        marker = MARKER_NONE
+        if flags:
+            text = f"{build_flag_labels(flags)} {run.file_name}"
+            search_text = f"{build_flag_glyphs(flags)} {run.file_name}"
+            tooltip = build_flag_tooltip(flags)
+        else:
+            text, tooltip = run.file_name, ""
 
     return PoolTreeNode(
         kind=NODE_MEASUREMENT,
@@ -153,6 +172,8 @@ def _measurement_node(run, missing_paths) -> PoolTreeNode:
         key=(NODE_MEASUREMENT, path),
         tooltip=tooltip,
         marker=marker,
+        flags=flags,
+        search_text=search_text,
         children=_measurement_children(run, path),
         run=run,
     )
@@ -198,7 +219,7 @@ def _channel_node(run, path, unique_label, channel) -> PoolTreeNode:
     reading = resolve_channel_reading(channel)
     if reading == READING_IMPORTED_RESULT:
         marker = MARKER_IMPORTED_RESULT
-        tooltip = "Imported result. Drag or double-click to open in Order Tracking."
+        tooltip = "Imported result. Drag or double-click to open it in the graph that shows its kind."
     elif reading == READING_UNREADABLE:
         # A non-time-response UNV dataset (func_type != 1) is listed so the
         # file's contents stay visible, but no reader can turn it into a

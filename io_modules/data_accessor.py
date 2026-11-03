@@ -40,7 +40,7 @@ class DataAccessor:
             # Same dispatch the folder scan uses -- see open_measurement_reader.
             from io_modules.measurement_files import open_measurement_reader
             with benchmark_step("read"):
-                reader = open_measurement_reader(run_index.file_path)
+                reader = open_measurement_reader(run_index.file_path, channel_meta.import_template)
                 raw = reader.read_single_channel_data(channel_meta.index)
 
             if isinstance(raw, NVHDataBlock):
@@ -66,9 +66,10 @@ class DataAccessor:
 
     @staticmethod
     def _resolve_rms_factor(reader, channel_meta: ChannelMetadata) -> float:
-        """The project's answer for this file, else the reader's default (Source amplitude)."""
+        """The project's answer for this file, else the template's or the reader's default (Source amplitude)."""
         from io_modules.measurement_files import resolve_default_source_amplitude
         source_amplitude = (getattr(channel_meta, "source_amplitude", "")
+                            or getattr(reader, "default_source_amplitude", "")
                             or resolve_default_source_amplitude(type(reader).__name__))
         return resolve_rms_factor(source_amplitude)
 

@@ -9,8 +9,10 @@ Uses DTO configuration objects to stay completely decoupled from UI ribbon eleme
 """
 
 from typing import Any, Dict, List, Optional, Union
-from PySide6.QtCore import QEventLoop, QTimer
-from PySide6.QtWidgets import QTabBar, QTabWidget, QWidget
+from PySide6.QtCore import QEvent, QEventLoop, QObject, QPoint, Qt, QTimer
+from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtWidgets import QApplication, QMenu, QTabBar, QTabWidget, QToolButton, QWidget
+from view_models.tab_history import TabHistory
 
 from core.jobs import job_step
 from gui.workspace.graph_dock import GraphDock
@@ -19,6 +21,7 @@ from core.block_kinds import resolve_clipped_f_stop
 from core.models import READING_IMPORTED_RESULT, resolve_channel_reading
 from gui.workspace.analysis_tabs import AnalysisTabsMixin
 from gui.handlers.companion_curves import CompanionCurvesHandler
+from gui.handlers.dock_tab_title import update_dock_tab_title
 from io_modules.tab_cache import write_tab_cache_file
 from orchestration import tab_cache
 from orchestration.channel_drop import build_channel_descriptors, resolve_dropped_channels
@@ -33,10 +36,11 @@ from session.project import channel_label_for
 from orchestration import live_compute
 from orchestration.live_compute import ComputeOrigin, LiveFailure, LiveResult
 from signal_processing.result_blocks import TrackingScratch, UnevenRpmAxisError
+from view_models.tab_label import build_tab_label, build_tab_source
 from view_models.analysis_kinds import (
     ANALYSIS_MODE_PROJECT, ANALYSIS_ORDERS, ANALYSIS_OVERALL_LEVEL, ANALYSIS_SPECTROGRAM, ANALYSIS_SPECTRUM,
-    ANALYSIS_TIME, SKIP_CAPACITY, SKIP_IMPORTED, resolve_open_plan, resolve_analysis_kind, resolve_analysis_mode,
-    resolve_analysis_mode_of_kind,
+    ANALYSIS_TIME, SKIP_CAPACITY, SKIP_IMPORTED, resolve_channel_analysis_kind, resolve_open_plan,
+    resolve_analysis_kind, resolve_analysis_mode,
 )
 
 HOME_TAB_TITLE = "Home Workspace"
@@ -77,6 +81,24 @@ def find_dock_by_id(tab_widget, dock_id: str):
                 if getattr(child, "dock_id", None) == dock_id:
                     return child
     return None
+
+
+class TabKeyEventFilter(QObject):
+    """Catches Ctrl key release to commit TabHistory MRU cycling (#846)."""
+
+    def __init__(self, workspace: "Workspace"):
+        super().__init__(workspace.tabs)
+        self._workspace = workspace
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.KeyRelease:
+            if event.key() == Qt.Key.Key_Control:
+                self._workspace.commit_tab_mru_cycle()
+        elif event.type() == QEvent.Type.KeyPress:
+            if event.key() == Qt.Key.Key_Escape and self._workspace.tab_history.is_cycling:
+                self._workspace.cancel_tab_mru_cycle()
+                return True
+        return super().eventFilter(watched, event)
 
 
 class Workspace(AnalysisTabsMixin):
@@ -164,7 +186,6 @@ class Workspace(AnalysisTabsMixin):
                  placeholder_graph=None,
                  filter_panel=None,
                  job_runner,
-                 live_drop_handler=None,
                  result_content_handler=None,
                  # gui.handlers.filter_routing.FilterRoutingHandler
                  # (#234, ARCHITECTURE_DECISIONS §1.76), built by the
@@ -211,11 +232,6 @@ class Workspace(AnalysisTabsMixin):
         # channel of the same file (same tacho, same sweep) reuses the plan
         # instead of rebuilding it (#500, ADR §1.133).
         self.tracking_scratch = TrackingScratch()
-        # gui.handlers.live_channel_drop.LiveChannelDropHandler, handed
-        # straight on to `execute_channel_drop_processing` for result-content
-        # docks.
-        # Same name as the window's own attribute -- one thing, one name.
-        self.live_drop_handler = live_drop_handler
         self.result_content_handler = result_content_handler
         self.filter_routing = filter_routing
         # Save / restore of the tab set and the per-dock state they share.
@@ -232,6 +248,51 @@ class Workspace(AnalysisTabsMixin):
         # The placeholder is a GraphDock, so it accepts a channel drag like any
         # dock -- but it is no place to keep curves (capture_open_tabs_spec
         # skips it). A drop on it opens a tab the way a double click would.
+        tab_bar = getattr(self.tabs, "tabBar", None)
+        if callable(tab_bar):
+            tab_bar = tab_bar()
+        if tab_bar is not None and hasattr(tab_bar, "customContextMenuRequested"):
+            tab_bar.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            tab_bar.customContextMenuRequested.connect(self._on_tab_context_menu_requested)
+            if hasattr(tab_bar, "tabBarDoubleClicked"):
+                tab_bar.tabBarDoubleClicked.connect(self._on_tab_double_clicked)
+
+        self.tab_history = TabHistory()
+        if hasattr(self.tabs, "currentChanged"):
+            self.tabs.currentChanged.connect(self._on_current_tab_changed)
+
+        if isinstance(self.tabs, QWidget):
+            self._shortcut_ctrl_tab = QShortcut(QKeySequence("Ctrl+Tab"), self.tabs)
+            self._shortcut_ctrl_tab.setContext(Qt.ShortcutContext.WindowShortcut)
+            self._shortcut_ctrl_tab.activated.connect(lambda: self.switch_tab_mru(1))
+
+            self._shortcut_ctrl_shift_tab = QShortcut(QKeySequence("Ctrl+Shift+Tab"), self.tabs)
+            self._shortcut_ctrl_shift_tab.setContext(Qt.ShortcutContext.WindowShortcut)
+            self._shortcut_ctrl_shift_tab.activated.connect(lambda: self.switch_tab_mru(-1))
+
+            self._key_filter = TabKeyEventFilter(self)
+            app = QApplication.instance()
+            if app is not None:
+                app.installEventFilter(self._key_filter)
+            else:
+                self.tabs.installEventFilter(self._key_filter)
+
+            if hasattr(self.tabs, "setCornerWidget"):
+                self.tab_list_button = QToolButton(self.tabs)
+                self.tab_list_button.setText("▾")
+                self.tab_list_button.setToolTip("List and search all open tabs (Ctrl+E)")
+                self.tab_list_button.setAutoRaise(True)
+                self.tab_list_button.clicked.connect(self.show_tab_list_popup)
+                self.tabs.setCornerWidget(self.tab_list_button, Qt.Corner.TopRightCorner)
+            else:
+                self.tab_list_button = None
+
+            self._shortcut_tab_list = QShortcut(QKeySequence("Ctrl+E"), self.tabs)
+            self._shortcut_tab_list.setContext(Qt.ShortcutContext.WindowShortcut)
+            self._shortcut_tab_list.activated.connect(self.show_tab_list_popup)
+        else:
+            self.tab_list_button = None
+
         self.selection_drops = None
         if placeholder_graph is not None:
             placeholder_graph.sig_channels_dropped.connect(self._open_dropped_on_home_tab)
@@ -431,13 +492,16 @@ class Workspace(AnalysisTabsMixin):
 
         return widget
 
-    def route_channel_drop(self, dock_instance, raw_descriptors, batch_label=None, *, mark_work_changed=True) -> bool:
+    def route_channel_drop(self, dock_instance, raw_descriptors, batch_label=None, *,
+                           mark_work_changed=True, from_refresh=False) -> bool:
         """
         The one place that knows what `execute_channel_drop_processing` needs.
 
         An accepted drop changes what capture_open_tabs_spec writes on the next
         Save, so it marks the project dirty -- except a re-drop of curves the
         graph already had (a restore or a refresh, `mark_work_changed=False`).
+        `from_refresh` says a Refresh re-drops them, so they obey the ribbon on
+        a dock holding result sets.
 
         Three of its arguments are collaborators this manager holds and the
         drop router does not (#242); binding them here means a fourth one is
@@ -451,8 +515,8 @@ class Workspace(AnalysisTabsMixin):
             raw_descriptors=raw_descriptors,
             app_context=self.app_context,
             workspace=self,
-            live_drop_handler=self.live_drop_handler,
             batch_label=batch_label,
+            from_refresh=from_refresh,
         )
         if accepted and mark_work_changed:
             self._mark_project_dirty()
@@ -483,9 +547,9 @@ class Workspace(AnalysisTabsMixin):
         opens the active Analysis mode's own tab; several open one comparison
         tab of that mode's Analysis kind holding what the channels opened one
         by one would -- except the Spectrogram, which opens the first channel
-        and logs the rest. Imported order cuts alone open in Order Tracking;
-        mixed with other channels they never switch the active mode -- outside
-        Order Tracking they are skipped (#509). `resolve_open_plan` decides.
+        and logs the rest. Imported results alone open in the Analysis kind that shows
+        them; mixed with other channels they never switch the active mode --
+        outside their own mode they are skipped (#509). `resolve_open_plan` decides.
         """
         if not channels:
             return
@@ -493,8 +557,8 @@ class Workspace(AnalysisTabsMixin):
         plan = resolve_open_plan(channels, analysis_mode)
         imported = [row for row, reason in plan.skipped if reason == SKIP_IMPORTED]
         if imported:
-            self.app_context.log(f"WARN: {len(imported)} imported result channel(s) skipped; "
-                                 f"they open only in Order Tracking mode.")
+            self.app_context.log(f"WARN: {len(imported)} imported result channel(s) skipped; they open only "
+                                 f"in the mode that shows them (Order Tracking, Spectrum or Overall Level).")
         over_capacity = [row[2] for row, reason in plan.skipped if reason == SKIP_CAPACITY]
         if over_capacity:
             kind = resolve_analysis_kind(plan.analysis_kind)
@@ -523,7 +587,14 @@ class Workspace(AnalysisTabsMixin):
         # wait for a tab switch to pick it up.
         if self.filter_routing is not None:
             self.filter_routing.apply_active_filter_to_dock(dock)
-        self.tabs.setCurrentIndex(self.tabs.addTab(dock, f"Compare: {len(rows)} Channels"))
+        tab_label = build_tab_label(analysis_kind, [
+            build_tab_source(r[0].file_name if r[0] else "", r[1].name)
+            for r in rows
+        ])
+        tab_idx = self.tabs.addTab(dock, tab_label.label)
+        if hasattr(self.tabs, "setTabToolTip"):
+            self.tabs.setTabToolTip(tab_idx, tab_label.tooltip)
+        self.tabs.setCurrentIndex(tab_idx)
         dock.plot_widget.setTitle("⏳ Loading...")
 
         kind = resolve_analysis_kind(analysis_kind)
@@ -635,6 +706,7 @@ class Workspace(AnalysisTabsMixin):
         resolved: Union[ResolvedTrace, DeadLink],
         evaluation_config: Optional[EvaluationConfig] = None,
         dock_id: Optional[str] = None,
+        custom_tab_label: Optional[str] = None,
     ):
         """
         Creates the tab + dock for `analysis_kind` and stamps run_index/
@@ -674,6 +746,7 @@ class Workspace(AnalysisTabsMixin):
             dock.dock_id = dock_id
         if evaluation_config is not None:
             dock.evaluation_config = evaluation_config
+        dock.custom_tab_label = custom_tab_label
         self._connect_dock_signals(dock)
         # T4: a freshly opened dock starts under whatever filter is already
         # active -- most visibly a Global one, whose selection is already
@@ -691,7 +764,11 @@ class Workspace(AnalysisTabsMixin):
             # unmounted drive this session; without this, restoring once would
             # be the last time it is ever tried again.
             self.open_tabs.mark_dead_link(dock, resolved)
-            tab_idx = self.tabs.addTab(dock, f"⚠ Missing: {resolved.channel_name}")
+            dock.dead_link = resolved
+            tab_label = build_tab_label(analysis_kind, [], dead_link=resolved, custom_label=custom_tab_label)
+            tab_idx = self.tabs.addTab(dock, tab_label.label)
+            if hasattr(self.tabs, "setTabToolTip"):
+                self.tabs.setTabToolTip(tab_idx, tab_label.tooltip)
             self.tabs.setCurrentIndex(tab_idx)
             self.app_context.log(
                 f"WARNING: could not restore '{resolved.channel_name}' ({resolved.reason})."
@@ -700,9 +777,14 @@ class Workspace(AnalysisTabsMixin):
 
         dock.run_index = resolved.run_index
         dock.channel_meta = resolved.channel_meta
-        clean_name = strip_channel_name_prefix(resolved.channel_meta.name)
-        title = f"{resolve_analysis_kind(analysis_kind).title_prefix}{resolved.run_index.file_name} [{clean_name}]"
-        tab_idx = self.tabs.addTab(dock, title)
+        tab_label = build_tab_label(
+            analysis_kind,
+            [build_tab_source(resolved.run_index.file_name, resolved.channel_meta.name)],
+            custom_label=custom_tab_label,
+        )
+        tab_idx = self.tabs.addTab(dock, tab_label.label)
+        if hasattr(self.tabs, "setTabToolTip"):
+            self.tabs.setTabToolTip(tab_idx, tab_label.tooltip)
         self.tabs.setCurrentIndex(tab_idx)
         return dock
 
@@ -736,8 +818,9 @@ class Workspace(AnalysisTabsMixin):
         self.open_tabs.restore()
 
     def open_specific_channel_tab(self, run_index, channel_meta):
-        if resolve_channel_reading(channel_meta) == READING_IMPORTED_RESULT:
-            dock = self.build_shell(ANALYSIS_ORDERS, ResolvedTrace(run_index, channel_meta))
+        shown_by = resolve_channel_analysis_kind(channel_meta)
+        if shown_by is not None:
+            dock = self.build_shell(shown_by, ResolvedTrace(run_index, channel_meta))
             self._mark_project_dirty()
             self.dispatch_compute(dock, origin=ComputeOrigin.FRESH_OPEN)
             return
@@ -807,7 +890,7 @@ class Workspace(AnalysisTabsMixin):
 
         if isinstance(target, SpectrogramDock):
             try:
-                self._show_spectrogram(target, result.blocks[0])
+                target.plot_block(result.blocks[0])
             except UnevenRpmAxisError as error:
                 self.report_computation_failure(widget_tag, str(error))
                 return False
@@ -848,12 +931,13 @@ class Workspace(AnalysisTabsMixin):
 
         # Result sets first: queueing their read marks them pending, which is
         # what a re-dropped channel reads its Parameter Set from
-        # (LiveChannelDropHandler._resolve_drop_config).
+        # (resolve_result_content_drop_config).
         if restore.result_set_ids and self.result_content_handler is not None:
             self.result_content_handler.load_into_dock(target, list(restore.result_set_ids))
 
         if restore.overlays:
-            self.route_channel_drop(target, list(restore.overlays), mark_work_changed=False)
+            self.route_channel_drop(target, list(restore.overlays), mark_work_changed=False,
+                                    from_refresh=restore.from_refresh)
         elif restore.from_refresh:
             from gui.handlers.dock_tab_title import update_dock_tab_title
             update_dock_tab_title(target)
@@ -882,15 +966,6 @@ class Workspace(AnalysisTabsMixin):
                 "Open a 1D Spectrum tab first."
             )
 
-    def _show_spectrogram(self, target, block) -> None:
-        spec_settings = getattr(getattr(self, "app_context", None), "spectrogram_settings", None)
-        target.spectrogram.show_block(
-            block,
-            color_scale=getattr(spec_settings, "color_scale", "Linear"),
-            spectrum_format=getattr(spec_settings, "spectrum_format", "linear"),
-            amplitude_mode=getattr(spec_settings, "amplitude_mode", "rms"),
-        )
-
     def _log_overall_level_band_clamp(self, block) -> None:
         """
         One log line when the requested F max was clipped to the file's
@@ -910,27 +985,18 @@ class Workspace(AnalysisTabsMixin):
         Instantly re-scales the active dock's display format / amplitude / scale (< 1 ms),
         without background worker jobs or DSP recomputation.
 
-        Which settings are passed is the dock's Block kind's
-        `display_only_params`, read through its Analysis kind;
-        a setting the ribbon's config does not carry is left to the dock's
-        own fallback.
+        The dock reads its own settings (`_display_settings`, #833); a ribbon
+        tab that changed only says so. A dock whose Block kind has no
+        `display_only_params` has nothing to rebuild.
         """
         dock = self.tabs.currentWidget()
         if not isinstance(dock, (GraphDock, SpectrogramDock)):
             return
         if expected_kind is not None and dock.analysis_kind != expected_kind:
             return
-
-        analysis_kind = resolve_analysis_kind(dock.analysis_kind)
-        if not analysis_kind.display_only_params:
+        if not resolve_analysis_kind(dock.analysis_kind).display_only_params:
             return
-        settings = getattr(getattr(self, "app_context", None),
-                           resolve_analysis_mode_of_kind(analysis_kind.name).settings_name, None)
-        dock.rebuild_with_display_settings(**{
-            param: getattr(settings, param)
-            for param in analysis_kind.display_only_params
-            if hasattr(settings, param)
-        })
+        dock.rebuild_with_display_settings()
 
     def report_computation_failure(self, widget_tag: str, message: str, *,
                                    phase: str = live_compute.PHASE_COMPUTE) -> None:
@@ -1086,6 +1152,189 @@ class Workspace(AnalysisTabsMixin):
                 continue
             self.close_specific_tab(index, mark_work_changed=False)
 
+    def set_tab_custom_label(self, index: int, label: str) -> None:
+        """Sets a custom user label on the tab at `index` (#847)."""
+        if index < 0 or index >= self.tabs.count():
+            return
+        dock = self.tabs.widget(index)
+        if dock is self.placeholder_graph:
+            return
+        dock.custom_tab_label = label
+        update_dock_tab_title(dock)
+        self._mark_project_dirty()
+
+    def reset_tab_label(self, index: int) -> None:
+        """Resets the tab at `index` to its automatic label (#847)."""
+        if index < 0 or index >= self.tabs.count():
+            return
+        dock = self.tabs.widget(index)
+        if dock is self.placeholder_graph:
+            return
+        dock.custom_tab_label = None
+        update_dock_tab_title(dock)
+        self._mark_project_dirty()
+
+    def rename_tab(self, index: int) -> None:
+        """Prompts the user to rename the tab at `index` (#847)."""
+        if index < 0 or index >= self.tabs.count():
+            return
+        dock = self.tabs.widget(index)
+        if dock is self.placeholder_graph:
+            return
+
+        current_custom = getattr(dock, "custom_tab_label", None) or ""
+        current_display = self.tabs.tabText(index)
+        initial_text = current_custom if current_custom else current_display
+
+        from PySide6.QtWidgets import QInputDialog
+        new_name, ok = QInputDialog.getText(
+            self.tabs,
+            "Rename Tab",
+            "Tab label:",
+            text=initial_text,
+        )
+        if not ok:
+            return
+
+        new_name = new_name.strip()
+        if not new_name:
+            self.reset_tab_label(index)
+        else:
+            self.set_tab_custom_label(index, new_name)
+
+    def _on_tab_double_clicked(self, index: int) -> None:
+        """Double clicking a tab opens the rename prompt (#847)."""
+        if index < 0 or index >= self.tabs.count():
+            return
+        dock = self.tabs.widget(index)
+        if dock is self.placeholder_graph:
+            return
+        self.rename_tab(index)
+
+    def build_tab_context_menu(self, index: int) -> Optional[QMenu]:
+        """Builds the context menu for the tab at `index` (#845, #847)."""
+        if index < 0 or index >= self.tabs.count():
+            return None
+        target = self.tabs.widget(index)
+        is_home = (target is self.placeholder_graph)
+
+        menu = QMenu(self.tabs)
+
+        action_rename = menu.addAction("Rename Tab...")
+        action_rename.setEnabled(not is_home)
+        action_rename.triggered.connect(lambda: self.rename_tab(index))
+
+        has_custom = bool(getattr(target, "custom_tab_label", None))
+        if has_custom and not is_home:
+            action_reset = menu.addAction("Reset Tab Label")
+            action_reset.triggered.connect(lambda: self.reset_tab_label(index))
+
+        menu.addSeparator()
+
+        action_close = menu.addAction("Close")
+        action_close.setEnabled(not is_home)
+        action_close.triggered.connect(lambda: self.close_specific_tab(index))
+
+        other_graph_tabs = [
+            i for i in range(self.tabs.count())
+            if i != index and self.tabs.widget(i) is not self.placeholder_graph
+        ]
+        action_close_others = menu.addAction("Close Others")
+        action_close_others.setEnabled(len(other_graph_tabs) > 0)
+        action_close_others.triggered.connect(lambda: self.close_other_tabs(index))
+
+        graph_tabs = [
+            i for i in range(self.tabs.count())
+            if self.tabs.widget(i) is not self.placeholder_graph
+        ]
+        action_close_all = menu.addAction("Close All")
+        action_close_all.setEnabled(len(graph_tabs) > 0)
+        action_close_all.triggered.connect(lambda: self.close_all_graph_tabs())
+
+        return menu
+
+    def _on_tab_context_menu_requested(self, pos: QPoint) -> None:
+        tab_bar = getattr(self.tabs, "tabBar", None)
+        if callable(tab_bar):
+            tab_bar = tab_bar()
+        if tab_bar is None:
+            return
+        idx = tab_bar.tabAt(pos)
+        if idx < 0:
+            return
+        menu = self.build_tab_context_menu(idx)
+        if menu is not None:
+            menu.exec(tab_bar.mapToGlobal(pos))
+
+    def close_other_tabs(self, keep_index: int) -> None:
+        """Closes all graph tabs except the one at `keep_index` (#845)."""
+        if keep_index < 0 or keep_index >= self.tabs.count():
+            return
+        keep_widget = self.tabs.widget(keep_index)
+        placeholder = self.placeholder_graph
+        for i in range(self.tabs.count() - 1, -1, -1):
+            w = self.tabs.widget(i)
+            if w is placeholder or w is keep_widget:
+                continue
+            self.close_specific_tab(i)
+        if keep_widget is not None:
+            self.tabs.setCurrentWidget(keep_widget)
+
+    def _on_current_tab_changed(self, index: int) -> None:
+        if index < 0 or index >= self.tabs.count():
+            return
+        widget = self.tabs.widget(index)
+        if widget is not None and widget is not self.placeholder_graph:
+            self.tab_history.record_active(widget)
+
+    def switch_tab_mru(self, direction: int = 1) -> None:
+        """Cycles tabs in most-recently-used order (#846)."""
+        current_docks = [
+            self.tabs.widget(i)
+            for i in range(self.tabs.count())
+            if self.tabs.widget(i) is not self.placeholder_graph
+        ]
+        self.tab_history.sync(current_docks)
+
+        if not self.tab_history.is_cycling:
+            target = self.tab_history.start_cycle(direction)
+        else:
+            target = self.tab_history.step_cycle(direction)
+
+        if target is not None:
+            self.tabs.setCurrentWidget(target)
+
+    def commit_tab_mru_cycle(self) -> None:
+        """Commits the active MRU tab cycle (#846)."""
+        self.tab_history.finish_cycle()
+
+    def show_tab_list_popup(self):
+        """Opens the searchable popup for all open graph tabs (#848)."""
+        from gui.workspace.tab_list_popup import TabListPopup
+        popup = TabListPopup(self, parent=self.tabs)
+        btn = self.tab_list_button
+        if btn is not None and btn.isVisible():
+            pos = btn.mapToGlobal(QPoint(btn.width() - popup.minimumWidth(), btn.height() + 2))
+            popup.move(pos)
+        else:
+            popup.move(self.tabs.mapToGlobal(QPoint(self.tabs.width() - popup.minimumWidth() - 10, 30)))
+        popup.show()
+        return popup
+
+    def cancel_tab_mru_cycle(self) -> None:
+        """Cancels the active MRU tab cycle and returns to the original tab (#846)."""
+        cancelled = self.tab_history.cancel_cycle()
+        if cancelled is not None:
+            self.tabs.setCurrentWidget(cancelled)
+
+    def close_all_graph_tabs(self) -> None:
+        """Closes all graph tabs, restoring the Home Workspace (#845)."""
+        placeholder = self.placeholder_graph
+        for i in range(self.tabs.count() - 1, -1, -1):
+            if self.tabs.widget(i) is placeholder:
+                continue
+            self.close_specific_tab(i)
+
     def close_specific_tab(self, index: int, *, mark_work_changed: bool = True):
         if index < 0 or index >= self.tabs.count():
             return
@@ -1128,6 +1377,7 @@ class Workspace(AnalysisTabsMixin):
             self.tab_cache_files.close_tab(tag)
 
         target_widget.setParent(None)
+        self.tab_history.remove(target_widget)
         target_widget.deleteLater()
 
         if self.tabs.count() == 0:

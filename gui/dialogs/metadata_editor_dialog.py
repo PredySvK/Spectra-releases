@@ -155,7 +155,7 @@ class MetadataEditorDialog(QDialog):
         for entry in (self.project.sources if self.project else []):
             if not entry.in_pool:
                 continue
-            side = simulated if is_simulated_result_file(entry.relpath) else measured
+            side = simulated if is_simulated_result_file(entry.relpath, entry.import_template) else measured
             # One identity per sensor, not per reader label: "Set #N" differs from file to file (#508).
             side.update(split_channel_base_and_direction(label) for label in entry.channels)
         path = resolve_channel_pairing_path(self.project_path) if self.project_path else ""

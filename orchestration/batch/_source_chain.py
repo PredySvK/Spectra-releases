@@ -16,7 +16,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Set
 
 from core.block_kinds import resolve_clipped_f_stop, resolve_invalid_samples
 from core.jobs import CancelToken, JobCancelled
-from core.models import is_time_response
+from core.models import READING_WAVEFORM, resolve_channel_reading
 from core.workflow_graph import SaveSpec, Workflow
 from io_modules.data_accessor import DataAccessor
 from io_modules.measurement_files import file_stamp
@@ -268,7 +268,7 @@ def _run_source_chain(entry, directory: str, channel_labels: Sequence[str],
             errors.append(f"{entry.relpath}: {label}: not found in this file")
             continue
 
-        if not is_time_response(meta.func_type):
+        if resolve_channel_reading(meta) != READING_WAVEFORM:
             continue
 
         if meta.type in port_bound_types:

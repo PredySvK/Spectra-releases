@@ -4,7 +4,7 @@ Channel identity parsing for the selection floor.
 Selection floor: which subset of curves or measurements is relevant?
 Channel identity answers whether two curves or measurements refer to the same
 physical sensor and direction regardless of reader label formatting, and
-which channel of a file a drop, a curve or a memo entry means -- by index,
+which channel of a file a drop or a curve means -- by index,
 because same-named channels share everything else.
 
 What does not belong here: reading from disk or file format parsing (io_modules/),

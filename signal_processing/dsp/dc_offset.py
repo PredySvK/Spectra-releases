@@ -8,8 +8,10 @@ neither.
 
 import numpy as np
 
+from core.channel_types import CHANNEL_TYPE_ACCELEROMETER, CHANNEL_TYPE_TACHO
 
-def remove_dc_offset(y_data: np.ndarray, channel_type: str = "accelerometer") -> np.ndarray:
+
+def remove_dc_offset(y_data: np.ndarray, channel_type: str = CHANNEL_TYPE_ACCELEROMETER) -> np.ndarray:
     """
     Removes the zero-frequency (DC) offset by subtracting the block mean.
     Strictly bypasses sensors like Tacho or RPM where the absolute mean value is critical.
@@ -27,7 +29,7 @@ def remove_dc_offset(y_data: np.ndarray, channel_type: str = "accelerometer") ->
         return y_data
 
     # Do NOT remove DC from tachometers, static strain, or explicit RPM tracks
-    if "tacho" in channel_type.lower() or "rpm" in channel_type.lower():
+    if CHANNEL_TYPE_TACHO in channel_type.lower() or "rpm" in channel_type.lower():
         return y_data
 
     # Subtract the arithmetic mean (AC coupling emulation)

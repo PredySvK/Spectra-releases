@@ -14,12 +14,14 @@ from core.block_kinds import (
     KIND_ORDER_CUT, KIND_OVERALL_LEVEL, KIND_SPECTROGRAM, KIND_SPECTRUM, PARAM_ORDER,
     resolve_invalid_sample_metadata,
 )
+from core.channel_types import CHANNEL_TYPE_ACCELEROMETER
 from core.data_block import NVHDataBlock, build_source_ref
 from io_modules.data_accessor import DataAccessor
 from io_modules.result_cache import block_from_stored
 from io_modules.tab_cache import TabCacheMiss, read_tab_cache_file
 from orchestration.live_compute._compute_origin import PHASE_COMPUTE, PHASE_READ
 from orchestration.tab_cache import build_tab_cache_miss_line
+from orchestration.tacho_interpolation import build_tacho_interpolation_line
 from signal_processing.result_blocks import (
     TrackingScratch,
     build_invalid_samples_line,
@@ -31,9 +33,10 @@ from signal_processing.result_blocks import (
     compute_spectrogram,
     compute_spectrum,
     require_uniform_rpm_axis,
+    resolve_sampling_frequency,
     UnevenRpmAxisError,
 )
-from selection.tacho import find_tacho_channel
+from selection.tacho import find_tacho_channel, tacho_interpolates
 
 
 @dataclasses.dataclass(frozen=True)
@@ -145,8 +148,24 @@ def run_live_compute(request: LiveRequest, finder: Optional[Callable] = None,
 
     return LiveResult(
         blocks=tuple(blocks), vib_block=vib_block, tacho_block=tacho_block,
-        notices=before + notices + _invalid_samples_notices(blocks),
+        notices=before + _tacho_interpolation_notices(request, vib_block, tacho_block)
+        + notices + _invalid_samples_notices(blocks),
     )
+
+
+def _tacho_interpolation_notices(request: LiveRequest, vib_block, tacho_block) -> Tuple[str, ...]:
+    """The line saying a miss carried its tacho onto another rate: never for a hit, which computes nothing."""
+    if tacho_block is None or request.block_kind == KIND_SPECTRUM or getattr(request.config, "tracking_mode", "rpm") != "rpm":
+        return ()
+    try:
+        tacho_rate = resolve_sampling_frequency(tacho_block)
+        channel_rate = resolve_sampling_frequency(vib_block)
+    except ValueError:
+        return ()  # the compute refuses a block without a usable rate with its own message
+    if not tacho_interpolates(tacho_rate, channel_rate):
+        return ()
+    return (build_tacho_interpolation_line(
+        request.run_index.file_name, tacho_block.name, tacho_rate, channel_rate),)
 
 
 def _read_tab_cache(request: LiveRequest) -> Tuple[Optional[LiveResult], str]:
@@ -230,7 +249,7 @@ def _rebuild_cached_blocks(request: LiveRequest, cached) -> list:
         values=np.empty(0),
         times=np.empty(0),
         value_unit=first.value_unit or getattr(channel_meta, "unit", "") or "",
-        channel_type=getattr(channel_meta, "type", None) or "accelerometer",
+        channel_type=getattr(channel_meta, "type", None) or CHANNEL_TYPE_ACCELEROMETER,
         source=build_source_ref(request.run_index, channel_meta),
     )
     # The lookup misses outright when any requested order is absent, so the

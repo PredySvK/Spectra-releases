@@ -21,13 +21,17 @@ and how to show it.
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from core.channel_types import CHANNEL_TYPE_TACHO
 from core.jobs import JobRecord, JobState, job_step
 from core.workflow_graph import Workflow
 from io_modules.result_cache import result_params_from_block
 from orchestration.batch._batch_plan import BatchPlan
 from orchestration.batch._result_set_sink import ResultSetSink
-from orchestration.batch._source_chain import _BlockSavePlan, _run_source_chain
+from orchestration.batch._source_chain import _BlockSavePlan, _required_channel_types, _run_source_chain
 from orchestration.jobs import JobRunner
+from orchestration.tacho_interpolation import build_tacho_interpolation_line
+from selection.tacho import find_tacho_interpolation
+from session.data_pool import run_from_entry
 from signal_processing.workflow import spec_for
 
 #: The job slot a batch holds: a second run supersedes the first rather than
@@ -160,6 +164,9 @@ def run_batch(plan: BatchPlan, workflow: Workflow, session, job_runner: JobRunne
         for step in plan.steps
     ]
 
+    for line in _plan_tacho_interpolation_lines(plan, workflow):
+        _say(on_message, line)
+
     # Last, and after everything the callbacks read has been built: `on_done`
     # may fire inside this call (§1.70, contract 2).
     _say(on_message, plan.submit_message)
@@ -173,6 +180,24 @@ def run_batch(plan: BatchPlan, workflow: Workflow, session, job_runner: JobRunne
         on_error=lambda message, index: _on_source_failed(state, message, index),
         on_done=lambda record: _on_run_done(plan, state, record, on_finished),
     )
+
+
+def _plan_tacho_interpolation_lines(plan: BatchPlan, workflow: Workflow) -> List[str]:
+    """One line per file and target rate the run will carry a tacho onto, said before it starts.
+
+    Rates come from the project's stored channels. A batch has no result-cache
+    skip, so every step computes.
+    """
+    if CHANNEL_TYPE_TACHO not in _required_channel_types(workflow):
+        return []
+    lines: List[str] = []
+    for step in plan.steps:
+        run = run_from_entry(step.entry, step.directory)
+        found = find_tacho_interpolation(run, set(step.channel_labels)) if run is not None else None
+        if found is not None:
+            lines.extend(build_tacho_interpolation_line(step.entry.relpath, found.tacho_name, found.tacho_rate, rate)
+                         for rate in found.channel_rates)
+    return lines
 
 
 def _say(on_message: Optional[Callable[[str], None]], message: str) -> None:

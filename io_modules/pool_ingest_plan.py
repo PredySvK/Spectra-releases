@@ -42,10 +42,13 @@ class SelectionTree:
     `selected` lists the picked folders in selection order. `files` maps the
     canonical form of every walked folder that holds measurements to those files
     (sorted), so the later scan of the same folder does not list it again.
+    `walked` is every walked folder once, as spelled on the way there: the keys
+    of `files` only look folders up and are never a path to open.
     """
 
     selected: Tuple[SelectedFolder, ...] = ()
     files: Dict[str, Tuple[str, ...]] = None
+    walked: Tuple[str, ...] = ()
 
     def __post_init__(self):
         if self.files is None:
@@ -66,6 +69,7 @@ def discover_selection_tree(paths) -> SelectionTree:
     Files in `paths` are not looked at here; they need no walk.
     """
     files: Dict[str, Tuple[str, ...]] = {}
+    walked = []
     selected = []
     for path in paths:
         if not os.path.isdir(path):
@@ -75,9 +79,10 @@ def discover_selection_tree(paths) -> SelectionTree:
             key = canonical_path(dirpath)
             if key not in files:
                 files[key] = tuple(discover_measurement_files(dirpath))
+                walked.append(dirpath)
             if files[key]:
                 folders.append(dirpath)
         sheet = os.path.join(path, "Metadata.xlsx")
         selected.append(SelectedFolder(
             path, tuple(sorted(folders)), sheet if os.path.isfile(sheet) else None))
-    return SelectionTree(tuple(selected), files)
+    return SelectionTree(tuple(selected), files, tuple(walked))

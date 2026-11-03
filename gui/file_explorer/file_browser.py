@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from io_modules.measurement_files import SUPPORTED_EXTENSIONS, canonical_path, has_measurement_suffix
+from io_modules.import_template import read_builtin_templates, read_library_templates
 from gui.appearance import APP_TOKENS
 
 
@@ -215,6 +216,16 @@ class FileBrowserPanel(QWidget):
         if not menu.actions():
             return
 
+        template_actions = {}
+        template_menu = menu.addMenu("🧩 Add with template…")
+        # The library is a handful of small files the user just asked to choose from (§1.137).
+        templates = read_builtin_templates() + read_library_templates()
+        for template in templates:
+            template_actions[template_menu.addAction(template.name)] = template
+        template_menu.addSeparator()
+        several_action = template_menu.addAction("Several templates…")
+        new_template_action = template_menu.addAction("New…")
+
         menu.addSeparator()
         assign_action = menu.addAction("🧪 Add and assign to Test Setup...")
 
@@ -234,6 +245,15 @@ class FileBrowserPanel(QWidget):
             self.data_pool.remove_directories(pooled_dirs)
         elif chosen == add_files_action:
             self._add_paths(measurements)
+        elif chosen in template_actions:
+            self._add_paths(directories + measurements, import_templates=(template_actions[chosen],))
+        elif chosen == several_action:
+            from gui.dialogs.import_template_dialog import pick_import_templates
+            picked = pick_import_templates(self, templates)
+            if picked:
+                self._add_paths(directories + measurements, import_templates=tuple(picked))
+        elif chosen == new_template_action:
+            self._add_with_new_template(directories, measurements)
         elif chosen == assign_action:
             self._add_paths(directories + measurements, ask_for_setup=True)
         elif reveal_action is not None and chosen == reveal_action:
@@ -243,8 +263,27 @@ class FileBrowserPanel(QWidget):
             from gui.file_explorer.reveal import copy_paths_to_clipboard
             copy_paths_to_clipboard(paths)
 
-    def _add_paths(self, paths: list, ask_for_setup: bool = False):
-        self.data_pool.add_paths(paths, ask_for_setup=ask_for_setup)
+    def _add_with_new_template(self, directories: list, measurements: list) -> None:
+        """
+        Opens the import wizard on a sample workbook -- the first selected one, else
+        one the user picks in the selected folder -- and adds the selection with the
+        template it saves.
+        """
+        sample = next((path for path in measurements if path.lower().endswith((".xlsx", ".txt", ".csv"))), "")
+        if not sample:
+            from PySide6.QtWidgets import QFileDialog
+            start = directories[0] if directories else os.path.dirname(measurements[0])
+            sample, _ = QFileDialog.getOpenFileName(self, "Sample workbook for the new template",
+                                                    start, "Table files (*.xlsx *.txt *.csv)")
+            if not sample:
+                return
+        from gui.dialogs.import_template_wizard import ImportTemplateWizardDialog
+        dialog = ImportTemplateWizardDialog(self, sample, self.data_pool.job_runner)
+        if dialog.exec() == ImportTemplateWizardDialog.DialogCode.Accepted and dialog.saved_template:
+            self._add_paths(directories + measurements, import_templates=(dialog.saved_template,))
+
+    def _add_paths(self, paths: list, ask_for_setup: bool = False, import_templates=()):
+        self.data_pool.add_paths(paths, ask_for_setup=ask_for_setup, import_templates=import_templates)
 
 
 def _is_measurement(path: str) -> bool:

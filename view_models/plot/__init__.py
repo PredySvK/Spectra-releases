@@ -11,8 +11,11 @@ Architecture:
   (rebuild_units, rebuild_domain, rebuild_*_display) and reports every change
   (CurvesReplaced, CurveAppended, CurvesCleared) to the dock that draws them.
   PendingRestore / NOTHING_PENDING: what a graph gets back once its next base curve lands.
-- Display settings: DisplaySettings is the one value a graph is built and
-  rebuilt in (unit prefs, spectrum format / amplitude / dB, order & Overall Level amplitude).
+- Display settings: DisplaySettings is the one value a graph or a spectrogram is
+  built and rebuilt in (unit prefs, spectrum format / amplitude / dB, colour scale,
+  order & Overall Level amplitude); resolve_display_settings reads it from the ribbon
+  tabs' configs for a dock's Analysis kind (#833), its own RMS/Peak included (ADR §1.62
+  point 22).
 - Plot models (PlotModel, SpectrogramModel, Trace, Pen, ViewSpec, BandRmsCursor, Annotation):
   the snapshot a dock draws. Mask, HiddenReason and AcceptOutcome describe
   what GraphCurves decided is visible.
@@ -20,10 +23,8 @@ Architecture:
   GraphCurves' counterpart for a 2D map: it builds the model from a block
   (show_block), rebuilds it in other display settings (rebuild_display) and
   hands every new model to the dock that draws it (#301).
-- Live channel drops: LiveChannelDrops keeps the channels dropped live onto a graph
-  (claimed, pending) beside its curves.
-- Questions the GUI asks about curves it holds: amplitude_mode_for_kind,
-  overall_level_band_differs_from_dock, traces_kept_after_unload, build_trace_descriptor.
+- Questions the GUI asks about curves it holds: overall_level_band_differs_from_dock,
+  traces_kept_after_unload, build_trace_descriptor.
 - Spectrogram image geometry: resolve_image_axis_extent gives the span of one image axis
   (half a bin past each end, +-0.5 for a single bin); the dock draws the image over it
   and the Cursor reads the cell under the mouse from it (#665 C28).
@@ -55,6 +56,7 @@ from ._curve_identity import (
 )
 from ._display_settings import (
     DisplaySettings,
+    resolve_display_settings,
 )
 from ._graph_colours import (
     LARGE_CURVE_POINTS,
@@ -86,9 +88,6 @@ from ._legend_settings import (
     base_display_unit,
     format_display_unit,
 )
-from ._live_channel_drops import (
-    LiveChannelDrops,
-)
 from ._plot_model import (
     Annotation,
     BandRmsCursor,
@@ -99,7 +98,6 @@ from ._plot_model import (
     ViewSpec,
 )
 from ._plot_model_builder import (
-    amplitude_mode_for_kind,
     build_compute_spec,
     overall_level_band_differs_from_dock,
     traces_kept_after_unload,
@@ -126,12 +124,11 @@ __all__ = [
     # Order-curve identity -- (file, channel index, order), one composition
     "resolve_curve_channel_key",
     "resolve_order_curve_identity",
-    # Live channel drops -- what a graph claimed and still waits for
-    "LiveChannelDrops",
     # Graph spectrogram -- the one owner of a graph's spectrogram
     "GraphSpectrogram",
     # Display settings -- how a graph shows its curves
     "DisplaySettings",
+    "resolve_display_settings",
     # Plot models
     "Annotation",
     "BandRmsCursor",
@@ -147,7 +144,6 @@ __all__ = [
     "HiddenReason",
     "Mask",
     # Questions about held curves
-    "amplitude_mode_for_kind",
     "overall_level_band_differs_from_dock",
     "traces_kept_after_unload",
     # Spectrogram image geometry -- the span of one image axis

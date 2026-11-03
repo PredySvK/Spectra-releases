@@ -17,6 +17,18 @@ DEFAULT_EXPLORER_WIDTH = 420
 # Overridden by a saved layout / the per-user bottom_dock_height key.
 DEFAULT_BOTTOM_HEIGHT = 160
 
+# QSettings keys this layout writes -- the ones "Reset Layout" removes.
+_LAYOUT_KEY = "window_layout_state"
+_EXPLORER_WIDTH_KEY = "explorer_dock_width"
+_BOTTOM_HEIGHT_KEY = "bottom_dock_height"
+_BOTTOM_TABS_KEY = "bottom_tabs_visible"
+
+
+def layout_settings_keys() -> tuple[str, ...]:
+    """Every QSettings key the dock layout writes (what Reset Layout removes)."""
+    return (_LAYOUT_KEY, _EXPLORER_WIDTH_KEY, _BOTTOM_HEIGHT_KEY, _BOTTOM_TABS_KEY)
+
+
 # Qt's "no maximum" for a widget dimension.
 _QWIDGETSIZE_MAX = 16777215
 
@@ -84,18 +96,6 @@ class WorkspaceLayout:
         self.job_status_dock.setMaximumHeight(_QWIDGETSIZE_MAX if alone else height)
 
     # ---- QSettings keys -----------------------------------------------
-
-    def _layout_key(self) -> str:
-        return "window_layout_state"
-
-    def _explorer_width_key(self) -> str:
-        return "explorer_dock_width"
-
-    def _bottom_height_key(self) -> str:
-        return "bottom_dock_height"
-
-    def _bottom_tabs_key(self) -> str:
-        return "bottom_tabs_visible"
 
     # ---- factory layout -------------------------------------------------
 
@@ -173,7 +173,7 @@ class WorkspaceLayout:
     def apply_saved_bottom_tabs(self) -> None:
         """Restore which of System Log / Jobs / Evaluation are on. Default:
         everything on."""
-        raw = self.app_context.settings.value(self._bottom_tabs_key(), None)
+        raw = self.app_context.settings.value(_BOTTOM_TABS_KEY, None)
         wanted = set(raw.split(",")) if isinstance(raw, str) else {"log", "jobs", "evaluation"}
         for key, attr in self._BOTTOM_TAB_KEYS:
             self.bottom_panel.set_tab_visible(getattr(self, attr), key in wanted)
@@ -185,7 +185,7 @@ class WorkspaceLayout:
         if not self.is_restored:
             return
         settings = self.app_context.settings
-        settings.setValue(self._layout_key(), self.sub_area.saveState())
+        settings.setValue(_LAYOUT_KEY, self.sub_area.saveState())
         # QMainWindow.saveState() carries dock sizes, but restoreState() does not
         # reliably re-apply them through the frameless window's post-show resize
         # churn -- the Explorer column in particular snapped back to its size
@@ -193,22 +193,22 @@ class WorkspaceLayout:
         if self.explorer_dock.isVisible() and not self.explorer_dock.isFloating():
             width = self.explorer_dock.width()
             if width > 50:
-                settings.setValue(self._explorer_width_key(), width)
+                settings.setValue(_EXPLORER_WIDTH_KEY, width)
         # Same story vertically for the bottom panel -- pin its height so the
         # splitter drag survives a restart.
         if self.bottom_dock.isVisible() and not self.bottom_dock.isFloating():
             height = self.bottom_dock.height()
             if height > 50:
-                settings.setValue(self._bottom_height_key(), height)
+                settings.setValue(_BOTTOM_HEIGHT_KEY, height)
         # Which bottom tabs are on -- restoreState() cannot carry this.
         visible = [key for key, attr in self._BOTTOM_TAB_KEYS
                    if self.bottom_panel.is_tab_visible(getattr(self, attr))]
-        settings.setValue(self._bottom_tabs_key(), ",".join(visible))
+        settings.setValue(_BOTTOM_TABS_KEY, ",".join(visible))
 
     def restore_state(self) -> None:
         self.is_restored = True
         settings = self.app_context.settings
-        saved_state = settings.value(self._layout_key(), None)
+        saved_state = settings.value(_LAYOUT_KEY, None)
         if saved_state is not None:
             self.sub_area.restoreState(saved_state)
         self.apply_saved_bottom_tabs()
@@ -231,7 +231,7 @@ class WorkspaceLayout:
         Done here rather than at construction time because resizeDocks() only
         sticks once sub_area is laid out and visible. Idempotent -- safe on
         every show."""
-        raw = self.app_context.settings.value(self._explorer_width_key(), None)
+        raw = self.app_context.settings.value(_EXPLORER_WIDTH_KEY, None)
         try:
             width = int(raw)
         except (TypeError, ValueError):
@@ -242,7 +242,7 @@ class WorkspaceLayout:
     def apply_saved_bottom_height(self) -> None:
         """Force the bottom panel to the height the user left it at, or a
         sensible default. Idempotent -- safe on every workspace show."""
-        raw = self.app_context.settings.value(self._bottom_height_key(), None)
+        raw = self.app_context.settings.value(_BOTTOM_HEIGHT_KEY, None)
         try:
             height = int(raw)
         except (TypeError, ValueError):

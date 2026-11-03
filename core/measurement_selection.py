@@ -28,6 +28,8 @@ from core.models import ChannelIdentity
 
 # A frozen literal list of sources: what "run it on what I have selected right
 # now" produces. Reproducible forever, but it never picks up new measurements.
+# Filters applied when it was built are not stored, so they cannot narrow it
+# again at run time (§1.215).
 MODE_EXPLICIT = "explicit"
 
 # A facet predicate evaluated at run time: "the same thing on new data". This is
@@ -59,7 +61,8 @@ class MeasurementSelection:
     # Test Setup labels (SourceEntry.setup_label). Empty means "any setup".
     setup_labels: Tuple[str, ...] = ()
     # Filter column key -> accepted values. AND across columns, OR inside one.
-    # Query mode uses all columns; explicit mode uses Identity columns only.
+    # Query mode only; an explicit selection refuses it, as it refuses
+    # setup_labels and ranges.
     column_values: Mapping[str, Tuple[str, ...]] = field(default_factory=dict)
     # field key -> (lo, hi) in the field's own type: floats for numeric fields,
     # ISO "YYYY-MM-DD" strings for date fields (see comparator_facets).
@@ -80,6 +83,11 @@ class MeasurementSelection:
         object.__setattr__(self, "source_ids", tuple(str(sid) for sid in self.source_ids))
         object.__setattr__(self, "column_values", freeze_str_map(self.column_values))
         object.__setattr__(self, "ranges", freeze_range_map(self.ranges))
+        if self.mode == MODE_EXPLICIT and (self.setup_labels or self.column_values or self.ranges):
+            raise ValueError(
+                "An explicit selection is a frozen list of sources and channel pairs; "
+                "setup labels, column values and ranges belong to a query selection."
+            )
         if self.channel_identities is not None:
             if self.mode != MODE_EXPLICIT:
                 raise ValueError("Exact channel identities require explicit selection mode.")

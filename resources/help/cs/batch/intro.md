@@ -6,13 +6,13 @@ Tlačítko **Compute Batch** na konci každé analytické záložky otevře dial
 
 Na záložce *Project* použijte **Add Data Directory** a přidejte složku do Data Poolu. Část *Input Data* v dialogu pouze uvádí počet načtených měření; neumožňuje vybrat složku ani uložený výběr měření. Dávka použije aktuálně načtená měření a jejich odpovídající zdrojové soubory. Chcete-li zpracovat menší dávku, načtěte nejprve do Data Poolu jen požadovaná měření. [Uložené výběry](topic:selections/intro) v Exploreru nejsou vstupem tohoto tlačítka; rozsah této dávky neomezují.
 
-Před zápisem výsledků musí být projekt uložený. Pokud je třeba, aplikace nabídne uložení; jeho zrušením se zruší i dávka. Před výpočtem aplikace zaregistruje složky Data Poolu, které ještě nejsou v projektu. Pokud není načtené žádné měření nebo zvolený rozsah neodpovídá žádným kanálům, výpočet se přeskočí a důvod se zapíše do System Logu.
+Před zápisem výsledků musí být projekt uložený. Pokud je třeba, aplikace nabídne uložení; jeho zrušením se zruší i dávka. Před výpočtem aplikace zaregistruje složky Data Poolu, které ještě nejsou v projektu. Pokud není načtené žádné měření nebo zvolený typ neodpovídá žádným kanálům, výpočet se přeskočí a důvod se zapíše do System Logu.
 
 ## Nastavte kanály a řády
 
-V části **Channels** vyberte v nabídce **Type** možnost **Acceleration**, **Sound** nebo **Acceleration + Sound**. Poté zvolte **All channels** nebo **Selected channels**. U **Selected channels** otevřete tlačítkem **Choose…** dialog **Select Channels**; seznam vychází z kanálů nalezených v načtených měřeních a filtruje se podle zvoleného typu. V dialogu použijte **Select All** nebo **Select None** a potvrďte **OK**. S prázdným výběrem nelze dávku spustit. Změnou **Type** se dříve vybrané identity kanálů smažou, protože se změnil dostupný seznam.
+Dialog počítá celý Data Pool, bez ohledu na to, co zobrazuje Filtr. V části **Data Pool channels** zvolte **All** (akcelerometry a mikrofony), **Accelerometer** nebo **Microphone**. Tacho kanál se nikdy nepočítá jako kanál; jako otáčky se dál používá v Order Tracking a Overall Level. Pod volbou dialog ukáže, kolik měření a kanálů se spočítá; je-li to nula, tlačítko **Compute** je vypnuté.
 
-První výchozí volby jsou **Acceleration** a **All channels**. Typ kanálů i režim všech/vybraných kanálů se pamatují samostatně pro každou analytickou záložku. Vybrané identity se také pamatují pro každou záložku zvlášť. Nastavení se uloží po stisknutí **Compute** v dialogu, nikoli pouhým otevřením dialogu.
+Výchozí volba je **All**. Volba se pamatuje samostatně pro každou analytickou záložku a uloží se po stisknutí **Compute**, nikoli pouhým otevřením dialogu. Název result setu nese typ, například `Spectrum_4096_Accelerometer`; u **All** zůstává `…_All_Channels`.
 
 Pole **Orders to compute & save** se zobrazuje pouze u *Order Tracking*. Zadejte kladné [řády](topic:order_tracking/orders) oddělené čárkami nebo středníky; desetinná část používá tečku, například `1, 2, 4.5`. Pole předvyplní naposledy uložené dávkové řády, případně živé nastavení **Orders** v Order Tracking, pokud dávkové řády ještě uložené nejsou. Neplatný nebo prázdný vstup tlačítko **Compute** vypne. Ostatní analytické záložky používají svá aktuální nastavení v ribbonu a toto pole nezobrazují.
 

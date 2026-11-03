@@ -31,11 +31,12 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 
 import numpy as np
 
+from core.channel_types import CHANNEL_TYPE_GENERAL_DYNAMIC
 from core.block_kinds import (
     KIND_ORDER_CUT, KIND_ORDER_RESIDUAL, KIND_OVERALL_LEVEL, KIND_SPECTROGRAM, KIND_SPECTRUM, KIND_TIME_RESPONSE,
     META_EFFECTIVE_F_START, META_EFFECTIVE_F_STOP, PARAM_F_START, PARAM_F_STOP, PARAM_ORDER,
-    RMS_PEAK_CURVE_KINDS, STEP_READ,
-    validate,
+    STEP_READ,
+    spec_for, validate,
 )
 from core.models import (
     FUNC_TYPE_TIME_RESPONSE, ChannelMetadata, MeasurementRunIndex, resolve_channel_block_kind,
@@ -202,7 +203,7 @@ def read_display_meta(meta: Mapping[str, Any], channel_name: str,
     """
     run = MeasurementRunIndex(str(meta.get("file_name", "")), str(meta.get("file_path", "")))
     channel = ChannelMetadata(int(meta.get("channel_index", 0)), str(channel_name),
-                              str(meta.get("channel_type", "general_dynamic")), str(unit))
+                              str(meta.get("channel_type", CHANNEL_TYPE_GENERAL_DYNAMIC)), str(unit))
     channel.block_kind = meta.get("channel_block_kind")
     channel.func_type = meta.get("channel_func_type", FUNC_TYPE_TIME_RESPONSE)
     if meta.get("source_amplitude"):
@@ -236,7 +237,7 @@ class NVHDataBlock:
     values: np.ndarray
     value_unit: str = "dimensionless"
     value_quantity: str = ""
-    channel_type: str = "unknown"          # "accelerometer" | "microphone" | "tacho" | "voltage" | ...
+    channel_type: str = CHANNEL_TYPE_GENERAL_DYNAMIC   # one of core.channel_types.CHANNEL_TYPES
     acquisition: Acquisition = field(default_factory=Acquisition)
     processing: Optional[SpectralProcessing] = None
     source: SourceRef = field(default_factory=SourceRef)
@@ -316,7 +317,7 @@ class NVHDataBlock:
             display_unit = format_spectral_unit(base_unit, spectrum_format, amplitude_mode)
             return scaled, display_unit
 
-        if self.kind in RMS_PEAK_CURVE_KINDS:
+        if spec_for(self.kind).scales_with_rms_peak:
             amplitude_mode = normalize_dsp_choice(amplitude_mode, VALID_AMPLITUDE_MODES, "amplitude_mode")
             if amplitude_mode == "peak":
                 scaled = self.values * np.sqrt(2.0)
@@ -380,7 +381,7 @@ class NVHDataBlock:
     @classmethod
     def from_stored(cls, *, name: str, kind: str, axes: Tuple[Axis, ...], values,
                     value_unit: str = "dimensionless", value_quantity: str = "",
-                    channel_type: str = "unknown",
+                    channel_type: str = CHANNEL_TYPE_GENERAL_DYNAMIC,
                     acquisition: Optional[Acquisition] = None,
                     processing: Optional[SpectralProcessing] = None,
                     source: Optional[SourceRef] = None,
@@ -409,7 +410,7 @@ class NVHDataBlock:
 
     @classmethod
     def time_response(cls, *, name: str, values, times, value_unit: str = "dimensionless",
-                      time_unit: str = "s", channel_type: str = "unknown",
+                      time_unit: str = "s", channel_type: str = CHANNEL_TYPE_GENERAL_DYNAMIC,
                       acquisition: Optional[Acquisition] = None,
                       source: Optional[SourceRef] = None,
                       provenance: Optional[Provenance] = None,
@@ -425,7 +426,7 @@ class NVHDataBlock:
 
     @classmethod
     def spectrum(cls, *, name: str, values, frequencies, value_unit: str,
-                 processing: SpectralProcessing, channel_type: str = "unknown",
+                 processing: SpectralProcessing, channel_type: str = CHANNEL_TYPE_GENERAL_DYNAMIC,
                  acquisition: Optional[Acquisition] = None,
                  source: Optional[SourceRef] = None,
                  provenance: Optional[Provenance] = None,
@@ -441,7 +442,7 @@ class NVHDataBlock:
     @classmethod
     def spectrogram(cls, *, name: str, values, frequencies, z_values, z_unit: str,
                     z_quantity: str, value_unit: str, processing: SpectralProcessing,
-                    channel_type: str = "unknown",
+                    channel_type: str = CHANNEL_TYPE_GENERAL_DYNAMIC,
                     acquisition: Optional[Acquisition] = None,
                     source: Optional[SourceRef] = None,
                     provenance: Optional[Provenance] = None,
@@ -461,7 +462,7 @@ class NVHDataBlock:
 
     @classmethod
     def order_cut(cls, *, name: str, values, rpm, order: Optional[float], value_unit: str,
-                  processing: Optional[SpectralProcessing], channel_type: str = "unknown",
+                  processing: Optional[SpectralProcessing], channel_type: str = CHANNEL_TYPE_GENERAL_DYNAMIC,
                   acquisition: Optional[Acquisition] = None,
                   source: Optional[SourceRef] = None,
                   provenance: Optional[Provenance] = None,
@@ -490,7 +491,7 @@ class NVHDataBlock:
                       f_start: float, f_stop: Optional[float],
                       effective_f_start: float, effective_f_stop: float,
                       value_unit: str, processing: SpectralProcessing,
-                      channel_type: str = "unknown",
+                      channel_type: str = CHANNEL_TYPE_GENERAL_DYNAMIC,
                       acquisition: Optional[Acquisition] = None,
                       source: Optional[SourceRef] = None,
                       provenance: Optional[Provenance] = None,
@@ -516,8 +517,29 @@ class NVHDataBlock:
         )
 
     @classmethod
+    def read_overall_level(cls, *, name: str, values, rpm, value_unit: str,
+                           channel_type: str = CHANNEL_TYPE_GENERAL_DYNAMIC,
+                           acquisition: Optional[Acquisition] = None,
+                           source: Optional[SourceRef] = None,
+                           provenance: Optional[Provenance] = None,
+                           metadata: Optional[Mapping[str, Any]] = None) -> "NVHDataBlock":
+        """
+        An Overall Level read from a file against speed (§1.230): no
+        SpectralProcessing, and no band -- a file does not say which one it
+        was integrated over, so neither the requested nor the effective band
+        is recorded. `overall_level` is the factory for a computed one.
+        """
+        return cls(
+            name=name, kind=KIND_OVERALL_LEVEL,
+            axes=(Axis(values=rpm, unit="RPM", quantity="rpm", label="Speed"),),
+            values=values, value_unit=value_unit, value_quantity="amplitude",
+            channel_type=channel_type, processing=None,
+            **cls._carry_through(acquisition, source, provenance, metadata),
+        )
+
+    @classmethod
     def order_residual(cls, *, name: str, values, rpm, value_unit: str,
-                       processing: SpectralProcessing, channel_type: str = "unknown",
+                       processing: SpectralProcessing, channel_type: str = CHANNEL_TYPE_GENERAL_DYNAMIC,
                        acquisition: Optional[Acquisition] = None,
                        source: Optional[SourceRef] = None,
                        provenance: Optional[Provenance] = None,

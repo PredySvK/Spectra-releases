@@ -6,13 +6,13 @@
 
 Use **Add Data Directory** in the *Project* tab to add a folder to the [Data Pool](topic:import/intro). The batch dialog’s *Input Data* section only reports how many measurements are loaded; it does not let you choose a folder or a saved measurement selection. The batch uses the currently loaded measurements and their matching source files. To run a smaller batch, first load only the measurements you want in the Data Pool. [Saved selections](topic:selections/intro) in the Explorer are not inputs to this button; they do not restrict this batch.
 
-The project must be saved before results can be written. If needed, the app asks to save it; cancelling that save cancels the batch. Before calculating, the app registers loaded pool folders that are not yet in the project. If no measurement is loaded, or the chosen channel scope matches no channels, the calculation is skipped and the reason is written to the System Log.
+The project must be saved before results can be written. If needed, the app asks to save it; cancelling that save cancels the batch. Before calculating, the app registers loaded pool folders that are not yet in the project. If no measurement is loaded, or the chosen type matches no channels, the calculation is skipped and the reason is written to the System Log.
 
 ## Set channels and orders
 
-In **Channels**, choose **Acceleration**, **Sound**, or **Acceleration + Sound** under **Type**. Then choose **All channels** or **Selected channels**. With **Selected channels**, use **Choose…** to open **Select Channels**; the list is built from the channels found in the loaded measurements and filtered by the selected type. Use **Select All** or **Select None** in that picker, then confirm with **OK**. If the selection is empty, the batch cannot start. Changing **Type** clears the remembered picked channel identities because the available list has changed.
+The dialog computes the whole Data Pool, whatever the Filter shows. Under **Data Pool channels**, choose **All** (accelerometers and microphones), **Accelerometer**, or **Microphone**. The tacho channel is never computed as a channel; it is still used as the rpm for Order Tracking and Overall Level. Below the choice the dialog shows how many measurements and channels will be computed, and **Compute** is disabled when that is zero.
 
-The first defaults are **Acceleration** and **All channels**. The channel type and all/selected mode are remembered separately for each analysis tab. The picked identities are also remembered per tab. These preferences are saved when you press **Compute** in the dialog, not just by opening it.
+The default is **All**. The choice is remembered separately for each analysis tab and saved when you press **Compute**, not just by opening the dialog. The result set name carries the type, for example `Spectrum_4096_Accelerometer`; **All** keeps `…_All_Channels`.
 
 Only *Order Tracking* shows **Orders to compute & save**. Enter positive [orders](topic:order_tracking/orders) separated by commas or semicolons; use a dot for a decimal, for example `1, 2, 4.5`. The field starts with the previously saved batch orders, or the live Order Tracking **Orders** setting if no batch value has been saved yet. Invalid or empty input disables **Compute**. Other analysis tabs use their current ribbon settings and do not show this field.
 

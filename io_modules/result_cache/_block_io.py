@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Mapping, Optional
 import numpy as np
 
 from core.block_kinds import spec_for
+from core.channel_types import CHANNEL_TYPE_GENERAL_DYNAMIC
 from core.data_block import (
     Acquisition, Axis, NVHDataBlock, Provenance, SourceRef, SpectralProcessing,
 )
@@ -202,6 +203,13 @@ def read_channel_blocks(group) -> List[StoredBlock]:
     return blocks
 
 
+def _read_channel_type(meta: Mapping[str, Any]) -> str:
+    """The stored Channel type. "unknown" was the block's default before §1.217
+    and is still in caches written then; it reads as general_dynamic."""
+    channel_type = meta.get("channel_type") or CHANNEL_TYPE_GENERAL_DYNAMIC
+    return CHANNEL_TYPE_GENERAL_DYNAMIC if channel_type == "unknown" else channel_type
+
+
 def block_from_stored(stored: StoredBlock, kind: str) -> NVHDataBlock:
     """
     Rebuilds a full NVHDataBlock from what was stored.
@@ -224,7 +232,7 @@ def block_from_stored(stored: StoredBlock, kind: str) -> NVHDataBlock:
         name=stored.name, kind=kind, axes=axes, values=stored.values,
         value_unit=stored.value_unit,
         value_quantity=stored.value_quantity or meta.get("value_quantity", ""),
-        channel_type=meta.get("channel_type", "unknown"),
+        channel_type=_read_channel_type(meta),
         acquisition=_build(Acquisition, meta.get("acquisition")),
         processing=_build(SpectralProcessing, meta.get("processing")),
         source=_build_source_ref(meta.get("source")),

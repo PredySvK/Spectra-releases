@@ -255,9 +255,11 @@ def run_from_entry(entry: SourceEntry, directory: str) -> Optional[MeasurementRu
         correct_run_channel(run, channel_label, unit)
         correct_entry_channel(entry, channel_label, unit)
 
-    if entry.source_amplitude:
-        for channel_meta in run.available_channels.values():
+    for channel_meta in run.available_channels.values():
+        if entry.source_amplitude:
             channel_meta.source_amplitude = entry.source_amplitude
+        if entry.import_template:
+            channel_meta.import_template = entry.import_template
 
     return run
 
@@ -533,6 +535,7 @@ class DataPool:
             "primary_excel_path": self.primary_excel_metadata_path,
             "project_path": session.path,
             "roots": tuple(replace(root) for root in session.project.data_roots),
+            "sources": tuple(replace(entry) for entry in session.project.sources),
         }
 
     # ---- the data pool -------------------------------------------------
@@ -540,6 +543,7 @@ class DataPool:
     def integrate_scanned_directory(self, directory_path: str, scanned: ScannedDirectory, *,
                                     only_files=None, admit_unknown: bool = False,
                                     source_amplitudes: Optional[Mapping[str, str]] = None,
+                                    import_templates: Optional[Mapping[str, str]] = None,
                                     ) -> IntegrateResult:
         """
         Folds a scanned folder into the pool. Must run on the GUI thread.
@@ -569,6 +573,8 @@ class DataPool:
         `source_amplitudes` maps a file path to the Source amplitude the user
         just answered for it; it is written onto the file's source entry, over
         any earlier answer, before the project's answers are laid over the runs.
+        `import_templates` maps a file path to the Import template (a name the
+        project holds a copy of) the Add assigned to it; written the same way.
 
         The scan's Unreadable files replace what the folder's previous scan
         left, are never admitted to the pool and never reach the project.
@@ -614,7 +620,11 @@ class DataPool:
             entry = location.entry_for_path(path)
             if entry is not None:
                 session.set_source_amplitude(entry.id, source_amplitude)
-        session.apply_source_amplitudes(runs_list)
+        for path, import_template in (import_templates or {}).items():
+            entry = location.entry_for_path(path)
+            if entry is not None:
+                session.set_import_template(entry.id, import_template)
+        session.apply_source_assignments(runs_list)
         corrected = session.apply_unit_overrides(runs_list)
 
         # The reverse direction: the scan just re-read each run's Level 1/2

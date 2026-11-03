@@ -8,6 +8,7 @@ All internal documentation strings and variable labels are standardly written in
 from dataclasses import dataclass
 from typing import Dict, Any, List, Optional, Tuple
 from core.block_kinds import KIND_TIME_RESPONSE
+from core.channel_types import CHANNEL_TYPE_GENERAL_DYNAMIC
 
 # A physical channel identified by (base_name, direction) rather than by its raw
 # label -- the same sensor's label can carry a different "Set #N" prefix from
@@ -74,6 +75,11 @@ class ChannelMetadata:
     # so a channel nobody answered for adds nothing to to_dict().
     source_amplitude: str = ""
 
+    # The Import template the project assigned to the channel's file; empty
+    # means none and the file's suffix picks the reader. Class attribute for
+    # the same reason as source_amplitude.
+    import_template: str = ""
+
     def __init__(self, index: int, name: str, channel_type: str, unit: str):
         self.index: int = index
         self.name: str = name
@@ -127,7 +133,7 @@ class ChannelMetadata:
         instance = cls(
             index=data_map.get("index", 0),
             name=data_map.get("name", "Unknown_Channel"),
-            channel_type=data_map.get("type", "general_dynamic"),
+            channel_type=data_map.get("type", CHANNEL_TYPE_GENERAL_DYNAMIC),
             unit=data_map.get("unit", "dimensionless")
         )
 
@@ -245,7 +251,7 @@ class MeasurementRunIndex:
         is shown and stored but never computed from, and an unreadable channel stays
         in available_channels so the file's contents remain visible."""
         return [meta for meta in self.available_channels.values()
-                if is_time_response(meta.func_type)]
+                if resolve_channel_reading(meta) == READING_WAVEFORM]
 
     # Attributes that describe the run's own structure rather than a Level 1
     # fact discovered from the file -- excluded from file_level_facts() below.

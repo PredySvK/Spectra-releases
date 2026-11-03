@@ -7,7 +7,11 @@ a `JobRunner`, folds each folder into the pool as it lands, and reports the
 run as data: a `FolderReport` per folder and one `IngestOutcome` at the end.
 Before reading it asks the **Source amplitude** question (RMS or Peak) once per
 Imported-result reader that has files in the plan, through a callback the shell
-supplies. When an ingest finishes it starts the `MissingMeasurementCheck`,
+supplies; a file that fits several **Import templates** is asked about the same
+way, and a file that fits none of the templates its name belongs to comes back
+as a **Misfit** in the run's outcome instead of being left out silently.
+`start_template_edit` confirms an edit of the project's copy of an Import
+template and re-reads only the files that copy reads. When an ingest finishes it starts the `MissingMeasurementCheck`,
 which also runs after a project's pool is restored and tells the pool which
 of its measurements are Missing measurements, on a worker.
 `unregistered_pool_directories` answers the separate question of which pooled
@@ -37,6 +41,11 @@ from orchestration.data_pool._source_amplitude import (
     SourceAmplitudeAsker,
     SourceAmplitudeQuestion,
 )
+from orchestration.data_pool._template_assignment import (
+    ImportTemplateAsker,
+    Misfit,
+    TemplateQuestion,
+)
 from orchestration.data_pool._metadata_schema import save_metadata_schema
 from orchestration.data_pool._registration import (
     REGISTRATION_SLOT_KEY,
@@ -49,12 +58,15 @@ __all__ = [
     "REGISTRATION_SLOT_KEY",
     "FolderReport",
     "IngestOutcome",
+    "ImportTemplateAsker",
     "IngestPlan",
+    "Misfit",
     "MissingCheckOutcome",
     "MissingMeasurementCheck",
     "PoolIngestUseCase",
     "SourceAmplitudeAsker",
     "SourceAmplitudeQuestion",
+    "TemplateQuestion",
     "plan_pool_ingest",
     "plan_pool_refresh",
     "save_metadata_schema",

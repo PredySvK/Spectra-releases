@@ -2,6 +2,17 @@
 
 What changed in Spectra, written for users. Rules for writing it: [docs/agents/release.md](docs/agents/release.md).
 
+## Unreleased
+
+## 0.2.3 - 2026-11-03
+
+- Import Wizard with portable template (no finished interface yet): you can build own portable template that reads any file.
+- Simcenter Testlab and HEADlab acoustics `.hdf` data format as input is supported.
+- Tracked results now work when the tacho has a different sampling rate than the channel.
+- Compute Result Set selection rework.
+- Curves you dropped into a graph now stay put after Save, reopening, Refresh and unticking a result set.
+- Bug fixes.
+
 ## 0.2.2 - 2026-10-23
 
 - Simcenter Testlab `.ldsf` version 21, 24-bit data format as input is supported.

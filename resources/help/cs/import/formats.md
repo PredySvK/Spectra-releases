@@ -1,12 +1,13 @@
 # Podporované formáty
 
-Soubor se pozná podle přípony: `.unv`, `.uff`, `.asc`, `.ldsf`, `.xlsx`, `.txt`, `.csv` (velikost písmen nehraje roli). `.xlsx`, `.txt` a `.csv` jsou příliš běžné, proto jsou měřením jen tehdy, když je rozpoznána jejich hlavička. [`metadata.xlsx`](topic:import/metadata), README nebo poznámky se ignorují.
+Soubor se pozná podle přípony: `.unv`, `.uff`, `.asc`, `.ldsf`, `.hdf`, `.xlsx`, `.txt`, `.csv` (velikost písmen nehraje roli). `.xlsx`, `.txt` a `.csv` jsou příliš běžné, proto jsou měřením jen tehdy, když je rozpoznána jejich hlavička. [`metadata.xlsx`](topic:import/metadata), README nebo poznámky se ignorují.
 
 | Přípona | Formát | Obsah | Druh |
 |---|---|---|---|
 | `.unv`, `.uff` | Universal File Format, dataset 58 | [časové průběhy](topic:raw_data/intro) | měřené |
 | `.asc` | Siemens Testlab ASCII | [časové průběhy](topic:raw_data/intro) | měřené |
 | `.ldsf` | záznam Simcenter Testlab | [časové průběhy](topic:raw_data/intro) | měřené |
+| `.hdf` | datový soubor HEAD acoustics | [časové průběhy](topic:raw_data/intro) | měřené |
 | `.txt` | zpracované měření oddělené tabulátory | [křivky řádů](topic:order_tracking/intro) podle otáček | měřené |
 | `.xlsx` | výsledkový sešit MASTA | [křivky řádů](topic:order_tracking/intro) podle otáček | simulované (páruje se přes [Párování kanálů](topic:import/channel_pairing)) |
 | `.csv` | harmonická odezva ANSYS | [křivka](topic:order_tracking/intro) 1. řádu podle otáček | simulované (páruje se přes [Párování kanálů](topic:import/channel_pairing)) |
@@ -51,7 +52,7 @@ Surový časový záznam uložený programem Simcenter Testlab, čte se bez Test
 | Jednotka | jednotka kanálu |
 | Vzorkovací frekvence, počet bodů | hlavička a index souboru |
 | Začátek času | časová osa souboru (0 s, když ji soubor neukládá) |
-| Uzel, směr | číslované jako v UNV exportu Testlabu: body 1.. v seřazeném pořadí části názvu před posledním `:`, směr z přípony `:+X`, `:+Y`, `:+Z` (bez přípony: 0) |
+| Uzel, směr | číslované jako v UNV exportu Testlabu: body 1.. v seřazeném pořadí části názvu před směrem, směr z přípony `:+X` nebo ` +X` pro X, Y, Z, znaménko se ignoruje (bez přípony: 0) |
 
 Čte se jen to, co bylo ověřeno proti vlastnímu UNV exportu Testlabu:
 
@@ -61,6 +62,19 @@ Surový časový záznam uložený programem Simcenter Testlab, čte se bez Test
 | verze formátu 21 (záznamy z měřicího front-endu) | 24bitová celá čísla s měřítkem, převedená na jednotku kanálu (`g`, `rpm`, …) |
 
 Zatím se nečte: jiné typy vzorků (16bitová nebo 32bitová celá čísla, 64bitová čísla s plovoucí čárkou), více proudů (kanály s různou vzorkovací frekvencí), jiné verze formátu. Takový soubor se přeskočí a v Data Poolu se neobjeví. Citlivost, rozsah a sériová čísla front-endu uložená v souboru se nezobrazují.
+
+## .hdf
+
+Surový časový záznam ve formátu datového souboru HEAD acoustics (převedený programem Simcenter Tecware nebo zaznamenaný v HEADlabu). I přes příponu to není soubor HDF5. Jedna osa (čas). V záznamu z HEADlabu mohou mít kanály různou vzorkovací frekvenci. Pro řádovou analýzu se tacho s jinou frekvencí interpoluje na časovou osu analyzovaného kanálu, rychlejší se nejprve zprůměruje přes jeden vzorek kanálu; tacho, které začíná v jiném čase, se odmítne se zprávou. Interpolace nepřidává informaci a běží vždy sama; soubor je v Data Poolu označen ⓘ a po najetí na řádek tooltip uvede tacho a frekvence ([podrobnosti](topic:shared/tracking)).
+
+| Pole | Odkud |
+|---|---|
+| Název kanálu, jednotka | název a fyzikální jednotka kanálu v hlavičce souboru |
+| Vzorkovací frekvence, začátek času, počet bodů | časová osa souboru (first value, delta value, number of scans) |
+| Hodnoty | Simcenter Tecware: 16bitová celá čísla krát map factor kanálu. HEADlab: 32bitová čísla s plovoucí čárkou. Obojí v jednotce kanálu (`Pa`, `g`, `rpm`, …) |
+| Uzel, směr | číslované jako v UNV exportu téhož souboru: body 1.. v seřazeném pořadí části názvu před posledním `:`, směr z přípony `:+X`, `:+Y`, `:+Z` (bez přípony: 0) |
+
+Čtou se jen dvě známá rozložení: verze 2 release 2 (Simcenter Tecware) a verze 4 release 6 (HEADlab), pořadí bajtů Intel, časová data, lineární mapování. Cokoli jiného (jiné typy vzorků, jiná organizace dat, více os, useknutý soubor) se přeskočí a v Data Poolu se neobjeví. Bajty za vzorky a surové CAN kanály se nečtou a soubor je pak v Data Poolu označen ◐. V souborech ze Simcenter Tecware se kvůli 16bitovému uložení hodnota může od nezaokrouhleného UNV exportu lišit nejvýše o jeden krok.
 
 ## .txt (zpracované měření)
 
@@ -106,13 +120,13 @@ Soubory MASTA, zpracovaného měření a ANSYS nesou hotovou amplitudu a soubor 
 
 | Formát | Výchozí odpověď |
 |---|---|
-| MASTA | RMS |
+| MASTA | Peak |
 | zpracované měření | RMS |
 | ANSYS | Peak |
 
 - Odpověď se uloží u každého souboru v projektu a neptá se znovu při Refresh ani při otevření projektu. Nové soubory, které se objeví ve sledované složce, se zeptají znovu.
 - Cancel nepřidá do poolu nic. Chybnou odpověď opravíte tak, že soubor z poolu odeberete a přidáte znovu.
-- Časové signály (`.unv`, `.uff`, `.asc`, `.ldsf`) se nikdy neptají: jejich amplitudu si program počítá sám.
+- Časové signály (`.unv`, `.uff`, `.asc`, `.ldsf`, `.hdf`) se nikdy neptají: jejich amplitudu si program počítá sám.
 - Projekt uložený před zavedením otázky otevře křivky beze změny (ANSYS Peak, ostatní RMS).
 
 ## Typ kanálu

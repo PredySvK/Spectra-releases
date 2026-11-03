@@ -21,7 +21,7 @@ in English.
 """
 import dataclasses
 import typing
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Iterable, Tuple
 
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QLineEdit, QSpinBox, QWidget,
@@ -153,6 +153,7 @@ def _read_widget(f: dataclasses.Field, widget: QWidget) -> Any:
         try:
             return inner(text)
         except (TypeError, ValueError):
+            # Kept as typed: Apply refuses it (`resolve_block_params_refusal`).
             return text
     return text
 
@@ -162,7 +163,9 @@ class BlockParamForm(QWidget):
     `set_config(config_cls, params, read_only=...)` builds one row per dataclass
     field; `values()` reads them back into a params dict. Missing keys in
     `params` fall back to the dataclass default -- the same value the ribbon
-    would show.
+    would show. Fields named in `settings_params` get no row and are not in
+    `values()`: the Settings window owns them (`BlockSpec.settings_params`,
+    ADR §1.211).
     """
 
     def __init__(self, parent=None):
@@ -178,11 +181,15 @@ class BlockParamForm(QWidget):
         self._widgets = {}
         self._config_cls = None
 
-    def set_config(self, config_cls: Any, params: Any, *, read_only: bool = False) -> None:
+    def set_config(self, config_cls: Any, params: Any, *, read_only: bool = False,
+                   settings_params: Iterable[str] = ()) -> None:
         self.clear()
         self._config_cls = config_cls
         params = dict(params or {})
+        settings_params = set(settings_params)
         for f in dataclasses.fields(config_cls):
+            if f.name in settings_params:
+                continue
             value = params.get(f.name, _field_default(f))
             widget = _make_widget(f, value, _choices_for(config_cls, f.name))
             widget.setEnabled(not read_only)

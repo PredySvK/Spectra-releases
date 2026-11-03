@@ -58,7 +58,16 @@ class WorkflowView(QWidget):
         self._workflow: Optional[Workflow] = None
         self._selected_block_id: Optional[str] = None
         self._build_ui()
-        QApplication.instance().installEventFilter(self)
+        QApplication.instance().focusChanged.connect(self._watch_focused_descendant)
+
+    def _watch_focused_descendant(self, old, new) -> None:
+        # Filter only the focused descendant, never the whole application: a
+        # Python event filter on QApplication crashes PySide6 when QtWebEngine's
+        # internal Quick items (the Help page) receive hover events.
+        if old is not None and self.isAncestorOf(old):
+            old.removeEventFilter(self)
+        if new is not None and self.isAncestorOf(new):
+            new.installEventFilter(self)
 
     def eventFilter(self, watched, event) -> bool:
         # Editable Properties fields normally claim Ctrl+Z for their own text.
@@ -353,7 +362,8 @@ class WorkflowView(QWidget):
         self.save_editor.setVisible(True)
         self.btn_apply.setVisible(True)
         self.btn_apply.setEnabled(editable)
-        self.param_form.set_config(spec.config_cls, workflow_block.params, read_only=not editable)
+        self.param_form.set_config(spec.config_cls, workflow_block.params, read_only=not editable,
+                                   settings_params=spec.settings_params)
         self.save_editor.set_spec(
             workflow_block.save, channel_groups=self._channel_groups(), read_only=not editable
         )

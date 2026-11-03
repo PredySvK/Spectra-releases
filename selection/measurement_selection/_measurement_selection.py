@@ -202,13 +202,10 @@ def resolve(selection: MeasurementSelection,
         if selection.setup_labels:
             allowed = set(selection.setup_labels)
             matched = [source for source in matched if source.setup_label in allowed]
-    if selection.mode == MODE_EXPLICIT:
-        columns = {key: values for key, values in selection.column_values.items()
-                   if key in POOL_IDENTITY_COLUMNS}
-        ranges = {}
-    else:
-        columns, ranges, unevaluable = _saved_facet_plan(
-            selection.column_values, selection.ranges, schema, column_rule=True)
+    # An explicit selection carries no column constraints (§1.215): only its
+    # source ids and exact channel pairs narrow it.
+    columns, ranges, unevaluable = _saved_facet_plan(
+        selection.column_values, selection.ranges, schema, column_rule=True)
     if ranges:
         matched = apply_range_facets(matched, schema, ranges, fields=ranges)
     picked = apply_column_facets(matched, schema, columns, ranges=ranges)
@@ -361,6 +358,31 @@ def channel_identities_by_type(runs: Iterable[MeasurementRunIndex],
         base: sorted(directions, key=lambda d: (d is None, d))
         for base, directions in grouped.items()
     }
+
+
+def count_channels_by_type(runs: Iterable[MeasurementRunIndex],
+                           channel_types: Set[str],
+                           entries_by_path: Optional[Mapping[str, SourceEntry]] = None,
+                           ) -> Tuple[int, int]:
+    """
+    (measurements, channels) of `runs` that have a channel of `channel_types`:
+    how many runs contribute at least one, and how many channels in all. Judged
+    by `resolve_run_channel_type`, like `channel_identities_by_type`, so the
+    number shown is the number a typed SaveSpec goes on to keep.
+    """
+    entries_by_path = entries_by_path or {}
+    measurements = 0
+    channels = 0
+    for run in runs:
+        source = entries_by_path.get(os.path.normcase(os.path.abspath(run.file_path)))
+        matching = sum(
+            1 for channel_meta in run.computable_channels()
+            if resolve_run_channel_type(source, channel_meta) in channel_types
+        )
+        if matching:
+            measurements += 1
+            channels += matching
+    return measurements, channels
 
 
 def select_channels_for_run(run: MeasurementRunIndex,

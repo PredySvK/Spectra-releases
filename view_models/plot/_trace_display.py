@@ -14,6 +14,9 @@ from typing import Optional, Tuple
 
 import numpy as np
 
+from core.channel_types import (
+    CHANNEL_TYPE_ACCELEROMETER, CHANNEL_TYPE_MICROPHONE, CHANNEL_TYPE_TACHO, CHANNEL_TYPE_VOLTAGE,
+)
 from core.units import (
     UnitPreferences,
     check_units_compatibility,
@@ -30,10 +33,10 @@ from ._plot_model import PlotModel, Trace
 # Ordinate-axis title per channel type (core.units.determine_channel_type).
 # "general_dynamic" and anything unmapped fall back to the neutral "Amplitude".
 _AXIS_QUANTITY_LABELS = {
-    "accelerometer": "Acceleration",
-    "microphone": "Sound Pressure",
-    "voltage": "Voltage",
-    "tacho": "Speed",
+    CHANNEL_TYPE_ACCELEROMETER: "Acceleration",
+    CHANNEL_TYPE_MICROPHONE: "Sound Pressure",
+    CHANNEL_TYPE_VOLTAGE: "Voltage",
+    CHANNEL_TYPE_TACHO: "Speed",
 }
 
 
@@ -152,7 +155,7 @@ def build_trace_in_display_settings(
 
 def resolve_ordinate_quantity(trace: Trace) -> str:
     """The quantity of ``trace``'s Y values: ``"rpm"`` for a speed channel, else ""."""
-    return "rpm" if trace.channel_type == "tacho" else ""
+    return "rpm" if trace.channel_type == CHANNEL_TYPE_TACHO else ""
 
 
 def resolve_ordinate(base: Trace) -> Tuple[str, str]:

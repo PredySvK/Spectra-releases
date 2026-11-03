@@ -11,10 +11,10 @@ import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Mapping, NamedTuple, Optional, Sequence, Tuple
 
 from core.models import ChannelMetadata, LostPart, MeasurementRunIndex, UnreadableFile
-from core.project_model import DataRoot
+from core.project_model import DataRoot, SourceEntry
 from io_modules.measurement_files import (
     canonical_path,
     discover_measurement_files,
@@ -22,9 +22,10 @@ from io_modules.measurement_files import (
     open_measurement_reader,
     scan_cache_basename,
 )
+from io_modules.import_template import resolve_template_cache_key
 from io_modules.metadata_parser import AccMetadataParser, build_normalized_lookup, normalize_file_key
 from io_modules.metadata_schema import generate_baseline_schema_master, resolve_excel_metadata_for_files
-from io_modules.project_store import DirectoryIndex, read_root_directories
+from io_modules.project_store import DirectoryIndex, read_root_directories, resolve_root_in
 
 
 # Cap on parallel header parses in read_pool_folder. Measured 2026-09-03 on a
@@ -52,7 +53,8 @@ _SCAN_PARSE_MAX_WORKERS = 4
 # 9: A MASTA channel remembers its lost rows; a gap inside a column is one (§1.177).
 # 10: The cached schema only ever gained fields, so an older one still lists Raw
 #     metadata fields no channel carries (#764).
-WORKSPACE_CACHE_FORMAT_VERSION = 10
+# 11: A run remembers the Import template it was read by; a changed assignment re-reads it (#862).
+WORKSPACE_CACHE_FORMAT_VERSION = 11
 
 # The scan cache's name when it is written beside the data -- only when no
 # cache folder is passed, which production never does.
@@ -111,14 +113,19 @@ def read_pool_folder(directory_path: str, *, cache_dir: Optional[str] = None,
                      parent_excel_path: Optional[str] = None,
                      progress_fn: Optional[Callable[[int, int], None]] = None,
                      project_path: Optional[str] = None,
-                     roots: Sequence[DataRoot] = ()) -> ScannedDirectory:
+                     roots: Sequence[DataRoot] = (),
+                     sources: Sequence[SourceEntry] = (),
+                     assigned_templates: Optional[Mapping[str, str]] = None) -> ScannedDirectory:
     """
     Reads a Data Pool folder's measurements. Safe to call off the GUI thread.
 
     Touches neither the project nor the pool -- it only returns what the folder
     says, so the caller can run it on a worker while the window stays
     responsive and integrate the result afterwards. `roots` are copies taken on
-    the calling thread, not live project objects.
+    the calling thread, not live project objects. `sources` likewise: the
+    Import template a source assigns to a file picks the reader that scans it.
+    `assigned_templates` (file path -> template name) is what the Add being run
+    assigns to files that have no source yet; it wins over `sources`.
 
     `cache_dir` is where the scan cache lives -- a project's cache/scan/ or the
     Untitled temp area, chosen by the caller who knows the project state
@@ -134,11 +141,29 @@ def read_pool_folder(directory_path: str, *, cache_dir: Optional[str] = None,
     rather than dropped. It is never cached, so every scan tries it again.
     """
     file_listing: dict = {}
+    root_directories = read_root_directories(project_path, roots)
+    import_templates = _resolve_import_templates(roots, sources, root_directories)
+    import_templates.update({canonical_path(path): name for path, name in (assigned_templates or {}).items()})
     runs, schema, unreadable, messages = _scan_folder(
-        directory_path, cache_dir, primary_excel_path, parent_excel_path, progress_fn, file_listing)
+        directory_path, cache_dir, primary_excel_path, parent_excel_path, progress_fn, file_listing,
+        import_templates)
     return ScannedDirectory(
-        runs, schema, DirectoryIndex(file_listing, read_root_directories(project_path, roots)),
-        unreadable, messages)
+        runs, schema, DirectoryIndex(file_listing, root_directories), unreadable, messages)
+
+
+def _resolve_import_templates(roots: Sequence[DataRoot], sources: Sequence[SourceEntry],
+                              root_directories) -> Dict[str, str]:
+    """Assigned Import template by canonical file path, for the sources that have one."""
+    templates: Dict[str, str] = {}
+    for root in roots:
+        directory = resolve_root_in(root_directories, root)
+        if directory is None:
+            continue
+        for entry in sources:
+            if entry.root_id == root.id and entry.import_template:
+                templates.setdefault(canonical_path(os.path.join(directory, entry.relpath)),
+                                     entry.import_template)
+    return templates
 
 
 def _metadata_sources(directory_path: str, primary_excel_path: Optional[str],
@@ -163,7 +188,8 @@ def _metadata_sources(directory_path: str, primary_excel_path: Optional[str],
 
 def _scan_folder(directory_path: str, cache_dir: Optional[str],
                  primary_excel_path: Optional[str], parent_excel_path: Optional[str],
-                 progress_fn: Optional[Callable[[int, int], None]], file_listing: dict):
+                 progress_fn: Optional[Callable[[int, int], None]], file_listing: dict,
+                 import_templates: Mapping[str, str]):
     """
     `(runs, schema, unreadable, messages)` for one folder, served from the scan
     cache where the files are unchanged.
@@ -177,7 +203,8 @@ def _scan_folder(directory_path: str, cache_dir: Optional[str],
     if not os.path.exists(directory_path):
         return [], {}, (), ()
 
-    discovered_files = discover_measurement_files(directory_path)
+    discovered_files = _with_assigned_files(
+        discover_measurement_files(directory_path), directory_path, import_templates)
     file_listing.update({path: file_stamp(path) for path in discovered_files})
     if not discovered_files:
         return [], {}, (), ()
@@ -190,7 +217,7 @@ def _scan_folder(directory_path: str, cache_dir: Optional[str],
         directory_path, primary_excel_path, parent_excel_path)
 
     cached = _read_workspace_cache(
-        cache_path, discovered_files, primary_source, fallback_source, parent_source)
+        cache_path, discovered_files, primary_source, fallback_source, parent_source, import_templates)
     cached_runs = cached.runs
     if cached.problem:
         messages.append(cached.problem)
@@ -218,7 +245,8 @@ def _scan_folder(directory_path: str, cache_dir: Optional[str],
             progress_fn(0, total)
         with ThreadPoolExecutor(max_workers=_SCAN_PARSE_MAX_WORKERS) as executor:
             for done, (path, run_index, reason) in enumerate(
-                    executor.map(_parse_outcome, stale_files), start=1):
+                    executor.map(lambda path: _parse_outcome(path, import_templates.get(canonical_path(path), "")),
+                                 stale_files), start=1):
                 if run_index:
                     parsed_runs[run_index.file_path] = run_index
                 else:
@@ -240,7 +268,7 @@ def _scan_folder(directory_path: str, cache_dir: Optional[str],
         os.makedirs(cache_dir, exist_ok=True)
 
     if not _write_workspace_cache(cache_path, indexed_runs, schema_master,
-                                  primary_source, fallback_source, parent_source):
+                                  primary_source, fallback_source, parent_source, import_templates):
         # The in-memory scan is still good and is returned as-is; only the
         # on-disk cache is stale. Saying so matters because the next start
         # will silently re-parse the whole folder -- a confusing slowdown
@@ -302,33 +330,72 @@ def _index_scanned_runs(discovered_files: List[str], parsed_runs: dict, cached_r
     return indexed_runs
 
 
-def _parse_outcome(file_path: str):
-    """`(path, run, reason)`: the parsed run, or None and why the file could not be read."""
+def _with_assigned_files(discovered: List[str], directory_path: str,
+                         import_templates: Mapping[str, str]) -> List[str]:
+    """
+    The discovered files plus those in the folder with an assigned Import
+    template that discovery did not recognise. A generic-suffix file counts
+    as a measurement by its header; one that no longer fits its template would
+    otherwise drop out of the scan unseen, and the pool keep its old reading.
+    Read by its template, it fails and is reported as an Unreadable file.
+    """
+    if not import_templates:
+        return discovered
+    known = {canonical_path(path) for path in discovered}
     try:
-        run_index = _parse_measurement_file(file_path)
+        names = os.listdir(directory_path)
+    except OSError:
+        return discovered
+    extra = [path for path in (os.path.join(directory_path, name) for name in names)
+             if canonical_path(path) in import_templates and canonical_path(path) not in known
+             and os.path.isfile(path)]
+    return sorted(discovered + extra) if extra else discovered
+
+
+def _parse_outcome(file_path: str, import_template: str = ""):
+    """
+    `(path, run, reason)`: the parsed run, or None and why the file could not
+    be read -- naming the Import template it was read with, if any.
+    """
+    try:
+        run_index = _parse_measurement_file(file_path, import_template)
+        reason = "" if run_index is not None else "The file could not be read."
     except Exception as e:
-        return file_path, None, str(e) or type(e).__name__
-    if run_index is None:
-        return file_path, None, "The file could not be read."
-    return file_path, run_index, ""
+        run_index, reason = None, str(e) or type(e).__name__
+    if run_index is not None:
+        return file_path, run_index, ""
+    if import_template:
+        reason = f"does not fit the Import template {import_template}: {reason}"
+    return file_path, None, reason
 
 
-def _parse_measurement_file(file_path: str) -> MeasurementRunIndex:
+def _parse_measurement_file(file_path: str, import_template: str = "") -> MeasurementRunIndex:
     """
     Isolated multi-threaded worker routing to the correct parsing engine dynamically.
     Raises when the file cannot be read; `_parse_outcome` turns that into a reason.
     """
-    reader = open_measurement_reader(file_path)
+    reader = open_measurement_reader(file_path, import_template)
 
     run_index = reader.scan_file_structure()
     reader.load_channels_on_demand(run_index)
     return run_index
 
 
+def _resolve_read_by(import_templates: Optional[Mapping[str, str]], file_path: str) -> str:
+    """
+    What a cache entry records of how its file was read: the assigned Import
+    template with a fingerprint of its copy, the bare name when nobody holds a
+    copy, blank for none -- so a newly assigned or edited template re-reads it.
+    """
+    name = (import_templates or {}).get(canonical_path(file_path), "")
+    return resolve_template_cache_key(name) or name
+
+
 def _write_workspace_cache(cache_path: str, indexed_runs: List[MeasurementRunIndex],
                            schema_master: dict, primary_source: Optional[str] = None,
                            fallback_source: Optional[str] = None,
-                           parent_source: Optional[str] = None) -> bool:
+                           parent_source: Optional[str] = None,
+                           import_templates: Optional[Mapping[str, str]] = None) -> bool:
     """
     Writes the folder index to disk. Returns True on success.
 
@@ -379,6 +446,7 @@ def _write_workspace_cache(cache_path: str, indexed_runs: List[MeasurementRunInd
                 # way to notice a file had been re-measured and kept serving
                 # the old channel list until it was deleted by hand.
                 "source_stamp": file_stamp(run.file_path),
+                "read_by": _resolve_read_by(import_templates, run.file_path),
             }
 
         composite_package = {
@@ -416,7 +484,8 @@ def _write_workspace_cache(cache_path: str, indexed_runs: List[MeasurementRunInd
 def _read_workspace_cache(cache_path: str, active_files: List[str],
                           primary_source: Optional[str] = None,
                           fallback_source: Optional[str] = None,
-                          parent_source: Optional[str] = None) -> _CacheLoadResult:
+                          parent_source: Optional[str] = None,
+                          import_templates: Optional[Mapping[str, str]] = None) -> _CacheLoadResult:
     """
     Reads the on-disk index and returns only the parts still valid.
 
@@ -496,6 +565,8 @@ def _read_workspace_cache(cache_path: str, active_files: List[str],
                 continue
 
             if not _stamps_match(cached_run.get("source_stamp"), file_stamp(file_path)):
+                continue
+            if cached_run.get("read_by", "") != _resolve_read_by(import_templates, file_path):
                 continue
 
             run_index = MeasurementRunIndex(cached_run["file_name"], file_path)

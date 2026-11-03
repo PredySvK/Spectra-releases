@@ -144,13 +144,14 @@ class MainApplicationShell(FramelessWindow):
                 return
 
             from gui.help import close_help
+            from app_context import STARTUP_DIRECTORY_KEY
             close_help()
 
             ctx = self.workspace_frame.app_context
 
             # Lock the current directory into the startup memory slot.
             if ctx.active_directory:
-                ctx.settings.setValue("primary_startup_data_directory", ctx.active_directory)
+                ctx.settings.setValue(STARTUP_DIRECTORY_KEY, ctx.active_directory)
 
             # Force active configurations serialization before window gets dismantled by OS.
             # save_state() is a no-op if the layout was not restored this session (#413).

@@ -77,6 +77,26 @@ The tacho is cleaned first: samples steeper than 200 000 RPM/s and non-finite sa
 
 The average smooths the speed, so the speed read at a trigger is the smoothed one; a change faster than 50 ms is blurred.
 
+The length of the average is set in **Settings › Computation › DSP**, field **Tacho smoothing window [ms]**. The default is 50 ms; 0 means no smoothing. Results calculated with different windows are different [Parameter Sets](topic:filtering/intro). The figure and the numbers below are for 50 ms.
+
 ![What the 50 ms moving average does to a short dip and to a step](tracking_cleaning.png)
 
 Two fast events in the raw tacho (grey) and the cleaned speed the triggers use (blue). The averaging removes the noise, but it also spreads a change over the 50 ms window. A step of 200 rpm in 5 ms becomes a ramp 50 ms long. A dip 30 ms long, 200 rpm deep, becomes shallower (here about 140 rpm) and wider. A slow run-up or run-down is not affected: the average of a straight ramp is the same ramp.
+
+## Tacho at another sampling rate
+
+A tacho does not have to be recorded at the rate of the vibration channel. When the two differ by more than 1 %, the program interpolates the speed linearly onto the time axis of the channel being analysed, before the triggers are placed. A tacho faster than the channel is first averaged over one sample of the channel, so tacho noise above half the channel rate does not turn into false slow speed changes; a slower one is not averaged. Interpolation adds no information: a slow tacho stays as coarse as it was, only on a finer time axis. It always runs by itself, there is nothing to switch on, and the System Log notes it once per file and rate. A file with a tacho at the channel's own rate is calculated exactly as before.
+
+A tacho that starts at a different time than the channel, or ends more than one tacho step before it, is refused with a message naming both channels and both times.
+
+**One tacho only.** The program uses a single tacho per file. When a file holds several, it takes the first in the order of the file, and that order can differ between formats of the same measurement (UNV, LSDF).
+
+## Speed from CAN
+
+**What CAN is.** CAN is a data bus in a vehicle through which control units send each other values, such as engine speed. Such a speed is therefore not measured by a separate sensor connected to the recorder. The recorder only reads a value that a vehicle unit calculated and sent. In the channel list you can often recognise them by the name, for example `EM_SPEED (CAN...`.
+
+**Speed from CAN lags behind the vibration.** The control unit first calculates the speed and sends it at a regular interval, and only then does the recorder write it down. The vibration is recorded directly. In our recordings the delay is an estimated 25-40 ms; it is not a measured value.
+
+At steady speed this does not matter. At 1,650 rpm/s the rpm axis is shifted by about 40-66 rpm, in opposite directions in a run-up and a run-down, so the same resonance appears at different speeds in the two.
+
+**The program does not compensate for it.** The delay depends on the vehicle, the unit and the recorder, and cannot be found from the file. A fixed shift could make the error larger without it being visible. If you need an exact rpm axis, use an analogue tacho.

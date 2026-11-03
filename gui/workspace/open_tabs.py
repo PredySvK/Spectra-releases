@@ -262,6 +262,7 @@ class OpenTabs:
                     if panel is not None else {}
                 ),
                 evaluation_config=dock.evaluation_config,
+                custom_label=getattr(dock, "custom_tab_label", None),
             )
             if spec is not None:
                 specs.append(spec.to_dict())
@@ -314,6 +315,7 @@ class OpenTabs:
                 spec.analysis_kind, resolved,
                 evaluation_config=restored_tab.evaluation_config,
                 dock_id=spec.dock_id,
+                custom_tab_label=spec.custom_label,
             )
             # What `capture` writes back, whole, for as long as this tab stays
             # a "Missing" placeholder -- resolved dead here or turned into one

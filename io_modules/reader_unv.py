@@ -17,6 +17,7 @@ import numpy as np
 from core.models import (
     FUNC_TYPE_TIME_RESPONSE, ChannelMetadata, LostPart, MeasurementRunIndex, is_time_response,
 )
+from core.channel_types import CHANNEL_TYPE_TACHO
 from core.data_block import Acquisition, RawChannel
 from core.units import determine_channel_type
 
@@ -95,7 +96,7 @@ def _build_channel_metadata(
     # so a tacho in Hz/rad/s read as an accelerometer and got DC-removed.
     # func_type 5 is a UNV-only tacho encoding core.units cannot see from
     # unit/name.
-    channel_type = "tacho" if func_type_code == 5 else determine_channel_type(raw_unit, id1)
+    channel_type = CHANNEL_TYPE_TACHO if func_type_code == 5 else determine_channel_type(raw_unit, id1)
 
     meta = ChannelMetadata(
         index=index, name=id1 if id1 else id5, channel_type=channel_type, unit=raw_unit,

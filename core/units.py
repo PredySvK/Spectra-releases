@@ -16,6 +16,10 @@ import numpy as np
 from pint import UnitRegistry, UndefinedUnitError
 
 from core.axis_projections import X_AXIS_NATIVE
+from core.channel_types import (
+    CHANNEL_TYPE_ACCELEROMETER, CHANNEL_TYPE_GENERAL_DYNAMIC, CHANNEL_TYPE_MICROPHONE,
+    CHANNEL_TYPE_TACHO, CHANNEL_TYPE_VOLTAGE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -260,28 +264,28 @@ def determine_channel_type(unit_str: str, channel_name: str) -> str:
     # 1. Unambiguous physical unit domain takes absolute precedence
     for group in CANONICAL_UNIT_GROUPS:
         if "g" in group and canonical_unit in group:
-            return "accelerometer"
+            return CHANNEL_TYPE_ACCELEROMETER
         if "Pa" in group and canonical_unit in group:
-            return "microphone"
+            return CHANNEL_TYPE_MICROPHONE
         if "rpm" in group and canonical_unit in group:
-            return "tacho"
+            return CHANNEL_TYPE_TACHO
 
     # 2. Ambiguous units (e.g. V, mV, dimensionless, unassigned): infer from channel name tokens
     if cleaned_input in _AMBIGUOUS_UNITS or canonical_unit in ("V", "mV"):
         tokens = _resolve_channel_tokens(channel_name)
         if tokens & _ACC_TOKENS:
-            return "accelerometer"
+            return CHANNEL_TYPE_ACCELEROMETER
         elif tokens & _TACHO_TOKENS:
-            return "tacho"
+            return CHANNEL_TYPE_TACHO
         elif tokens & _MIC_TOKENS:
-            return "microphone"
+            return CHANNEL_TYPE_MICROPHONE
         elif tokens & _VOLTAGE_TOKENS:
-            return "voltage"
+            return CHANNEL_TYPE_VOLTAGE
         elif canonical_unit in ("V", "mV"):
-            return "voltage"
+            return CHANNEL_TYPE_VOLTAGE
 
     # 3. Fallback when name gives no clue or for non-NVH physical units (e.g. N, degC)
-    return "general_dynamic"
+    return CHANNEL_TYPE_GENERAL_DYNAMIC
 
 
 # Reader bookkeeping prefixes that pollute a channel name for display. UNV
@@ -384,10 +388,10 @@ def convert_signal_to_global_unit(y_data, current_unit, channel_type, preference
     preferences = preferences or UnitPreferences()
 
     field_map = {
-        "accelerometer": "acceleration",
-        "microphone": "pressure",
-        "voltage": "voltage",
-        "tacho": "speed",
+        CHANNEL_TYPE_ACCELEROMETER: "acceleration",
+        CHANNEL_TYPE_MICROPHONE: "pressure",
+        CHANNEL_TYPE_VOLTAGE: "voltage",
+        CHANNEL_TYPE_TACHO: "speed",
     }
 
     field_name = field_map.get(channel_type)

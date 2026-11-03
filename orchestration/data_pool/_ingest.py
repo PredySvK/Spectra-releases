@@ -28,9 +28,13 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 
 from core.jobs import JobState, job_step
+from core.import_template import ImportTemplate
+from io_modules.import_template import (
+    resolve_installed_template, read_template_candidates, resolve_template_name_fit,
+)
 from io_modules.pool_ingest_plan import discover_selection_tree
 from io_modules.measurement_files import (
     canonical_path, discover_measurement_files, resolve_imported_result_reader, is_measurement_file,
@@ -39,8 +43,12 @@ from orchestration.data_pool._missing_measurement_check import MissingMeasuremen
 from orchestration.data_pool._selection_plan import (
     build_ingest_folder_map, find_parent_metadata_files,
 )
+from orchestration.data_pool._template_assignment import (
+    ImportTemplateAsker, Misfit, plan_template_assignment, resolve_unanswered_misfits, plan_template_questions,
+    resolve_template_answers,
+)
 from orchestration.data_pool._test_setup import resolve_test_setups
-from io_modules.project_store import read_root_directories
+from io_modules.project_store import DirectoryIndex, read_root_directories
 from orchestration.data_pool._source_amplitude import (
     SourceAmplitudeAsker, plan_source_amplitude_questions, resolve_file_amplitudes,
 )
@@ -65,6 +73,12 @@ class IngestPlan:
     `imported_files` is what the Source amplitude question is asked about: the
     Imported-result files the run reads, by the reader that opens them. A
     folder re-scan lists only the files the project does not know yet.
+
+    `import_templates` maps a file path to the Import template this run
+    assigns to it. `ambiguous` are files that fit several templates, until the
+    user chooses (path -> the names of the templates that fit); `misfits` are
+    files whose name belongs to a template that their content does not fit --
+    they are never read into the pool and the run reports them.
     """
 
     directories: Tuple[str, ...] = ()
@@ -72,12 +86,16 @@ class IngestPlan:
     parent_excel: Dict[str, str] = field(default_factory=dict)
     skipped_files: Tuple[str, ...] = ()
     imported_files: Dict[str, Tuple[str, ...]] = field(default_factory=dict)
+    import_templates: Dict[str, str] = field(default_factory=dict)
+    ambiguous: Dict[str, Tuple[str, ...]] = field(default_factory=dict)
+    misfits: Tuple[Misfit, ...] = ()
 
     def __bool__(self) -> bool:
         return bool(self.directories)
 
 
-def plan_pool_ingest(paths, folder_files: Optional[dict] = None) -> IngestPlan:
+def plan_pool_ingest(paths, folder_files: Optional[dict] = None, project_path=None,
+                     roots=(), sources=(), templates: Sequence[ImportTemplate] = ()) -> IngestPlan:
     """
     Turns a path selection into the plan one ingest runs on.
 
@@ -87,24 +105,53 @@ def plan_pool_ingest(paths, folder_files: Optional[dict] = None) -> IngestPlan:
 
     Walks each selected folder tree once and reads the headers of generic-suffix
     files, so for a path selection it runs on a worker (`PoolIngestUseCase.start_selection`).
+    `roots` and `sources` (copies, as for `plan_pool_refresh`) let a file the project
+    already knows keep the Import template it was assigned. `templates` are
+    what this Add reads with: a file whose name and header fit one is assigned
+    it, one that fits several is `ambiguous`, one whose name belongs to a
+    template its header does not fit is a misfit.
     """
     tree = discover_selection_tree(paths)
+    known = build_source_location(roots, sources, read_root_directories(project_path, roots))
     folder_files = folder_files if folder_files is not None else build_ingest_folder_map(paths, tree)
+    candidates = {canonical_path(path): path for directory in tree.walked
+                  for path in read_template_candidates(directory, templates)}
+    candidates.update({canonical_path(path): path for path in paths
+                       if os.path.isfile(path) and any(
+                           resolve_template_name_fit(path, template) for template in templates)})
+    found = plan_template_assignment(candidates.values(), templates)
+    assigned_by_key = {canonical_path(path): name for path, name in found.assigned.items()}
+    ambiguous_keys = {canonical_path(path) for path in found.ambiguous}
+    misfits = tuple(misfit for misfit in found.misfits
+                    if not _is_assigned(known.entry_for_path(misfit.path)))
     imported: Dict[str, list] = {}
     for directory, files in folder_files.items():
         # A whole folder (None) is every file in it; a picked set is just those.
         for path in sorted(tree.files_in(directory) if files is None else files):
-            reader = resolve_imported_result_reader(path)
+            if canonical_path(path) in ambiguous_keys:
+                continue
+            entry = known.entry_for_path(path)
+            import_template = assigned_by_key.get(canonical_path(path)) or (entry.import_template if entry else "")
+            reader = resolve_imported_result_reader(path, import_template)
             if reader is not None:
                 imported.setdefault(reader, []).append(path)
+    misfit_keys = {canonical_path(misfit.path) for misfit in misfits}
     return IngestPlan(
         directories=tuple(folder_files.keys()),
         only_files=dict(folder_files),
         parent_excel=find_parent_metadata_files(tree),
         skipped_files=tuple(path for path in paths
-                            if os.path.isfile(path) and not is_measurement_file(path)),
+                            if os.path.isfile(path) and not is_measurement_file(path)
+                            and canonical_path(path) not in misfit_keys),
         imported_files={reader: tuple(files) for reader, files in imported.items()},
+        import_templates=dict(found.assigned),
+        ambiguous=dict(found.ambiguous),
+        misfits=misfits,
     )
+
+
+def _is_assigned(entry) -> bool:
+    return bool(entry is not None and entry.import_template)
 
 
 def plan_pool_refresh(directories, project_path, roots, sources) -> IngestPlan:
@@ -119,16 +166,80 @@ def plan_pool_refresh(directories, project_path, roots, sources) -> IngestPlan:
     """
     known = build_source_location(roots, sources, read_root_directories(project_path, roots)).entries_by_path
     imported: Dict[str, list] = {}
+    assigned: Dict[str, str] = {}
+    ambiguous: Dict[str, Tuple[str, ...]] = {}
+    misfits = []
     for directory in directories:
+        # A new file is read with the templates the folder's files already have.
+        templates = _templates_of_folder(directory, known)
+        unknown = [path for path in read_template_candidates(directory, templates)
+                   if canonical_path(path) not in known]
+        found = plan_template_assignment(unknown, templates)
+        assigned.update(found.assigned)
+        ambiguous.update(found.ambiguous)
+        misfits.extend(found.misfits)
+        assigned_by_key = {canonical_path(path): name for path, name in found.assigned.items()}
+        ambiguous_keys = {canonical_path(path) for path in found.ambiguous}
         for path in discover_measurement_files(directory):
-            reader = resolve_imported_result_reader(path)
-            if reader is not None and canonical_path(path) not in known:
+            key = canonical_path(path)
+            if key in known or key in ambiguous_keys:
+                continue
+            reader = resolve_imported_result_reader(path, assigned_by_key.get(key, ""))
+            if reader is not None:
                 imported.setdefault(reader, []).append(path)
     return IngestPlan(
         directories=tuple(directories),
         only_files={directory: set() for directory in directories},
         imported_files={reader: tuple(files) for reader, files in imported.items()},
+        import_templates=assigned,
+        ambiguous=ambiguous,
+        misfits=tuple(misfits),
     )
+
+
+def plan_template_rescan(name: str, project_path, roots, sources, pool_directories=()) -> IngestPlan:
+    """
+    The plan that re-reads the files the Import template `name` reads, after
+    the project's copy of it was edited.
+
+    Only the pool folders that hold such a file are read, and nothing new is
+    admitted: the scan re-parses a file whose template changed (its cache key
+    holds the copy's fingerprint), so every other file of those folders is
+    served from the cache. A file of the template that the user took out of
+    the pool stays out. Resolving the roots is disk work: runs on a worker.
+    """
+    known = build_source_location(roots, sources, read_root_directories(project_path, roots)).entries_by_path
+    pooled = {canonical_path(directory): directory for directory in pool_directories}
+    held = {canonical_path(os.path.dirname(path)) for path, entry in known.items() if entry.import_template == name}
+    directories = tuple(pooled[key] for key in sorted(held) if key in pooled)
+    return IngestPlan(directories=directories, only_files={directory: set() for directory in directories})
+
+
+def _templates_of_folder(directory: str, known: Mapping[str, Any]) -> Tuple[ImportTemplate, ...]:
+    """The installed Import templates that files already in `directory` are assigned."""
+    here = canonical_path(directory)
+    names = sorted({entry.import_template for path, entry in known.items()
+                    if entry.import_template and canonical_path(os.path.dirname(path)) == here})
+    return tuple(template for template in map(resolve_installed_template, names) if template is not None)
+
+
+def _templates_in(import_templates: Dict[str, str], directory: str) -> Dict[str, str]:
+    """The part of path -> template name that lies directly in `directory`."""
+    here = canonical_path(directory)
+    return {path: name for path, name in import_templates.items()
+            if canonical_path(os.path.dirname(path)) == here}
+
+
+def _without_misfits(scanned: ScannedDirectory, misfits: Tuple[Misfit, ...]) -> ScannedDirectory:
+    """The scan minus the files that are misfits, so they neither enter the pool nor become sources."""
+    out = {canonical_path(misfit.path) for misfit in misfits}
+    if not out:
+        return scanned
+    listing = {path: stamp for path, stamp in scanned.index.file_listing.items()
+               if canonical_path(path) not in out}
+    return scanned._replace(
+        runs=[run for run in scanned.runs if canonical_path(run.file_path) not in out],
+        index=DirectoryIndex(listing, scanned.index.root_directories))
 
 
 @dataclass(frozen=True)
@@ -170,6 +281,11 @@ class IngestOutcome:
     # The user cancelled the Source amplitude question: nothing was added, and
     # the run is a decision, not a failure to retry.
     declined: bool = False
+    # Files that do not fit the Import template their name belongs to: not in
+    # the pool, listed once for the run. `report_misfits` is whether the shell
+    # shows them (a refresh nobody asked for reports through the log only).
+    misfits: Tuple[Misfit, ...] = ()
+    report_misfits: bool = False
 
 
 class PoolIngestUseCase:
@@ -215,7 +331,9 @@ class PoolIngestUseCase:
 
     def start_selection(self, paths, *, quiet: bool = False,
                         admit_unknown: bool = False, ask_for_setup: bool = False,
+                        import_templates: Sequence[ImportTemplate] = (),
                         ask_source_amplitude: Optional[SourceAmplitudeAsker] = None,
+                        ask_import_template: Optional[ImportTemplateAsker] = None,
                         on_folder: Optional[Callable[[FolderReport], None]] = None,
                         on_finished: Optional[Callable[[IngestOutcome], None]] = None) -> int:
         """
@@ -229,16 +347,33 @@ class PoolIngestUseCase:
         `ask_source_amplitude`, when given, is called once the plan is known and
         before anything is read, with one question per Imported-result reader
         that has files in it; returning None cancels the whole Add.
+
+        `import_templates` are the templates the user added with: the project
+        takes a copy of each now (on this thread), and every file one fits is
+        read by that copy and assigned to its source. A copy the project holds
+        already under the name stays, so the fit is checked against the copy
+        that reads the file, never against the template passed. The files they
+        read are not asked about their Source amplitude -- the template says. A file
+        that fits several is put to `ask_import_template` (without it the file
+        is a misfit); files that fit none of the templates their name belongs
+        to are reported as misfits and not read.
         """
+        session = self._session
+        for template in import_templates:
+            session.adopt_import_template(template)
+        copies = tuple(session.resolve_import_template(template.name) or template for template in import_templates)
         return self._start_planned(
             "Add to Data Pool - finding measurements", "the selection",
-            plan_pool_ingest, [list(paths)],
+            plan_pool_ingest,
+            [list(paths), None, session.path, tuple(replace(root) for root in session.project.data_roots),
+             tuple(session.project.sources), copies],
             quiet=quiet, admit_unknown=admit_unknown, ask_for_setup=ask_for_setup,
-            ask_source_amplitude=ask_source_amplitude,
+            ask_source_amplitude=ask_source_amplitude, ask_import_template=ask_import_template,
             on_folder=on_folder, on_finished=on_finished)
 
     def start_refresh(self, directories, *, quiet: bool = False,
                       ask_source_amplitude: Optional[SourceAmplitudeAsker] = None,
+                      ask_import_template: Optional[ImportTemplateAsker] = None,
                       on_folder: Optional[Callable[[FolderReport], None]] = None,
                       on_finished: Optional[Callable[[IngestOutcome], None]] = None) -> int:
         """
@@ -247,8 +382,11 @@ class PoolIngestUseCase:
 
         Like `start_selection` it plans on a worker first: telling a new
         Imported-result file from a known one means listing the folder and
-        reading generic-suffix headers. A refresh that must not ask goes
-        straight to `start`.
+        reading generic-suffix headers. Without `ask_source_amplitude` nothing
+        is asked, which is what opening a project wants.
+
+        A new file whose name fits an Import template its folder already uses
+        is read by it, or reported as a misfit when its content does not fit.
         """
         session = self._session
         return self._start_planned(
@@ -257,12 +395,36 @@ class PoolIngestUseCase:
             [tuple(directories), session.path, tuple(replace(root) for root in session.project.data_roots),
              tuple(session.project.sources)],
             quiet=quiet, admit_unknown=True, ask_for_setup=False,
-            ask_source_amplitude=ask_source_amplitude,
+            ask_source_amplitude=ask_source_amplitude, ask_import_template=ask_import_template,
+            on_folder=on_folder, on_finished=on_finished)
+
+    def start_template_edit(self, template: ImportTemplate, *, quiet: bool = False,
+                            on_folder: Optional[Callable[[FolderReport], None]] = None,
+                            on_finished: Optional[Callable[[IngestOutcome], None]] = None) -> int:
+        """
+        Confirms an edit of the project's copy of an Import template: the copy
+        of `template`'s name is replaced now (on this thread), and the files it
+        reads are re-read on a worker -- only those (`plan_template_rescan`).
+
+        Nothing is asked: the files are known, their template and Source
+        amplitude already decided. A file the edited template no longer fits
+        is Unreadable, naming the template, and leaves the pool until it fits.
+        """
+        session = self._session
+        session.replace_import_template(template)
+        return self._start_planned(
+            f"Re-reading the files of the Import template '{template.name}'", "the files",
+            plan_template_rescan,
+            [template.name, session.path, tuple(replace(root) for root in session.project.data_roots),
+             tuple(session.project.sources), tuple(self._pool.pool_directories)],
+            quiet=quiet, admit_unknown=False, ask_for_setup=False,
+            ask_source_amplitude=None, ask_import_template=None,
             on_folder=on_folder, on_finished=on_finished)
 
     def _start_planned(self, label: str, step_label: str, plan_fn, args, *, quiet: bool,
                        admit_unknown: bool, ask_for_setup: bool,
                        ask_source_amplitude: Optional[SourceAmplitudeAsker],
+                       ask_import_template: Optional[ImportTemplateAsker],
                        on_folder, on_finished) -> int:
         self._runs += 1
         run = self._runs
@@ -273,7 +435,8 @@ class PoolIngestUseCase:
                 return
             plan = planned["plan"]
             if record.state is JobState.DONE and plan is not None:
-                amplitudes = self._ask_source_amplitudes(plan, ask_source_amplitude)
+                plan = self._resolve_ambiguous(plan, ask_import_template)
+                amplitudes = None if plan is None else self._ask_source_amplitudes(plan, ask_source_amplitude)
                 if amplitudes is None:
                     self._active_run = None
                     self._job_id = None
@@ -310,6 +473,24 @@ class PoolIngestUseCase:
         if self._active_run == run:
             self._job_id = job_id
         return job_id
+
+    @staticmethod
+    def _resolve_ambiguous(plan: IngestPlan, ask: Optional[ImportTemplateAsker]) -> Optional[IngestPlan]:
+        """
+        The plan with every file that fits several Import templates put to the
+        user; a file nobody chose a template for becomes a misfit. None when
+        the user cancelled the question.
+        """
+        if not plan.ambiguous:
+            return plan
+        answers: Mapping = {}
+        if ask is not None:
+            answers = ask(plan_template_questions(plan.ambiguous))
+            if answers is None:
+                return None
+        chosen = resolve_template_answers(plan.ambiguous, answers)
+        return replace(plan, import_templates={**plan.import_templates, **chosen}, ambiguous={},
+                       misfits=plan.misfits + resolve_unanswered_misfits(plan.ambiguous, chosen))
 
     @staticmethod
     def _ask_source_amplitudes(plan: IngestPlan,
@@ -379,6 +560,7 @@ class PoolIngestUseCase:
             job_step(os.path.basename(directory) or directory,
                      self._read_folder, directory,
                      **scan_inputs,
+                     **self._assigned_scan_input(plan, directory),
                      parent_excel_path=plan.parent_excel.get(directory))
             for directory in state["directories"]
         ]
@@ -398,11 +580,18 @@ class PoolIngestUseCase:
             self._job_id = job_id
         return job_id
 
+    @staticmethod
+    def _assigned_scan_input(plan: IngestPlan, directory: str) -> Dict[str, Any]:
+        """The Import templates this Add assigns in one folder, as the scan's input; {} when none."""
+        assigned = _templates_in(plan.import_templates, directory)
+        return {"assigned_templates": assigned} if assigned else {}
+
     # ---- run callbacks (the thread that called start) -------------------
 
     def _on_scanned(self, state: dict, scanned: ScannedDirectory, index: int) -> None:
         directory = state["directories"][index]
         plan: IngestPlan = state["plan"]
+        scanned = _without_misfits(scanned, plan.misfits)
 
         only_files = plan.only_files.get(directory)
         extra = {}
@@ -411,6 +600,9 @@ class PoolIngestUseCase:
                     if canonical_path(os.path.dirname(path)) == here}
         if answered:
             extra["source_amplitudes"] = answered
+        assigned = _templates_in(plan.import_templates, directory)
+        if assigned:
+            extra["import_templates"] = assigned
         result = self._pool.integrate_scanned_directory(
             directory, scanned, only_files=only_files, admit_unknown=state["admit_unknown"], **extra
         )
@@ -472,7 +664,9 @@ class PoolIngestUseCase:
         quiet = state["quiet"]
         skipped = tuple(f"POOL: Skipped {path}: not a measurement file."
                         for path in state["plan"].skipped_files)
-        summary = skipped + (() if quiet else (
+        listed = tuple(f"POOL: {misfit.path} does not fit the Import template {misfit.template}: {misfit.reason}."
+                       for misfit in state["plan"].misfits)
+        summary = skipped + listed + (() if quiet else (
             f"POOL: {len(self._pool.loaded_runs)} measurement(s) in the pool "
             f"from {len(self._pool.pool_directories)} folder(s).",
         ))
@@ -490,6 +684,8 @@ class PoolIngestUseCase:
             report_failures=bool(failures) and not quiet,
             ask_for_setup=bool(state["ask_for_setup"] and added_paths),
             added_paths=added_paths,
+            misfits=state["plan"].misfits,
+            report_misfits=bool(state["plan"].misfits) and not quiet,
         ))
 
     # ---- reporting ------------------------------------------------------

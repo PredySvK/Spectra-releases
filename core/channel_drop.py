@@ -12,8 +12,7 @@ through here too: `core.data_block.read_display_meta` turns the curve's
 display meta back into a channel first.
 
 The dict stays plain: it travels as mime JSON, sits in pending drops and in
-saved projects, and routes add keys of their own (`orders_to_extract`,
-`memo_key`).
+saved projects, and routes add keys of their own (`orders_to_extract`).
 """
 
 from typing import Any, Dict, Tuple
@@ -47,6 +46,10 @@ def build_drop_descriptor(run: MeasurementRunIndex, channel: ChannelMetadata) ->
     # so it is left out rather than written as "".
     if channel.source_amplitude:
         descriptor["source_amplitude"] = channel.source_amplitude
+    # The reader that read the channel: without it the file is opened by its
+    # extension and a template's channel index means another channel (or none).
+    if channel.import_template:
+        descriptor["import_template"] = channel.import_template
     return descriptor
 
 
@@ -64,4 +67,5 @@ def read_drop_descriptor(descriptor) -> Tuple[MeasurementRunIndex, ChannelMetada
     channel.func_type = descriptor.get("func_type", channel.func_type)
     if descriptor.get("source_amplitude"):
         channel.source_amplitude = descriptor["source_amplitude"]
+    channel.import_template = descriptor.get("import_template", "")
     return run, channel

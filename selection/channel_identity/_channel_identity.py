@@ -6,7 +6,8 @@ from typing import Any, Iterable, Mapping, Optional, Tuple
 
 _LEADING_TAG_RE = re.compile(r"^(Set|Col)\s*#\d+(\s*\[[^\]]*\])?:\s*", re.IGNORECASE)
 _TIME_FOR_RE = re.compile(r"^(Time|Signal)\s+for\s+", re.IGNORECASE)
-_DIRECTION_SUFFIX_RE = re.compile(r"[:_]\s*[+-]?([XYZxyz])$")
+# ":+X", "_Y", and the HEADlab form "LFMAS +Y" (a space needs its sign, so "Channel X" is not a direction)
+_DIRECTION_SUFFIX_RE = re.compile(r"(?:[:_]\s*[+-]?|\s+[+-])([XYZxyz])$")
 _ORDER_OVERLAY_PREFIX_RE = re.compile(r"^(O:[^\s]+\s+)+", re.IGNORECASE)
 
 
@@ -32,9 +33,9 @@ def split_channel_base_and_direction(raw_label: str) -> Tuple[str, Optional[str]
 
 
 def format_channel_identity(identity: Tuple[str, Optional[str]]) -> str:
-    """Sensor and direction apart, no brackets or sign: `ACC1:1  X` (Pairing tab, Channel facet)."""
+    """Sensor and direction joined by a colon, no brackets or sign: `ACC1:1:X` (Pairing tab, Channel facet)."""
     base, direction = identity
-    return f"{base}  {direction}" if direction else base
+    return f"{base}:{direction}" if direction else base
 
 
 def strip_order_overlay_prefix(label: str) -> str:

@@ -8,9 +8,11 @@ Every way a batch run gets started from the window (ARCHITECTURE_DECISIONS
 `BatchRunHandler` owns two entry points that were two modules until #235:
 
   * the "Compute Result Set..." button each of the four analysis ribbon tabs
-    ends with -- a dialog for the channel scope and an optional name, then the
-    fast path: one block, one save, over a MODE_EXPLICIT MeasurementSelection
-    built from `app_context.pool.loaded_runs` ("these files, right now");
+    ends with -- a dialog for the input and an optional name, then the fast
+    path: one block, one save, over the Data Pool (a MODE_EXPLICIT
+    MeasurementSelection built from `app_context.pool.loaded_runs`, "these
+    files, right now") or once per checked saved Selection, the result sets
+    run one after another;
   * the Workflow tab's Run button -- a hand-authored graph, run over the
     selection its input node names.
 
@@ -58,14 +60,18 @@ from core.workflow_graph import Workflow
 from orchestration.batch import (
     CALCULATE_AND_SAVE_WHAT,
     CalculateAndSaveRequest,
+    DataPoolInput,
     default_result_set_label,
-    find_overwrite_candidates,
+    find_overwrite_candidates_by_workflow,
     plan_calculate_and_save,
     plan_workflow_chains,
     resolve_calculate_and_save_refusal,
+    resolve_data_pool_scope,
+    resolve_selection_scope,
 )
 from orchestration.data_pool import REGISTRATION_SLOT_KEY, run_pool_registration
 from signal_processing.workflow import sole_terminal_block
+from view_models.batch import DATA_POOL_TYPE_OPTIONS
 
 WHAT = CALCULATE_AND_SAVE_WHAT
 
@@ -122,16 +128,34 @@ def resolve_overwrites(parent, session, workflow: Workflow | tuple[Workflow, ...
     One prompt covers all the matches -- a five-save graph should not spawn five
     dialogs in a row.
     """
-    duplicates = find_overwrite_candidates(session, workflow)
-    if not duplicates:
-        return {}
+    workflows = (workflow,) if isinstance(workflow, Workflow) else workflow
+    by_workflow = resolve_overwrites_by_workflow(parent, session, workflows)
+    if by_workflow is None:
+        return None
+    merged: dict = {}
+    for overwrites in by_workflow:
+        merged.update(overwrites)
+    return merged
 
-    choice = ask_overwrite_or_save_new(parent, [ref.label for ref in duplicates.values()])
+
+def resolve_overwrites_by_workflow(parent, session,
+                                   workflows: tuple[Workflow, ...]) -> Optional[tuple[dict, ...]]:
+    """
+    `resolve_overwrites` with one `{block_id: existing result set id}` per
+    workflow, in order -- for graphs that share block ids, as Compute Result
+    Set's one graph per Selection do. Still one prompt for all of them.
+    """
+    found = find_overwrite_candidates_by_workflow(session, workflows)
+    labels = [ref.label for duplicates in found for ref in duplicates.values()]
+    if not labels:
+        return tuple({} for _ in found)
+
+    choice = ask_overwrite_or_save_new(parent, labels)
     if choice == QMessageBox.StandardButton.Cancel:
         return None
     if choice == QMessageBox.StandardButton.Yes:
-        return {block_id: ref.id for block_id, ref in duplicates.items()}
-    return {}
+        return tuple({block_id: ref.id for block_id, ref in duplicates.items()} for duplicates in found)
+    return tuple({} for _ in found)
 
 
 # ---- the headless / test entry point ----------------------------------
@@ -214,46 +238,59 @@ class BatchRunHandler:
             request=request,
         )
 
-    def _track_status(self, section, label: str) -> None:
+    def _track_status(self, section, labels: tuple[str, ...]) -> None:
         """
-        Drive one ribbon button's status line for the run about to be submitted.
+        Drive one ribbon button's status line for the runs about to be submitted.
 
         A one-shot connection: `run_finished` is a single shared callback list
         on the one bridge, so without disconnecting, a run started from
         another tab would later overwrite this tab's line. Armed before
-        `bridge.start()` because an early refusal (bad graph, nothing
-        resolved) emits `run_finished` synchronously from inside it.
+        `bridge.start_runs()` because an early refusal (bad graph, nothing
+        resolved) emits `run_finished` synchronously from inside it. With
+        several result sets the line names the next one still computing and
+        clears once the last has finished.
         """
         bridge = self.workflow_run_bridge
-        section.set_status(f"Computing '{label}'...")
+        pending = list(labels)
+        failed = []
+        section.set_status(f"Computing '{pending[0]}'...")
 
         def _finished(done_label: str, ok: bool) -> None:
-            if done_label != label:
+            if done_label not in pending:
+                return
+            pending.remove(done_label)
+            if not ok:
+                failed.append(done_label)
+            if pending:
+                section.set_status(f"Computing '{pending[0]}'...")
                 return
             bridge.run_finished.disconnect(_finished)
-            section.set_status(
-                f"Saved '{done_label}'." if ok
-                else f"'{done_label}': nothing saved -- see System Log."
-            )
+            if not failed:
+                section.set_status("")
+            elif len(failed) == 1:
+                section.set_status(f"'{failed[0]}': nothing saved -- see System Log.")
+            else:
+                section.set_status(f"{len(failed)} result sets: nothing saved -- see System Log.")
 
         bridge.run_finished.connect(_finished)
 
     def _runner_start(self, what: str = WHAT, section=None) -> Callable:
         bridge = self.workflow_run_bridge
 
-        def start(workflow, selection, label, overwrite_result_set_id):
+        def start(runs):
+            """`runs`: one (workflow, selection, label, overwrite_result_set_id) per result set."""
             # The fast path builds a single-save two-node graph, so its one
             # terminal is the one save node the duplicate dialog could have
             # matched.
-            overwrite_by_block = (
-                {sole_terminal_block(workflow).block_id: overwrite_result_set_id}
-                if overwrite_result_set_id else None
+            submitted = tuple(
+                (workflow, selection, label,
+                 {sole_terminal_block(workflow).block_id: overwrite_result_set_id}
+                 if overwrite_result_set_id else None)
+                for workflow, selection, label, overwrite_result_set_id in runs
             )
             if section is not None and hasattr(section, "set_status"):
-                self._track_status(section, label)
-            bridge.start(
-                workflow, selection, label, overwrite_by_block=overwrite_by_block, what=what,
-            )
+                self._track_status(section, tuple(label for _, _, label, _ in submitted))
+            bridge.start_runs(submitted, what=what)
         return start
 
     # ---- what all four "Calculate & Save Data" tabs do -----------------
@@ -270,40 +307,44 @@ class BatchRunHandler:
                 context.log(message)
 
         # Refuse what needs no source lookup before asking to save the project.
-        refusal = resolve_calculate_and_save_refusal(
-            loaded_runs, request.all_channels, request.picked_identities)
+        refusal = resolve_calculate_and_save_refusal(loaded_runs)
         if refusal:
             refuse(refusal)
             return
 
         def registered(sources_by_path):
             # Plan against the stored channel types after folder registration.
-            plan = plan_calculate_and_save(
+            plans = plan_calculate_and_save(
                 block_type,
                 config,
                 request,
+                tacho_cleaning=context.tacho_cleaning,
                 loaded_runs=loaded_runs,
                 sources_by_path=sources_by_path,
+                find_selection=session.find_selection,
+                schema=context.pool.schema().master,
             )
 
-            if not plan.runnable:
-                refuse(plan.messages)
+            for plan in plans:
+                if not plan.runnable:
+                    refuse(plan.messages)
+            runnable = tuple(plan for plan in plans if plan.runnable)
+            if not runnable:
                 return
 
-            workflow = plan.workflow
-            selection = plan.selection
-            label = plan.label
-            terminal = sole_terminal_block(workflow)
-
-            overwrites = resolve_overwrites(self.parent_widget, session, workflow)
+            overwrites = resolve_overwrites_by_workflow(
+                self.parent_widget, session, tuple(plan.workflow for plan in runnable))
             if overwrites is None:
                 context.log(
                     f"SYSTEM: {WHAT} cancelled -- a result set with these settings already exists."
                 )
                 return
-            overwrite_result_set_id = overwrites.get(terminal.block_id)
 
-            start(workflow, selection, label, overwrite_result_set_id)
+            start(tuple(
+                (plan.workflow, plan.selection, plan.label,
+                 found.get(sole_terminal_block(plan.workflow).block_id))
+                for plan, found in zip(runnable, overwrites)
+            ))
 
         self.ensure_pool_registered(WHAT, registered)
 
@@ -312,17 +353,33 @@ class BatchRunHandler:
     def _open_compute_dialog(self, *, section, folder_action: Callable,
                              extra_orders: bool = False) -> None:
         """
-        Opens the dialog to gather the channel scope, the orders and an
-        optional result-set name, then hands its answer -- a
+        Opens the dialog to gather the input (Data Pool or saved Selections),
+        the orders and an optional result-set name, then hands its answer -- a
         CalculateAndSaveRequest -- straight to the calculate_and_save_* action.
+        The dialog is handed the counts it shows rather than reaching into
+        `app_context` for them.
         """
         from gui.dialogs.compute_result_set_dialog import ComputeResultSetDialog
 
         context = self.app_context
+        session = context.project_session
         loaded_runs = list(context.pool.loaded_runs)
+        # In-memory counts over the pool index, no file read: synchronous on
+        # purpose (§1.218, §1.219).
+        entries = session.source_location.entries_by_path
+        schema = context.pool.schema().master
+        data_pool_scopes = {
+            label: resolve_data_pool_scope(DataPoolInput(types), loaded_runs, entries)
+            for label, types in DATA_POOL_TYPE_OPTIONS.items()
+        }
+        selection_scopes = tuple(
+            resolve_selection_scope(selection, loaded_runs, entries, schema)
+            for selection in session.selections()
+        )
 
         dialog = ComputeResultSetDialog(
-            settings_prefix=section._settings_prefix, app_context=context,
+            settings_prefix=section._settings_prefix, settings=getattr(context, "settings", None),
+            data_pool_scopes=data_pool_scopes, selection_scopes=selection_scopes,
             extra_orders=extra_orders, folder_count=len(loaded_runs),
             parent=self.parent_widget,
         )
@@ -414,7 +471,8 @@ class BatchRunHandler:
             QMessageBox.information(parent, "Run Workflow", "Select a workflow to run.")
             return
 
-        chains = plan_workflow_chains(workflow, session.find_selection, block_id=block_id)
+        chains = plan_workflow_chains(workflow, session.find_selection, block_id=block_id,
+                                      tacho_cleaning=context.tacho_cleaning)
         if not any(chain.run.runnable for chain in chains):
             messages = [message for chain in chains for message in chain.run.messages]
             for message in messages:

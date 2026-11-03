@@ -5,10 +5,18 @@
 "Compute Result Set" -- the dialog behind the button every analysis ribbon tab
 ends with.
 
-It answers one question in two parts before a batch runs:
+It answers one question in three parts before a batch runs:
 
-  * Channels -- type (acceleration / sound) and all-vs-picked.
+  * Input -- either the whole Data Pool, narrowed by a sensor-type combo
+    (All / Accelerometer / Microphone), or saved Selections ticked in a list,
+    one result set each (§1.219). Each comes with the
+    count the planner gives for it.
   * Orders -- one extra line, Order Tracking only, handed in by the tab.
+  * Name -- optional; only for the Data Pool or a single Selection.
+
+The counts are handed in by the caller (gui/handlers/batch_run.py), computed
+by the same orchestration.batch functions the run uses, so the dialog only
+shows them.
 
 On accept it hands the whole answer back as `request`, a
 CalculateAndSaveRequest that gui/handlers/batch_run.py passes straight to the
@@ -23,41 +31,54 @@ name three files had to spell alike -- it drifted once
 Lives in gui/dialogs/: it drives QSettings and Qt dialogs, so it cannot sit any
 lower.
 """
-from typing import Optional
+import json
+from typing import Mapping, Optional, Sequence, Tuple, Union
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QGroupBox, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QRadioButton, QVBoxLayout, QWidget,
+    QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QGroupBox, QHBoxLayout, QLabel,
+    QLineEdit, QListWidget, QListWidgetItem, QRadioButton, QVBoxLayout, QWidget,
 )
 
-from orchestration.batch import CalculateAndSaveRequest
-from view_models.batch import SAVE_CHANNEL_TYPE_OPTIONS, resolve_channel_types
+from orchestration.batch import (
+    CalculateAndSaveRequest, DataPoolInput, DataPoolScope, SelectionScope, SelectionsInput,
+)
+from view_models.batch import (
+    DATA_POOL_TYPE_OPTIONS, DEFAULT_DATA_POOL_TYPE, resolve_data_pool_types,
+)
 from view_models.result_sets import build_label_preview
-from selection.measurement_selection import channel_identities_by_type
 
 from gui.dialogs.dialog_state import remember_dialog_geometry
-from gui.ribbon.save_section import (
-    identities_to_settings, read_selected_identities,
-)
 from view_models.evaluation import parse_orders_text
 from gui.appearance import APP_TOKENS
 
+INPUT_DATA_POOL = "data_pool"
+INPUT_SELECTIONS = "selections"
+NO_SELECTIONS_HINT = "No Selections \u2014 create one in the Selections tab"
 
-_DEFAULT_CHANNEL_TYPE = "Acceleration"
+
+def _count_text(measurements: int, channels: int) -> str:
+    return (f"{measurements} measurement{'s' if measurements != 1 else ''}, "
+            f"{channels} channel{'s' if channels != 1 else ''}")
 
 
 class ComputeResultSetDialog(QDialog):
-    def __init__(self, *, settings_prefix: str, app_context,
+    def __init__(self, *, settings_prefix: str, settings=None,
+                 data_pool_scopes: Optional[Mapping[str, DataPoolScope]] = None,
+                 selection_scopes: Sequence[SelectionScope] = (),
                  extra_orders: bool = False, folder_count: int = 0,
                  parent: Optional[QWidget] = None):
+        """
+        `data_pool_scopes` is what each Data Pool combo label covers;
+        `selection_scopes` every saved Selection, in the project's order.
+        """
         super().__init__(parent)
         self.setWindowTitle("Compute Result Set")
         self.setMinimumWidth(440)
         self._prefix = settings_prefix
-        self._app_context = app_context
-        self._settings = getattr(app_context, "settings", None)
-        self._selected_identities = read_selected_identities(
-            self._settings, self._prefix)
+        self._settings = settings
+        self._data_pool_scopes = dict(data_pool_scopes or {})
+        self._selection_scopes = tuple(selection_scopes)
 
         # The answer, filled in on accept.
         self.request = CalculateAndSaveRequest()
@@ -65,23 +86,22 @@ class ComputeResultSetDialog(QDialog):
         self._build_ui(extra_orders, folder_count)
 
         # Remembered across restarts; cleared by Settings > Reset Layout / Reset All.
-        remember_dialog_geometry(self, self._settings, "compute_result_set", default_size=(460, 520))
+        remember_dialog_geometry(self, self._settings, "compute_result_set", default_size=(460, 560))
 
     # ---- construction --------------------------------------------------
 
     def _build_ui(self, extra_orders: bool, folder_count: int) -> None:
         layout = QVBoxLayout(self)
         layout.addWidget(self._build_input_group(folder_count))
-        layout.addWidget(self._build_channels_group())
         orders_box = self._build_orders_group(extra_orders)
         if orders_box is not None:
             layout.addWidget(orders_box)
         layout.addWidget(self._build_name_group())
         layout.addWidget(self._build_buttons())
 
-        self._on_channel_mode_changed()
+        # Signals are wired after each widget is filled, so the first state is set here.
+        self._on_input_changed()
         self._on_name_changed()
-        self._update_compute_button_state()
 
     def _build_input_group(self, folder_count: int) -> QGroupBox:
         box_input = QGroupBox("Input Data")
@@ -89,37 +109,68 @@ class ComputeResultSetDialog(QDialog):
         self.lbl_folder = QLabel(self._folder_summary(folder_count))
         self.lbl_folder.setStyleSheet(f"color: {APP_TOKENS.text_hint};")
         input_col.addWidget(self.lbl_folder)
-        return box_input
 
-    def _build_channels_group(self) -> QGroupBox:
-        self.box_channels = QGroupBox("Channels")
-        chan_col = QVBoxLayout(self.box_channels)
+        self.radio_data_pool = QRadioButton("Data Pool")
+        self.radio_data_pool.setToolTip(
+            "The whole Data Pool is computed, whatever the Filter shows. "
+            "The tacho is never a main input; it is still the rpm for Order Tracking."
+        )
+        self.radio_selections = QRadioButton("Selections")
+        self.radio_selections.setToolTip(
+            "Each ticked Selection becomes its own result set, over its "
+            "accelerometer and microphone channels."
+        )
+        self._input_buttons = QButtonGroup(self)
+        self._input_buttons.addButton(self.radio_data_pool)
+        self._input_buttons.addButton(self.radio_selections)
+
+        input_col.addWidget(self.radio_data_pool)
         type_row = QHBoxLayout()
-        type_row.addWidget(QLabel("Type"))
+        type_row.setContentsMargins(20, 0, 0, 0)
+        type_row.addWidget(QLabel("Channels"))
         self.combo_type = QComboBox()
-        self.combo_type.addItems(list(SAVE_CHANNEL_TYPE_OPTIONS.keys()))
-        self.combo_type.setCurrentText(self._get_val("save_channel_type", _DEFAULT_CHANNEL_TYPE))
-        # A hand-picked list means a different thing once the type filter moves.
-        self.combo_type.currentTextChanged.connect(lambda _: self._selected_identities.clear())
+        self.combo_type.addItems(list(DATA_POOL_TYPE_OPTIONS))
+        saved = self._get_val("data_pool_type", DEFAULT_DATA_POOL_TYPE)
+        self.combo_type.setCurrentText(
+            saved if saved in DATA_POOL_TYPE_OPTIONS else DEFAULT_DATA_POOL_TYPE)
+        self.combo_type.setToolTip(self.radio_data_pool.toolTip())
+        self.combo_type.currentTextChanged.connect(self._on_input_changed)
         type_row.addWidget(self.combo_type, 1)
-        chan_col.addLayout(type_row)
+        input_col.addLayout(type_row)
+        self.lbl_count = QLabel("")
+        self.lbl_count.setContentsMargins(20, 0, 0, 0)
+        input_col.addWidget(self.lbl_count)
 
-        self.rb_all = QRadioButton("All channels")
-        self.rb_selected = QRadioButton("Selected channels")
-        if self._get_val("save_channel_mode", "all") == "selected":
-            self.rb_selected.setChecked(True)
-        else:
-            self.rb_all.setChecked(True)
-        self.rb_selected.toggled.connect(self._on_channel_mode_changed)
-        chan_col.addWidget(self.rb_all)
-        picked_row = QHBoxLayout()
-        picked_row.addWidget(self.rb_selected)
-        self.btn_choose = QPushButton("Choose…")
-        self.btn_choose.clicked.connect(self._open_channel_picker)
-        picked_row.addWidget(self.btn_choose)
-        picked_row.addStretch()
-        chan_col.addLayout(picked_row)
-        return self.box_channels
+        input_col.addWidget(self.radio_selections)
+        self.list_selections = QListWidget()
+        remembered = set(self._remembered_selections())
+        for scope in self._selection_scopes:
+            item = QListWidgetItem(
+                f"{scope.name}  ({_count_text(scope.measurement_count, scope.channel_count)})")
+            item.setData(Qt.ItemDataRole.UserRole, scope.name)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(
+                Qt.CheckState.Checked if scope.name in remembered else Qt.CheckState.Unchecked)
+            self.list_selections.addItem(item)
+        self.list_selections.itemChanged.connect(self._on_input_changed)
+        input_col.addWidget(self.list_selections)
+        # Overlapping Selections are each computed, so the totals add up.
+        self.lbl_selections_count = QLabel("")
+        self.lbl_selections_count.setContentsMargins(20, 0, 0, 0)
+        input_col.addWidget(self.lbl_selections_count)
+        self.lbl_selections_hint = QLabel(NO_SELECTIONS_HINT)
+        self.lbl_selections_hint.setStyleSheet(f"color: {APP_TOKENS.text_hint};")
+        input_col.addWidget(self.lbl_selections_hint)
+
+        has_selections = bool(self._selection_scopes)
+        self.radio_selections.setEnabled(has_selections)
+        self.list_selections.setVisible(has_selections)
+        self.lbl_selections_count.setVisible(has_selections)
+        self.lbl_selections_hint.setVisible(not has_selections)
+        use_selections = has_selections and self._get_val("input", INPUT_DATA_POOL) == INPUT_SELECTIONS
+        (self.radio_selections if use_selections else self.radio_data_pool).setChecked(True)
+        self.radio_data_pool.toggled.connect(self._on_input_changed)
+        return box_input
 
     def _build_orders_group(self, extra_orders: bool) -> Optional[QGroupBox]:
         # Order Tracking only -- every other tab hands in extra_orders=False.
@@ -168,8 +219,47 @@ class ComputeResultSetDialog(QDialog):
 
     # ---- reactions -----------------------------------------------------
 
-    def _on_channel_mode_changed(self, *_) -> None:
-        self.btn_choose.setEnabled(self.rb_selected.isChecked())
+    def _uses_selections(self) -> bool:
+        return self.radio_selections.isChecked()
+
+    def _checked_selections(self) -> Tuple[str, ...]:
+        """The ticked Selections' names, in list order."""
+        return tuple(
+            self.list_selections.item(row).data(Qt.ItemDataRole.UserRole)
+            for row in range(self.list_selections.count())
+            if self.list_selections.item(row).checkState() == Qt.CheckState.Checked
+        )
+
+    def _channel_count(self) -> int:
+        """Channels the run would compute: zero keeps Compute off."""
+        if self._uses_selections():
+            checked = set(self._checked_selections())
+            return sum(scope.channel_count for scope in self._selection_scopes if scope.name in checked)
+        return self._data_pool_scope().channel_count
+
+    def _data_pool_scope(self) -> DataPoolScope:
+        return self._data_pool_scopes.get(self.combo_type.currentText(), DataPoolScope())
+
+    def _on_input_changed(self, *_) -> None:
+        uses_selections = self._uses_selections()
+        self.combo_type.setEnabled(not uses_selections)
+        self.list_selections.setEnabled(uses_selections)
+        scope = self._data_pool_scope()
+        self.lbl_count.setText(_count_text(scope.measurement_count, scope.channel_count))
+        checked = set(self._checked_selections())
+        ticked = [scope for scope in self._selection_scopes if scope.name in checked]
+        self.lbl_selections_count.setText(
+            f"{len(ticked)} result set{'s' if len(ticked) != 1 else ''}: " + _count_text(
+                sum(scope.measurement_count for scope in ticked),
+                sum(scope.channel_count for scope in ticked)))
+        # One name for several result sets would only end in "_2", "_3".
+        self.edit_name.setEnabled(not uses_selections or len(self._checked_selections()) <= 1)
+        self._update_compute_button_state()
+
+    def _input(self) -> Union[DataPoolInput, SelectionsInput]:
+        if self._uses_selections():
+            return SelectionsInput(self._checked_selections())
+        return DataPoolInput(resolve_data_pool_types(self.combo_type.currentText()))
 
     def _on_orders_changed(self, *_) -> None:
         self._update_compute_button_state()
@@ -185,7 +275,8 @@ class ComputeResultSetDialog(QDialog):
         self._update_compute_button_state()
 
     def _update_compute_button_state(self) -> None:
-        name_valid = build_label_preview(self.edit_name.text()).kind != "unusable"
+        name_valid = (not self.edit_name.isEnabled()
+                      or build_label_preview(self.edit_name.text()).kind != "unusable")
 
         orders_valid = True
         if self.edit_orders is not None:
@@ -201,51 +292,32 @@ class ComputeResultSetDialog(QDialog):
                     "separated by commas or semicolons."
                 )
 
-        self.btn_compute.setEnabled(name_valid and orders_valid)
-
-    def _open_channel_picker(self) -> None:
-        from gui.dialogs.channel_selection_dialog import ChannelSelectionDialog
-
-        loaded_runs = list(self._app_context.pool.loaded_runs)
-        types = set(resolve_channel_types(self.combo_type.currentText()) or ())
-        identities = channel_identities_by_type(
-            loaded_runs, types, self._app_context.project_session.source_location.entries_by_path
-        )
-        dialog = ChannelSelectionDialog(
-            identities, self._selected_identities, self, settings=self._settings
-        )
-        if dialog.exec():
-            self._selected_identities = dialog.selected_identities()
+        self.btn_compute.setEnabled(name_valid and orders_valid and self._channel_count() > 0)
 
     # ---- accept ------------------------------------------------------
 
     def _on_accept(self) -> None:
-        channel_type = self.combo_type.currentText()
-        all_channels = not self.rb_selected.isChecked()
         orders = (tuple(parse_orders_text(self.edit_orders.text()) or ())
                   if self.edit_orders is not None else ())
 
         # Remembered only to prefill the dialog next time.
-        self._set_val("save_channel_type", channel_type)
-        self._set_val("save_channel_mode", "all" if all_channels else "selected")
-        self._set_val("save_selected_identities",
-                      identities_to_settings(self._selected_identities))
+        self._set_val("input", INPUT_SELECTIONS if self._uses_selections() else INPUT_DATA_POOL)
+        self._set_val("data_pool_type", self.combo_type.currentText())
+        self._set_val("selections", json.dumps(list(self._checked_selections())))
         if orders:
             # Unprefixed: the key predates the dialog and a renamed key would
             # forget the orders the user last asked for.
             self._settings_set("order_save_targets", self.edit_orders.text())
 
         self.request = CalculateAndSaveRequest(
-            channel_types=(resolve_channel_types(channel_type)
-                           or resolve_channel_types(_DEFAULT_CHANNEL_TYPE)),
-            all_channels=all_channels,
-            picked_identities=frozenset(self._selected_identities),
+            input=self._input(),
             orders=orders,
             # Blank = the planner derives a name from the parameters
             # (default_result_set_label). The preview's clean name, so the value
             # handed back is exactly the folder name on disk (finding 5.1);
             # begin_result_set sanitises again as a backstop.
-            custom_label=build_label_preview(self.edit_name.text()).clean,
+            custom_label=(build_label_preview(self.edit_name.text()).clean
+                          if self.edit_name.isEnabled() else ""),
         )
 
         self.accept()
@@ -266,6 +338,14 @@ class ComputeResultSetDialog(QDialog):
         if saved not in (None, ""):
             return str(saved)
         return str(self._settings.value("order_targets", "1, 2"))
+
+    def _remembered_selections(self) -> Tuple[str, ...]:
+        """The Selections ticked last time; a name no longer saved simply matches no row."""
+        try:
+            names = json.loads(self._get_val("selections", "[]"))
+        except (TypeError, ValueError):
+            return ()
+        return tuple(str(name) for name in names) if isinstance(names, list) else ()
 
     def _folder_summary(self, count: int) -> str:
         if count <= 0:

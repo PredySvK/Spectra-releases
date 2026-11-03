@@ -22,10 +22,6 @@ class PendingDrops:
         for desc in descriptors:
             self._keys.difference_update(drop_keys(desc))
 
-    def keys(self, live_descriptors: Iterable[Dict[str, Any]] = ()) -> Set[tuple]:
-        """Every pending key, including result-content live orders (the
-        ``pending_descriptors()`` of ``LiveChannelDrops``)."""
-        keys = set(self._keys)
-        for desc in live_descriptors:
-            keys.update(drop_keys(desc))
-        return keys
+    def keys(self) -> Set[tuple]:
+        """Every pending key."""
+        return set(self._keys)

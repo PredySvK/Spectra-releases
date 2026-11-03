@@ -58,5 +58,9 @@ def curves_for_evaluation(
         return []
 
     identity_context = build_identity_context(getattr(app_context, "project_session", None))
+    # The Data Pool's merged schema, like the Evaluation columns and the Cursor
+    # Box -- the project's stored one is empty in a fresh project (#880).
+    pool = getattr(app_context, "pool", None)
+    schema = pool.schema().master if pool is not None else {}
     return curve_identities_for_traces(
-        traces, identity_context.sources_by_path, identity_context.result_set_labels, identity_context.schema)
+        traces, identity_context.sources_by_path, identity_context.result_set_labels, schema)

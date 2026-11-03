@@ -7,7 +7,7 @@ Lives in gui/ because it is pure Qt window-state glue. The geometry is stored in
 the per-window QSettings group (Root/Spawns) under the ``dialog_geometry_``
 prefix, alongside dock layout state -- it describes *where a window sits*, not
 how the DSP is configured, so both "Reset Layout" and "Reset All Settings" clear
-it (gui/handlers/window_settings.py keys off that prefix).
+it (gui/handlers/window_settings.py asks ``is_dialog_geometry_key``).
 
 Usage:
 
@@ -29,6 +29,11 @@ from typing import Optional, Tuple
 from PySide6.QtCore import QSettings
 
 _PREFIX = "dialog_geometry_"
+
+
+def is_dialog_geometry_key(key: str) -> bool:
+    """Whether a QSettings key is a remembered dialog geometry (what Reset Layout removes)."""
+    return key.startswith(_PREFIX)
 
 
 def fit_width_to_scroll_content(dialog, scroll, default_size: Tuple[int, int]) -> Tuple[int, int]:

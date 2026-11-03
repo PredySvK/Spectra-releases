@@ -28,7 +28,7 @@ import weakref
 
 import numpy as np
 
-from core.block_kinds import KIND_ORDER_CUT, KIND_TIME_RESPONSE
+from core.block_kinds import KIND_ORDER_CUT, KIND_ORDER_RESIDUAL, KIND_TIME_RESPONSE
 from core.channel_drop import build_drop_descriptor
 from core.data_block import read_display_meta
 from core.units import UnitPreferences, strip_amplitude_suffix
@@ -38,6 +38,7 @@ from ._display_settings import DisplaySettings
 from ._graph_colours import HeldPens
 from ._plot_model import PlotModel, Trace
 from ._display_rebuild import (
+    build_trace_with_block_numbers,
     rebuild_amplitude_mode_display,
     rebuild_spectrum_with_display_settings,
     rebuild_with_base,
@@ -117,8 +118,13 @@ def _build_channel_drop_descriptor(trace: Trace) -> Dict[str, Any]:
     re-drop hands ``unit`` to the reader as the unit of the raw samples, so a
     g channel shown in m/s^2 would otherwise come back 9.81x too small, and
     the legend "[file] channel" would gain a second file prefix (#377).
+
+    A curve only a result set holds names its measurement under ``source_path``
+    (§1.103); the payload still needs it as the file to read.
     """
     meta = trace.meta_ref or {}
+    if not meta.get("file_path"):
+        meta = {**meta, "file_path": meta.get("source_path") or ""}
     block = trace.data_block if trace.data_block is not None else trace.block
     if block is None:
         channel_name = trace.channel_name
@@ -167,6 +173,16 @@ NOTHING_PENDING = PendingRestore()
 def _overlay_key(descriptor: Dict[str, Any]) -> tuple:
     # The same identity a channel drop dedupes on (orchestration's drop_key).
     return build_channel_key(descriptor.get("file_path", ""), descriptor.get("channel_index", 0))
+
+
+def _release_channel(trace: Trace) -> Trace:
+    """The Adopted curve ``trace`` as a curve only its result set holds, its
+    numbers and pen untouched. Its meta says ``source_path``, not ``file_path``,
+    so the channel no longer counts as plotted and a re-drop is not refused."""
+    meta = dict(trace.meta_ref or {})
+    if "file_path" in meta:
+        meta["source_path"] = meta.pop("file_path")
+    return replace(trace, adopted=False, meta_ref=meta)
 
 
 def _same_drawing(before: Optional[VisibleTraces], after: VisibleTraces) -> bool:
@@ -310,9 +326,10 @@ class GraphCurves:
         is every other curve of the base channel: an "orders" graph draws one
         curve per extracted order, and only order 1 is flagged is_base (#379).
         Overlays are deduplicated by the same (file_path, channel_index): one
-        re-drop already asks for every configured order. An h5 result-set
-        curve has no file_path/channel_index to re-drop; it comes back by its
-        id (``PendingRestore.result_set_ids``, §1.31) instead."""
+        re-drop already asks for every configured order. An Adopted curve is
+        one of them: the channel stays the user's (§1.241). A curve only a
+        result set holds is not a channel to re-drop; it comes back by its id
+        (``PendingRestore.result_set_ids``, §1.31) instead."""
         if self._model is None:
             return []
         # A base curve with no file_path (raw arrays, or one read off a result
@@ -324,7 +341,7 @@ class GraphCurves:
         }
         overlays = []
         for trace in self._model.traces:
-            if trace.is_base or trace.result_set_id or not trace.meta_ref:
+            if not trace.is_dropped_channel or not trace.meta_ref:
                 continue
             key = _overlay_key(trace.meta_ref)
             if key in seen:
@@ -430,10 +447,11 @@ class GraphCurves:
         self.capture_overlays_before_reset()
         self._applied_settings = settings
         first = blocks[0]
-        if getattr(first, "kind", None) == KIND_ORDER_CUT:
+        if getattr(first, "kind", None) in (KIND_ORDER_CUT, KIND_ORDER_RESIDUAL):
             # Any other kind riding along (the Overall Level and Residual curves, ADR §1.141) is an
-            # overlay built by its own kind's rule.
-            is_cut = [getattr(b, "kind", None) == KIND_ORDER_CUT for b in blocks]
+            # overlay built by its own kind's rule. An Imported residual alone is the base curve of
+            # an Order tracking graph, which draws it as it draws a cut.
+            is_cut = [getattr(b, "kind", None) == first.kind for b in blocks]
             cuts = [b for b, cut in zip(blocks, is_cut) if cut]
             self.replace(build_order_cuts_model(cuts, settings.prefs, amplitude_mode=settings.amplitude_mode,
                                                 base_curve_color=self._base_curve_color))
@@ -609,14 +627,23 @@ class GraphCurves:
 
     def remove_overlays(self, matches: Callable[[Trace], bool]) -> None:
         """Drop every held overlay curve ``matches`` accepts, keeping the base
-        curve and everything else untouched -- a no-op redraw when nothing
-        matches. The caller re-adds the dropped curves through whatever gets
-        them a real recompute (``add_curve`` or a channel-drop path); this
-        only ever removes."""
+        curve and every curve only a result set holds untouched -- a no-op
+        redraw when nothing matches. An Adopted curve loses only the channel
+        and stays as the curve its result set holds (§1.241). The caller
+        re-adds the channels through whatever gets them a real recompute
+        (``add_curve`` or a channel-drop path)."""
         if self._model is None:
             return
-        kept = [t for t in self._model.traces if t.is_base or not matches(t)]
-        if len(kept) == len(self._model.traces):
+        kept = []
+        changed = False
+        for trace in self._model.traces:
+            if not trace.is_dropped_channel or not matches(trace):
+                kept.append(trace)
+                continue
+            changed = True
+            if trace.adopted:
+                kept.append(_release_channel(trace))
+        if not changed:
             return
         self._model.traces = kept
         self._resolve()
@@ -635,13 +662,14 @@ class GraphCurves:
         self,
         ref_id: str,
         curves: List[Dict[str, Any]],
-        split_held: Callable[[List[Dict[str, Any]], List[Trace]], Tuple[List[Trace], List[Dict[str, Any]]]],
+        split_held: Callable[[List[Dict[str, Any]], List[Trace]],
+                             Tuple[List[Tuple[Trace, Dict[str, Any]]], List[Dict[str, Any]]]],
     ) -> Optional["ResultSetLanding"]:
         """The read of ``ref_id`` delivered ``curves``. None when it is no longer
         pending (unticked, or the graph's content cleared, before it landed:
         the user's later decision wins). Otherwise the set is stamped loaded and
         no longer pending, a held live curve it also carries joins it (#116,
-        ``split_held`` -> (already_shown, to_draw)), and the caller draws
+        ``split_held`` -> (already_shown as (held, stored curve) pairs, to_draw)), and the caller draws
         ``to_draw``.
 
         Stamped *before* returning, hence before any curve is drawn: a draw
@@ -663,9 +691,10 @@ class GraphCurves:
         self._pending_result_set_ids = self._pending_result_set_ids - set(ids)
 
     def unload_result_sets(self, ref_ids: Iterable[str]) -> bool:
-        """Forget ``ref_ids`` (loaded and queued) and drop every curve read
-        from them (Trace.result_set_id) -- the base curve too, since a loaded
-        curve can become the base one. Its place goes to the first curve left
+        """Forget ``ref_ids`` (loaded and queued) and drop every curve only they
+        hold (Trace.result_set_id) -- the base curve too, since a loaded curve can
+        become the base one; an Adopted curve stays as the user's own (§1.243).
+        Its place goes to the first curve left
         on the primary axis, else the first one left, and every curve is
         rebuilt from its raw data in the display settings last applied,
         placed against the new base as if added that way (#693, #757).
@@ -678,7 +707,7 @@ class GraphCurves:
         if self._model is None:
             return False
         kept = traces_kept_after_unload(self._model.traces, ids)
-        if len(kept) == len(self._model.traces):
+        if len(kept) == len(self._model.traces) and all(a is b for a, b in zip(kept, self._model.traces)):
             return False
         if not kept:
             return True
@@ -692,19 +721,38 @@ class GraphCurves:
         self._notify(CurvesReplaced())
         return False
 
-    def _adopt_into_result_set(self, traces: Iterable[Trace], result_set_id: str) -> None:
-        """Count the held curves ``traces`` as read from ``result_set_id``
-        from now on, their data and pens untouched -- for curves computed
-        live that a result set being loaded holds too (#116). They then leave
-        the graph with that set (``unload_result_sets``) like any curve read
-        from it. A no-op when none of ``traces`` is held."""
+    def merge_into_held_set(self, landed: Trace, set_curve: Optional[Trace]) -> bool:
+        """The curve ``landed``, just computed, came after the result set that holds it as
+        ``set_curve``: that curve becomes an Adopted curve -- the channel of
+        ``landed`` is its too -- and ``landed`` is not kept, so the graph shows the
+        set's numbers once (#923, §1.242). True when it merged; a base curve or no
+        ``set_curve`` merges nothing."""
+        if self._model is None or set_curve is None or landed.is_base:
+            return False
+        adopted = replace(set_curve, adopted=True,
+                          meta_ref={**(set_curve.meta_ref or {}), **(landed.meta_ref or {})})
+        self._model.traces = [adopted if t is set_curve else t for t in self._model.traces if t is not landed]
+        self._resolve()
+        self._notify(CurvesReplaced())
+        return True
+
+    def _adopt_into_result_set(self, held_and_stored: Iterable[Tuple[Trace, Dict[str, Any]]],
+                               result_set_id: str) -> None:
+        """Count each held curve, computed live, as held by ``result_set_id`` too
+        from now on (#116): an Adopted curve, with the numbers of the stored curve
+        the set holds it as and its pen and channel untouched (§1.241, §1.244). It
+        stays the user's when the set leaves (§1.243). A no-op when none is held."""
         if self._model is None:
             return
-        adopted = {id(trace) for trace in traces}
-        kept = [
-            replace(held, result_set_id=result_set_id) if id(held) in adopted else held
-            for held in self._model.traces
-        ]
+        stored_by_trace = {id(trace): stored for trace, stored in held_and_stored}
+        kept = []
+        for held in self._model.traces:
+            if id(held) in stored_by_trace:
+                block = stored_by_trace[id(held)].get("block")
+                if block is not None:
+                    held = build_trace_with_block_numbers(self._model, held, block, self._applied_settings)
+                held = replace(held, result_set_id=result_set_id, adopted=True)
+            kept.append(held)
         if all(new is old for new, old in zip(kept, self._model.traces)):
             return
         self._model.traces = kept

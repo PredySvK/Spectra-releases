@@ -794,20 +794,16 @@ def trace_matches(identity: TraceIdentity, selection: FilterSelection,
     - Order works the same way, and membership in the offering goes through
       order_matches too rather than `in`: an order read off a float32 axis
       never compares == to the float the facet was built from (K1). A trace
-      with no order at all (time domain) is never gated.
+      with no order at all (time domain) falls into the "(Empty)" bucket.
     - Result Kind and Parameter Set (plan F4) both gate the same way as
-      Channel/Order, not like Metadata/the pre-F4 project-wide Parameter Set
-      picker (io_modules.parameter_sets.filter_result_sets_by_parameter_set),
-      where an empty selection imposes no constraint -- that rule stays for
-      the primary-config resolver in live_channel_drop, which is not a mask. A
-      trace with no result_kind/parameter_signature at all (a dropped live
-      channel, or one built before x_quantity/compute_spec were stamped) is
-      never gated by either.
+      Channel/Order. A trace with no result_kind/parameter_signature at all
+      (a dropped live channel, or one built before x_quantity/compute_spec
+      were stamped) falls into that family's "(Empty)" bucket.
     - The built-in Identity facets other than Channel (Direction, Channel type,
       File name, Data Pool label, Result set -- §1.33) gate exactly like
       Channel: hidden only when this trace's value for that column was on offer
       and is not checked. A trace with no value for a column (no source, a
-      blank direction) is never gated by it.
+      blank direction) falls into that column's "(Empty)" bucket.
     - Discrete metadata fields gate exactly like the Identity columns now (ADR
       §1.56): offered and unchecked hides the trace carrying that value; a
       trace whose source has no value for the field, or no source at all,

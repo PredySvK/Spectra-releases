@@ -48,7 +48,8 @@ def resolve_pool_tree_visibility(
     expanded: Set[tuple] = set()
 
     def matches(node) -> bool:
-        return needle in node.text.lower()  # an empty needle matches everything
+        text = node.text if node.search_text is None else node.search_text
+        return needle in text.lower()  # an empty needle matches everything
 
     def resolve_channel(node, allowed_labels, parent_matches) -> bool:
         passes_filter = allowed_labels is None or node.unique_label in allowed_labels

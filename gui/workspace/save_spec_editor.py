@@ -20,8 +20,8 @@ through an edit here rather than silently dropped.
 Its own file, not more lines in workflow_view.py, for the same reason
 `BlockParamForm` is: phase 8's canvas reuses it in a block's settings dialog.
 The channel-type vocabulary is `SAVE_CHANNEL_TYPE_OPTIONS` from
-`view_models.batch` -- the same dictionary the ribbon's dialog uses, so the
-tree and the ribbon cannot disagree on what "Acceleration" filters to. The channel picker is the shared
+`view_models.batch`, so the combo's labels and the sensor types they filter
+to live in one place. The channel picker is the shared
 `ChannelSelectionDialog`.
 
 All internal documentation strings and variable labels are standardly written

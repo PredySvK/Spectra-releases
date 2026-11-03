@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping, Protocol
 
 from core.dsp_configs import OrderTrackingConfig, OverallLevelConfig, SpectrumConfig
+from selection.parameter_sets import ParameterSet
 
 from orchestration.channel_drop._routing import DropFacts
 
@@ -76,10 +77,6 @@ class DropTarget(Protocol):
 
     def open_imported_channels(self, descriptors: Iterable[dict]) -> None: ...
 
-    def result_content_batch(self, label: str) -> AbstractContextManager: ...
-
-    def serve_result_content(self, descriptor: dict) -> bool: ...
-
     def spectrum_inputs(self) -> SpectrumDropInputs: ...
 
     def restored_config(self, recipe: Mapping[str, Any]) -> Any:
@@ -101,6 +98,11 @@ class DropTarget(Protocol):
     def order_inputs(self) -> OrderDropInputs: ...
 
     def overall_level_inputs(self) -> OverallLevelDropInputs: ...
+
+    def parameter_sets(self) -> list[ParameterSet]:
+        """The dock's Parameter Sets, its result sets still queued included:
+        the channels re-dropped after a Refresh or a reopen arrive before their
+        dock's sets land (#427)."""
 
     def drawing(self) -> AbstractContextManager:
         """Everything drawn inside lands on the dock as one draw (#440)."""

@@ -66,8 +66,8 @@ def _curve_name(block: Any) -> str:
         if block.provenance.step == STEP_READ or order is None:
             return ""
         return f"Order {order:g}"
-    if kind != KIND_OVERALL_LEVEL:
-        return ""
+    if kind != KIND_OVERALL_LEVEL or block.provenance.step == STEP_READ:
+        return ""     # an Imported level names its band in the file, not here
     params = block.provenance.params if block.provenance else {}
     if params.get(PARAM_F_START) == 10.0 and params.get(PARAM_F_STOP) is None:
         return "OAL"

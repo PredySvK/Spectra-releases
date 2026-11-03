@@ -21,14 +21,16 @@ import numpy as np
 
 from core.block_kinds import (
     KIND_ORDER_CUT,
-    LEVEL_CURVE_KINDS,
     KIND_OVERALL_LEVEL,
     KIND_SPECTRUM,
+    KIND_TIME_RESPONSE,
     META_EFFECTIVE_F_START,
     META_EFFECTIVE_F_STOP,
     PARAM_ORDER,
     STEP_READ,
+    spec_for,
 )
+from core.channel_types import CHANNEL_TYPE_GENERAL_DYNAMIC
 from core.curve_recipe import resolve_curve_recipe
 from core.units import (
     UnitPreferences,
@@ -103,8 +105,8 @@ def _legend_channel_name(name: str, block: Optional[Any]) -> str:
 
 def _channel_type(source_meta: Optional[Dict[str, Any]]) -> str:
     if source_meta:
-        return source_meta.get("channel_type", "general_dynamic")
-    return "general_dynamic"
+        return source_meta.get("channel_type", CHANNEL_TYPE_GENERAL_DYNAMIC)
+    return CHANNEL_TYPE_GENERAL_DYNAMIC
 
 
 def _file_name(source_meta: Optional[Dict[str, Any]]) -> str:
@@ -135,10 +137,10 @@ def build_compute_spec(block) -> Dict[str, Any]:
 
 def _derive_from_block(block, compute_spec, x_quantity):
     """``compute_spec``/``x_quantity`` a caller did not supply, derived from
-    ``block`` -- a block with no ``processing`` (a time_response read) that is
-    no order cut has nothing to derive."""
+    ``block`` -- a time_response read has nothing to derive; every other kind
+    has its processing or, as an Imported result, comes from a file."""
     if block is not None and (getattr(block, "processing", None) is not None
-                              or block.kind == KIND_ORDER_CUT):
+                              or block.provenance.step == STEP_READ and block.kind != KIND_TIME_RESPONSE):
         if compute_spec is None:
             compute_spec = build_compute_spec(block)
         if not x_quantity:
@@ -192,24 +194,29 @@ def traces_kept_after_unload(traces: Sequence[Trace], ref_ids) -> List[Trace]:
     Which of `traces` survive removing every curve read from `ref_ids`
     (result_content.unload_result_sets_from_dock) -- a curve with no
     `result_set_id` (a dropped channel, a live compute, a base curve off a
-    measurement) is never touched.
+    measurement) is never touched. An Adopted curve stays as the user's own
+    curve (no set, numbers and pen untouched, the channel still dropped), so
+    unticking a set switches the set off, not the channel (§1.243).
     """
     ids = set(ref_ids)
-    return [t for t in traces if t.result_set_id not in ids]
+    kept = []
+    for t in traces:
+        if t.result_set_id not in ids:
+            kept.append(t)
+        elif t.adopted:
+            kept.append(replace(t, result_set_id="", adopted=False))
+    return kept
 
 
-def amplitude_mode_for_kind(
-    analysis_kind: str,
-    order_tracking_amplitude_mode: str,
-    overall_level_amplitude_mode: str,
-) -> str:
-    """
-    A dock's own View/Amplitude setting, keyed on the
-    dock's own kind -- so an order cut dropped onto an Overall Level dock (or
-    the reverse, issue #128) picks up whatever RMS/Peak that dock is already
-    showing rather than the dropped curve's own ribbon tab.
-    """
-    return order_tracking_amplitude_mode if analysis_kind == ANALYSIS_ORDERS else overall_level_amplitude_mode
+def _set_curve_meta(meta: Optional[Dict[str, Any]], source_meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """The ``meta_ref`` of a curve read off a result set when it is built from its
+    block, whose own meta says ``file_path``: the measurement goes under
+    ``source_path``, because ``file_path`` is what says a channel is already
+    plotted and would refuse the drop of that channel (§1.103)."""
+    merged = {**(meta or {}), **(source_meta or {})}
+    file_path = merged.pop("file_path", None)
+    merged["source_path"] = merged.get("source_path") or file_path
+    return merged
 
 
 def _legend_meta_for_block(block, source_meta):
@@ -409,11 +416,15 @@ def overall_level_band_differs_from_dock(model: PlotModel, block) -> bool:
     a band, so two files at different sample rates would otherwise integrate
     different bands with no visible sign of it in the graph.
     """
+    if block.provenance.step == STEP_READ:
+        return False        # an Imported level carries no band
     new_band = overall_level_effective_band(block)
     for trace in model.traces:
         existing = trace.block
         if existing is None or getattr(existing, "kind", None) != KIND_OVERALL_LEVEL:
             continue
+        if existing.provenance.step == STEP_READ:
+            continue        # an Imported level carries no band to compare
         if overall_level_effective_band(existing) != new_band:
             return True
     return False
@@ -444,6 +455,7 @@ def _level_trace(block, amplitude_mode: str) -> Tuple[Trace, np.ndarray, str]:
 def build_overall_level_overlay_trace(
     model: PlotModel, *, overlay_index: int, block, prefs: Optional[UnitPreferences] = None,
     amplitude_mode: str = "rms", result_set_id: str = "",
+    source_meta: Optional[Dict[str, Any]] = None,
 ) -> Trace:
     """
     One Overall Level overlay curve (issue #125), dropped from a channel --
@@ -458,7 +470,9 @@ def build_overall_level_overlay_trace(
     applied only for Peak) as an order cut.
     """
     trace, display_y, display_unit = _level_trace(block, amplitude_mode)
-    return _place_overlay(model, replace(trace, result_set_id=result_set_id), display_y, display_unit,
+    if result_set_id:
+        trace = replace(trace, result_set_id=result_set_id, meta_ref=_set_curve_meta(trace.meta_ref, source_meta))
+    return _place_overlay(model, trace, display_y, display_unit,
                           prefs or UnitPreferences(), overlay_index=overlay_index)
 
 
@@ -579,7 +593,8 @@ def build_base_model(
     if title:
         model.view.title = title
     if result_set_id:
-        model.traces[0] = replace(model.traces[0], result_set_id=result_set_id)
+        model.traces[0] = replace(model.traces[0], result_set_id=result_set_id,
+                                  meta_ref=_set_curve_meta(model.traces[0].meta_ref, source_meta))
     return model
 
 
@@ -669,7 +684,7 @@ def build_scaled_overlay_trace(
     overlay, Result Pool load, live compute) -- raw `x`/`y`/`incoming_unit`
     plus an optional `block`, with the dock's display settings applied.
     `amplitude_mode` is the dock's own View/Amplitude setting
-    (`amplitude_mode_for_kind`), used for an order cut and an Overall Level.
+    (`resolve_display_settings`), used for an order cut and an Overall Level.
 
     A caller handing over `block` always passes that block's own raw
     values/unit alongside it -- the display scaling is unconditional on that
@@ -689,14 +704,14 @@ def build_scaled_overlay_trace(
         spectrum_amplitude_mode=spectrum_amplitude_mode,
         order_cut_amplitude_mode=amplitude_mode,
     )
-    if block is not None and block.kind in LEVEL_CURVE_KINDS:
+    if block is not None and spec_for(block.kind).is_level:
         # A level curve is built from the block itself, same as the dock's
         # own base curve (build_overall_level_model), rather than from
         # x/y/source_label (issue #125). Amplitude RMS/Peak applies the same way a
         # dropped/loaded order cut applies its own (§1.62 point 22, issue #128).
         return build_overall_level_overlay_trace(
             model, overlay_index=overlay_index, block=block, prefs=prefs,
-            amplitude_mode=amplitude_mode, result_set_id=result_set_id,
+            amplitude_mode=amplitude_mode, result_set_id=result_set_id, source_meta=source_meta,
         )
     shown = resolve_block_values(block, spectrum_format, spectrum_amplitude_mode)
     trace = build_overlay_trace(

@@ -2,6 +2,7 @@
 # FILE: gui/workspace/spectrogram_dock.py
 # =====================================================================
 import uuid
+from dataclasses import replace
 import pyqtgraph as pg
 import numpy as np
 from PySide6.QtWidgets import QWidget, QHBoxLayout
@@ -20,7 +21,13 @@ from gui.workspace.display_prefix_axis import DisplayPrefixAxisItem
 from gui.workspace.plot_area import style_plot_area
 from orchestration.channel_drop import PendingDrops
 from view_models.analysis_kinds import ANALYSIS_SPECTROGRAM
-from view_models.plot import GraphSpectrogram, SpectrogramModel, resolve_image_axis_extent
+from view_models.plot import (
+    DisplaySettings,
+    GraphSpectrogram,
+    SpectrogramModel,
+    resolve_display_settings,
+    resolve_image_axis_extent,
+)
 
 
 class SpectrogramDock(ChannelDropTargetMixin, SpectrogramCursorMixin, QWidget):
@@ -184,6 +191,19 @@ class SpectrogramDock(ChannelDropTargetMixin, SpectrogramCursorMixin, QWidget):
             self.plot_widget.getAxis('bottom').update_display_prefix()
             self.color_bar_axis.update_display_prefix()
 
+    def _display_settings(self) -> DisplaySettings:
+        """The one place this dock reads app_context for how its waterfall is
+        shown -- the spectrogram tab's Format, Amplitude and Color scale (#833)."""
+        return resolve_display_settings(
+            self.analysis_kind,
+            prefs=self._unit_preferences(),
+            spectrogram=getattr(self.app_context, "spectrogram_settings", None),
+        )
+
+    def plot_block(self, block: NVHDataBlock) -> None:
+        """Shows ``block`` as this dock's waterfall, in this dock's display settings."""
+        self.spectrogram.show_block(block, self._display_settings())
+
     def rebuild_with_display_settings(
         self,
         spectrum_format: Optional[str] = None,
@@ -194,14 +214,15 @@ class SpectrogramDock(ChannelDropTargetMixin, SpectrogramCursorMixin, QWidget):
         """
         Re-scales the SpectrogramModel on the fly from its canonical block.
         Runs synchronously in < 1 ms without re-running STFT or background jobs.
+        The settings are this dock's own (_display_settings); an argument only
+        overrides one of them.
         """
-        cfg = getattr(self.app_context, "spectrogram_settings", None) if self.app_context else None
-        self.spectrogram.rebuild_display(
-            color_scale=color_scale if color_scale is not None else getattr(cfg, "color_scale", "Linear"),
-            spectrum_format=spectrum_format if spectrum_format is not None else getattr(cfg, "spectrum_format", "linear"),
-            amplitude_mode=amplitude_mode if amplitude_mode is not None else getattr(cfg, "amplitude_mode", "rms"),
-            decibel_scale=decibel_scale,
-        )
+        overrides = {"spectrum_format": spectrum_format,
+                     "spectrum_amplitude_mode": amplitude_mode,
+                     "color_scale": color_scale,
+                     "decibel_scale": decibel_scale}
+        self.spectrogram.rebuild_display(replace(
+            self._display_settings(), **{k: v for k, v in overrides.items() if v is not None}))
 
     def render_spectrogram_matrix(self, frequencies, times, magnitude_matrix, z_label="Time", z_unit="s", mag_unit: str = ""):
         if len(times) > 1 and times[0] > times[-1]:

@@ -41,6 +41,7 @@ from core.dsp_configs import (
     SpectrumConfig, SpectrogramConfig, OrderTrackingConfig, OverallLevelConfig,
     VALID_TRACKING_MODES, normalize_dsp_choice, resolve_tracking_sweep,
 )
+from core.tacho_cleaning import TACHO_CLEANING_PARAMS
 from core.units import convert_numeric_array, format_spectral_unit, format_order_unit
 from signal_processing.dsp.levels import compute_tracked_overall_level
 from signal_processing.dsp.spectrum import compute_averaged_spectrum
@@ -105,33 +106,34 @@ def resolve_sampling_frequency(block: NVHDataBlock) -> float:
     return 1.0 / dt
 
 
-def require_matching_sampling_rate(fs_a: float, name_a: str, fs_b: float, name_b: str) -> None:
-    """
-    Raises when two channels meant to share a timebase (e.g. vibration and
-    tacho for order tracking) don't actually agree on sampling rate. Equal
-    sample count is not sufficient evidence of alignment -- two channels can
-    have the same length but a different dt, which produces a numerically
-    plausible but physically wrong result.
-    """
-    relative_diff = abs(fs_a - fs_b) / max(fs_a, fs_b)
-    if relative_diff > _SAMPLE_RATE_MISMATCH_TOLERANCE:
-        raise ValueError(
-            f"CRITICAL: Sampling rate mismatch between '{name_a}' ({fs_a:.1f} Hz) and "
-            f"'{name_b}' ({fs_b:.1f} Hz) -- off by {relative_diff * 100:.1f}%. "
-            f"These channels do not share a timebase."
-        )
+def _share_sampling_rate(fs_a: float, fs_b: float) -> bool:
+    """Whether two rates count as one within the tolerance a real file's header can be off by."""
+    return abs(fs_a - fs_b) / max(fs_a, fs_b) <= _SAMPLE_RATE_MISMATCH_TOLERANCE
+
+
+def _require_same_start(vib_block: NVHDataBlock, tacho_block: NVHDataBlock, fs: float) -> None:
+    """Raises unless both channels' first samples lie within half a sample of the channel's `fs`."""
+    vib_times, tacho_times = vib_block.primary_axis.values, tacho_block.primary_axis.values
+    if len(vib_times) and len(tacho_times):
+        vib_start, tacho_start = float(vib_times[0]), float(tacho_times[0])
+        if abs(vib_start - tacho_start) > 0.5 / fs:
+            raise ValueError(
+                f"Vibration/tacho start time mismatch: '{vib_block.name}' starts at "
+                f"{vib_start:.6g}s, '{tacho_block.name}' at {tacho_start:.6g}s. Both channels "
+                f"must start at the same instant to share a timebase."
+            )
 
 
 def require_matching_sample_grid(vib_block: NVHDataBlock, tacho_block: NVHDataBlock, fs: float) -> None:
     """
-    Raises unless vibration and tacho cover the same sample instants: the same
-    sample count and the same first time stamp (within half a sample).
+    Raises unless vibration and tacho of one sampling rate cover the same sample
+    instants: the same sample count and the same first time stamp (within half a
+    sample).
 
     A tracking plan places its triggers at tacho sample indices and applies
     them to the vibration unchanged, so an equal sample rate is not enough --
     a tacho that is longer, shorter or starts later yields a curve read at the
-    wrong speed with nothing raised. Aligning such channels (resampling,
-    trimming) is not done here; they are refused.
+    wrong speed with nothing raised. Such channels are refused, not trimmed.
     """
     n_vib, n_tacho = len(vib_block.values), len(tacho_block.values)
     if n_vib != n_tacho:
@@ -140,27 +142,92 @@ def require_matching_sample_grid(vib_block: NVHDataBlock, tacho_block: NVHDataBl
             f"'{tacho_block.name}' has {n_tacho}. Both channels must share the same "
             f"sample count to align trigger indices."
         )
+    _require_same_start(vib_block, tacho_block, fs)
 
+
+def _interpolate_tacho(vib_block: NVHDataBlock, tacho_block: NVHDataBlock, fs: float,
+                       tacho_fs: float, tacho_rpm: np.ndarray) -> np.ndarray:
+    """
+    Tacho interpolation: the speed at each sample instant of the channel, linear
+    between the tacho's samples, so everything downstream sees one rpm per sample.
+
+    The start is checked first, or the message would blame the rate. Past the
+    tacho's last sample its value holds for one tacho step, the usual end of a
+    recording; a channel running on beyond that is refused rather than silently cut.
+    A faster tacho is averaged over one step of the channel on the way, or its noise
+    would alias into slow swings of the speed (`_average_tacho`).
+    """
     vib_times, tacho_times = vib_block.primary_axis.values, tacho_block.primary_axis.values
-    if len(vib_times) and len(tacho_times):
-        vib_start, tacho_start = float(vib_times[0]), float(tacho_times[0])
-        if abs(vib_start - tacho_start) > 0.5 / fs:
-            raise ValueError(
-                f"Vibration/tacho start time mismatch: '{vib_block.name}' starts at "
-                f"{vib_start:.6g}s, '{tacho_block.name}' at {tacho_start:.6g}s. Both channels "
-                f"must start at the same instant to align trigger indices."
-            )
+    if not len(vib_times) or not len(tacho_times):
+        raise ValueError(
+            f"Cannot interpolate tacho '{tacho_block.name}' onto '{vib_block.name}': "
+            f"they have {len(tacho_times)} and {len(vib_times)} samples."
+        )
+    _require_same_start(vib_block, tacho_block, fs)
+
+    vib_end, tacho_end = float(vib_times[-1]), float(tacho_times[-1])
+    # The factor only forgives a float's last digits on a channel exactly one step past.
+    if vib_end - tacho_end > (1.0 + 1e-9) / tacho_fs:
+        raise ValueError(
+            f"Tacho does not cover the channel: '{tacho_block.name}' ends at {tacho_end:.6g}s, "
+            f"'{vib_block.name}' at {vib_end:.6g}s."
+        )
+    if tacho_fs > fs:
+        return _average_tacho(vib_times, tacho_times, tacho_rpm, fs)
+    return np.interp(vib_times, tacho_times, tacho_rpm)
+
+
+def _average_tacho(vib_times: np.ndarray, tacho_times: np.ndarray, tacho_rpm: np.ndarray,
+                   fs: float) -> np.ndarray:
+    """
+    The mean speed over one step of the channel, centred on each of its instants.
+
+    A window of exactly one step cancels whatever would fold down to a slow swing,
+    the frequencies next to a multiple of `fs`. Hence the difference of the running
+    integral rather than a count of tacho samples: a count would miss that width at
+    a fractional ratio, and at a ratio under 1.5 would not average at all. A window
+    is clipped at the ends of the tacho; past its end the last value holds. A window
+    touching a non-finite sample is NaN, left to Tacho cleaning like an interpolated
+    one; a running integral would otherwise carry it to the end of the record.
+    """
+    steps = np.diff(tacho_times)
+    finite = np.isfinite(tacho_rpm)
+    broken = ~(finite[:-1] & finite[1:])
+    known_rpm = np.where(finite, tacho_rpm, 0.0)
+    areas = 0.5 * (known_rpm[1:] + known_rpm[:-1]) * steps
+    areas[broken] = 0.0
+    integral = np.concatenate(([0.0], np.cumsum(areas)))
+    broken_time = np.concatenate(([0.0], np.cumsum(broken * steps)))
+
+    window_start = np.clip(vib_times - 0.5 / fs, tacho_times[0], tacho_times[-1])
+    window_end = np.clip(vib_times + 0.5 / fs, tacho_times[0], tacho_times[-1])
+    width = window_end - window_start
+    inside = width > 0.0
+    averaged = np.full(len(vib_times), float(tacho_rpm[-1]))
+    averaged[inside] = (np.interp(window_end[inside], tacho_times, integral)
+                        - np.interp(window_start[inside], tacho_times, integral)) / width[inside]
+    averaged[inside & (np.interp(window_end, tacho_times, broken_time)
+                       > np.interp(window_start, tacho_times, broken_time))] = np.nan
+    return averaged
 
 
 _TACHO_KEY = ("tacho_rpm",)
 
 
+def _channel_grid(fs: float, n_samples: int, start_time: float) -> Tuple[float, int, float]:
+    """What in `scratch` tells one channel's sample instants from another's."""
+    return float(fs), n_samples, start_time
+
+
 def resolve_and_convert_tacho(vib_block: NVHDataBlock, tacho_block: NVHDataBlock,
                               scratch: Optional[MutableMapping[str, Any]] = None) -> tuple:
     """
-    The vibration sampling frequency, and the tacho channel converted to rpm,
-    with both timebases checked against each other along the way (sample rate,
-    sample count and start time).
+    The vibration sampling frequency, and the tacho channel converted to rpm
+    with one value per sample of the channel. A tacho of the channel's rate
+    (within the tolerance) must share its grid and comes through unchanged,
+    bit for bit; one of another rate goes through Tacho interpolation, and with
+    a bag its read-only result is kept per grid (rate, sample count, start)
+    beside the native rpm, so channels alternating in one bag each keep theirs.
 
     This exact sequence -- resolve both fs, cross-check them, then convert
     tacho to rpm -- used to be written out independently at every call site
@@ -191,7 +258,15 @@ def resolve_and_convert_tacho(vib_block: NVHDataBlock, tacho_block: NVHDataBlock
         fs = tacho_fs
     else:
         fs = resolve_sampling_frequency(vib_block)
-    require_matching_sampling_rate(fs, vib_block.name, tacho_fs, tacho_block.name)
+    if not _share_sampling_rate(fs, tacho_fs):
+        grid_key = _TACHO_KEY + _channel_grid(fs, len(vib_times), _resolve_start_time(vib_block))
+        interpolated = scratch.get(grid_key) if scratch is not None else None
+        if interpolated is None:
+            interpolated = _interpolate_tacho(vib_block, tacho_block, fs, tacho_fs, tacho_rpm)
+            interpolated.setflags(write=False)
+            if scratch is not None:
+                scratch[grid_key] = interpolated
+        return fs, interpolated
     require_matching_sample_grid(vib_block, tacho_block, fs)
     return fs, tacho_rpm
 
@@ -510,28 +585,25 @@ def _tracking_plan_for(scratch: Optional[MutableMapping[str, Any]],
     one of their own.
 
     Keyed by the config's whole `TrackingSweep` -- tracking mode, step,
-    direction and Tracking range: a spectrogram can be rpm- or time-tracked,
-    and a graph running both at the same step number must not have one
-    overwrite the other's plan in scratch, nor a plan cut
-    for one range serve another (#805, #807). `matches` guards the rest of it:
-    a channel recorded at another rate or length gets its own plan instead of
-    being cut at the wrong instants, and one that starts at another time gets
-    its own time axis.
+    direction, Tracking range and Tacho cleaning: a spectrogram can be
+    rpm- or time-tracked, and a graph running both at the same step number must
+    not have one overwrite the other's plan in scratch, nor
+    a plan cut for one range or window serve another (#805, #807, #839). And by
+    the channel's grid (#934): a channel recorded at another rate or length gets
+    its own plan instead of being cut at the wrong instants, one that starts at
+    another time gets its own time axis, and alternating them rebuilds neither.
 
     Raises, naming the measurement, when the Tracking range found no target
     in it (`require_tracking_triggers`).
     """
     sweep = resolve_tracking_sweep(config)
     start_time = _resolve_start_time(vib_block)
-    key = ("tracking_plan", sweep)
+    key = ("tracking_plan", sweep) + _channel_grid(fs, n_samples, start_time)
     plan = scratch.get(key) if scratch is not None else None
-    if plan is None or not plan.matches(fs, n_samples) or plan.start_time != start_time:
+    if plan is None:
         plan = _timed(
             "tracking_plan", build_tracking_plan,
-            tacho_rpm, n_samples, fs, sweep.step, sweep.direction,
-            tracking_mode=sweep.mode, start_time=start_time,
-            rpm_min=sweep.rpm_min, rpm_max=sweep.rpm_max,
-            time_start=sweep.time_start, time_end=sweep.time_end,
+            tacho_rpm, n_samples, fs, sweep, start_time=start_time,
         )
         if scratch is not None:
             scratch[key] = plan
@@ -553,10 +625,10 @@ class TrackingScratch:
     cached rpm depend on nothing else, so a re-measured file with a new tacho
     gets a new bag and a fresh read of the same tacho keeps the old one -- at
     the price of one array comparison (~1-2 ms on a 75 s run-up). The sweep is
-    part of it so the bag holds one plan per tracking mode, not one per step
-    ever tried (each plan is ~15 MB, ADR §1.117). Thread-safe: a job keeps the
-    bag it was handed even after a newer call replaces it, and calls that meet
-    an empty bag at the same time build its plan once between them (#99).
+    part of it so the bag holds one plan per tracking mode and channel grid, not
+    one per step ever tried (each plan is ~15 MB, ADR §1.117). Thread-safe: a job
+    keeps the bag it was handed even after a newer call replaces it, and calls that
+    meet a grid new to the bag at the same time build its plan once between them (#99).
     """
 
     def __init__(self):
@@ -565,6 +637,7 @@ class TrackingScratch:
         self._tacho: Optional[NVHDataBlock] = None
         self._scratch: Dict[Any, Any] = {}
         self._build_lock = threading.Lock()
+        self._built_grids: set = set()
 
     def resolve_scratch(self, tacho_block: Optional[NVHDataBlock],
                     config: Union[OrderTrackingConfig, SpectrogramConfig, OverallLevelConfig]
@@ -572,9 +645,9 @@ class TrackingScratch:
         return self._resolve(tacho_block, config)[0]
 
     def _resolve(self, tacho_block, config):
-        """The bag for this tacho and sweep, and the lock its plan is built under."""
+        """The bag for this tacho and sweep, the lock its plans are built under, and their grids."""
         sweep = resolve_tracking_sweep(config)
-        identity = (sweep.step, sweep.direction) + sweep.bounds
+        identity = (sweep.step, sweep.direction, sweep.tacho_cleaning) + sweep.bounds
         if tacho_block is not None:
             identity += (tacho_block.value_unit, tacho_block.acquisition.dt, len(tacho_block.values))
         with self._lock:
@@ -586,21 +659,26 @@ class TrackingScratch:
             if identity != self._identity or not same_tacho:
                 self._identity, self._tacho, self._scratch = identity, tacho_block, {}
                 self._build_lock = threading.Lock()
-            return self._scratch, self._build_lock
+                self._built_grids = set()
+            return self._scratch, self._build_lock, self._built_grids
 
     def compute(self, compute_fn, vib_block: NVHDataBlock, tacho_block: Optional[NVHDataBlock], config):
         """
         `compute_fn` (compute_order_cuts and its tracked siblings) with this
-        bag; run it on the worker. A call that finds the bag empty computes
-        under its lock, so siblings arriving meanwhile wait for its plan rather
-        than build their own, then compute side by side. Without a tacho, or
-        tracked against time, there is no plan to wait for.
+        bag; run it on the worker. The first call for a channel grid computes
+        under the bag's lock, so siblings arriving meanwhile wait for its plan
+        rather than build their own, then compute side by side. The grid is told
+        by dt here: working out `fs` is part of what the lock saves. Without a
+        tacho, or tracked against time, there is no plan to wait for.
         """
-        scratch, build_lock = self._resolve(tacho_block, config)
+        scratch, build_lock, built_grids = self._resolve(tacho_block, config)
         if tacho_block is not None and resolve_tracking_sweep(config).mode == "rpm":
+            grid = (vib_block.acquisition.dt, len(vib_block.values), _resolve_start_time(vib_block))
             with build_lock:
-                if not scratch:
-                    return compute_fn(vib_block, tacho_block, config, scratch=scratch)
+                if grid not in built_grids:
+                    result = compute_fn(vib_block, tacho_block, config, scratch=scratch)
+                    built_grids.add(grid)
+                    return result
         return compute_fn(vib_block, tacho_block, config, scratch=scratch)
 
 
@@ -620,8 +698,8 @@ def compute_order_cuts(vib_block: NVHDataBlock, tacho_block: NVHDataBlock,
     `scratch` is a caller-owned bag scoped to one measurement (the workflow
     runner's per-file memo -- see `signal_processing.workflow.run_graph`). A
     batch cuts every channel of a file against the same tacho, and the
-    `TrackingPlan` depends on the tacho and the sweep settings but never on the
-    vibration channel, so with a bag it is placed once per file instead of once
+    `TrackingPlan` depends on the tacho, the sweep settings and the channel's grid
+    but never on its values, so with a bag it is placed once per file instead of once
     per channel: 0.076 s against 0.016 s for the cuts themselves on the real 75 s
     run-up. Without one every call rebuilds it -- correct, but the repetition
     BUGS.md K2 was about.
@@ -686,13 +764,14 @@ def compute_order_cuts(vib_block: NVHDataBlock, tacho_block: NVHDataBlock,
 
 def _order_tracking_overall_level_config(config: OrderTrackingConfig) -> OverallLevelConfig:
     """The Overall Level tab settings the order tracking Overall Level curve equals:
-    the default band, this config's FFT, window, sweep, Tracking range and Remove DC
-   ."""
+    the default band, this config's FFT, window, sweep, Tracking range, Remove DC
+    and Tacho cleaning."""
     return OverallLevelConfig(
         fft_size=config.fft_size, window_type=config.window_type, tracking_mode="rpm",
         step=config.step, direction=config.direction,
         rpm_min=config.rpm_min, rpm_max=config.rpm_max,
         remove_dc=config.remove_dc,
+        **{name: getattr(config, name) for name in TACHO_CLEANING_PARAMS},
     )
 
 

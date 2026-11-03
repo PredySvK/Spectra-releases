@@ -118,11 +118,11 @@ def identity_for_stored_curve(curve: Mapping[str, Any], source: Optional[SourceE
 def resolve_stored_curves_already_held(
     curves: Sequence[Mapping[str, Any]], traces: Sequence[Trace],
     sources_by_path: Dict[str, SourceEntry], sources_by_id: Mapping[str, SourceEntry],
-) -> Tuple[List[Trace], List[Mapping[str, Any]]]:
+) -> Tuple[List[Tuple[Trace, Mapping[str, Any]]], List[Mapping[str, Any]]]:
     """
     Splits `curves`, read off one result set, by whether the graph holding
-    `traces` already shows them: returns (the held traces that are the same
-    curve as one of `curves`, the curves still to be drawn).
+    `traces` already shows them: returns ((held trace, the stored curve it is the
+    same curve as) pairs, the curves still to be drawn).
 
     Only a trace no result set claims yet -- a live compute, a dropped
     channel, a base curve off a measurement -- can be the same curve, and
@@ -132,7 +132,7 @@ def resolve_stored_curves_already_held(
         (trace, identity_for_trace(trace, sources_by_path))
         for trace in traces if not trace.result_set_id
     ]
-    held: List[Trace] = []
+    held: List[Tuple[Trace, Mapping[str, Any]]] = []
     to_draw: List[Mapping[str, Any]] = []
     for curve in curves:
         stored = identity_for_stored_curve(curve, sources_by_id.get(curve.get("source_id", "")))
@@ -141,8 +141,25 @@ def resolve_stored_curves_already_held(
         if match is None:
             to_draw.append(curve)
         else:
-            held.append(unclaimed.pop(match)[0])
+            held.append((unclaimed.pop(match)[0], curve))
     return held, to_draw
+
+
+def resolve_set_curve_same_as(
+    live: Trace, traces: Sequence[Trace], sources_by_path: Dict[str, SourceEntry],
+) -> Optional[Trace]:
+    """
+    The curve among `traces` that only a result set holds and that is the same
+    curve as `live`, a curve just computed live -- the reverse of
+    `resolve_stored_curves_already_held`, for a live curve landing after the set
+    it belongs to. None when no such curve is held (#923).
+    """
+    set_curves = [trace for trace in traces if trace.is_set_only and trace is not live]
+    if not set_curves:
+        return None
+    wanted = identity_for_trace(live, sources_by_path)
+    return next((trace for trace in set_curves
+                 if identities_match(identity_for_trace(trace, sources_by_path), wanted)), None)
 
 
 def _is_imported(block: Any) -> bool:

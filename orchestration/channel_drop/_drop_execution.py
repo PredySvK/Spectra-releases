@@ -4,16 +4,18 @@ skeleton and the landing of what the lanes bring back."""
 import dataclasses
 import functools
 import json
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 from core.channel_drop import RECIPE_KEY, TAB_CACHE_KEY
-from view_models.analysis_kinds import ANALYSIS_ORDERS, ANALYSIS_SPECTRUM, resolve_analysis_kind
+from core.channel_types import CHANNEL_TYPE_TACHO
+from view_models.analysis_kinds import ANALYSIS_SPECTRUM, resolve_analysis_kind, resolve_imported_analysis_kind
 from view_models.plot import overall_level_band_differs_from_dock
 
 from orchestration.channel_drop._drop_plan import plan_channel_drop
-from orchestration.channel_drop._drop_target import DropTarget
+from orchestration.channel_drop._drop_target import DropTarget, OrderDropInputs
 from orchestration.channel_drop._dropped_channels import resolve_dropped_channel
 from orchestration.channel_drop._pending_drops import PendingDrops
+from orchestration.channel_drop._result_content_drop_config import resolve_result_content_drop_config
 from orchestration.channel_drop._spectrogram_routing import decide_spectrogram_drop
 from orchestration.channel_drop._spectrum_drop_config import resolve_spectrum_drop_config
 from orchestration.channel_drop._tacho_plan import plan_tacho_per_file
@@ -27,6 +29,9 @@ class _Run:
     target: DropTarget
     pending_drops: PendingDrops
     workers: Any
+    # Files already refused in this drop: it may run as several tasks, and a
+    # file gets one error all the same.
+    refused_paths: set = dataclasses.field(default_factory=set)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -45,23 +50,26 @@ class _Landing:
 
 def run_channel_drop(target: DropTarget, descriptors: Iterable[dict], *,
                      pending_drops: PendingDrops, workers,
-                     batch_label: str | None = None) -> bool:
+                     batch_label: str | None = None, from_refresh: bool = False) -> bool:
     """Serve a drop on ``target``; True once any of it was accepted.
 
     ``pending_drops`` is the dock's record of drops in flight; ``workers`` is
     ``orchestration.live_compute`` -- its background functions and its
     cache-hit line builders (same floor, so the caller hands it in).
+    ``from_refresh`` says a Refresh re-drops these channels: on a dock holding
+    result sets they obey the ribbon instead of fitting the dock.
 
     Accepted is not "drawn": the background lanes land their curves later, in
-    their success callback on the GUI thread (``_land``). A result-content
-    channel that fails is logged and does not stop its siblings.
+    their success callback on the GUI thread (``_land``). A channel that fails
+    is logged and does not stop its siblings.
     """
     facts = target.facts
     run = _Run(target, pending_drops, workers)
     plan = plan_channel_drop(
         descriptors, facts, facts.plotted_keys,
-        pending_drops.keys() | facts.live_pending_keys,
+        pending_drops.keys(),
         lambda: target.order_inputs().config.orders_to_extract,
+        _result_content_orders(target, from_refresh),
     )
     if plan.is_empty:
         return False
@@ -73,25 +81,23 @@ def run_channel_drop(target: DropTarget, descriptors: Iterable[dict], *,
     accepted = 0
 
     if routing.imported:
-        if facts.is_graph and facts.analysis_kind == ANALYSIS_ORDERS:
-            _run_simple(run, routing.imported, is_spec=False, is_spectrum=False, label=batch_label)
-        else:
-            target.open_imported_channels(routing.imported)
+        # An Imported result is read, never computed: it joins a graph that shows its kind
+        # and opens a tab of its own anywhere else.
+        shown_here = [desc for desc in routing.imported if facts.is_graph
+                      and resolve_imported_analysis_kind(desc.get("block_kind")) == facts.analysis_kind]
+        elsewhere = [desc for desc in routing.imported if desc not in shown_here]
+        if shown_here:
+            _run_simple(run, shown_here, is_spec=False, is_spectrum=False, label=batch_label)
+        if elsewhere:
+            target.open_imported_channels(elsewhere)
         accepted += len(routing.imported)
 
-    # One job for the whole group, a step per channel (#468).
-    label = batch_label or f"Order tracking — {len(routing.result_content)} channels"
-    with target.result_content_batch(label):
-        for desc in routing.result_content:
-            try:
-                if target.serve_result_content(desc):
-                    accepted += 1
-            except Exception as e:
-                target.log(
-                    f"ERROR: Dropped channel processing failed for {desc.get('channel_name', 'Unknown')}: {str(e)}")
+    result_content_lane = _RESULT_CONTENT_REFRESH if from_refresh else _RESULT_CONTENT
+    for group in plan.result_content_groups:
+        accepted += _run_orders(run, result_content_lane, group.descriptors, group.orders, batch_label)
 
     for group in plan.order_groups:
-        accepted += _run_orders(run, group.descriptors, group.orders, batch_label)
+        accepted += _run_orders(run, _ORDER_TRACKING, group.descriptors, group.orders, batch_label)
 
     if routing.overall_level:
         accepted += _run_overall_level(run, routing.overall_level, batch_label)
@@ -235,7 +241,7 @@ def _pair_spectrogram_channel(target: DropTarget, descriptor: dict, block) -> No
         return
 
     dropped = None
-    if block.channel_type != "tacho":
+    if block.channel_type != CHANNEL_TYPE_TACHO:
         dropped = resolve_dropped_channel(descriptor, inputs.run_lookup)
         if isinstance(dropped, str):
             target.log(dropped)
@@ -318,80 +324,132 @@ def _run_simple_group(run: _Run, descriptors, spectrum_config, *, is_spec: bool,
     )
 
 
-def _run_orders(run: _Run, descriptors, orders, label: str | None) -> int:
-    """Order cuts of one group of channels in one task (one per saved recipe);
-    how many channels have a tacho and are served."""
-    inputs = run.target.order_inputs()
-    served = 0
-    for recipe, group in _by_recipe(descriptors):
-        config, restore = _config_of(run.target, recipe, group, lambda: inputs.config)
-        served += _run_order_group(
-            run, group, dataclasses.replace(config, orders_to_extract=list(orders)), inputs, label,
-            restore)
-    return served
+_NOT_LOADED_REFUSAL = "ERROR: Cannot add channels of '{file_name}' -- its file is not currently loaded."
 
 
-def _run_order_group(run: _Run, descriptors, config, inputs, label: str | None, restore) -> int:
-    target = run.target
-    dock_tacho_path = inputs.dock_tacho.source.file_path if inputs.dock_tacho else None
-    plan = plan_tacho_per_file(
-        descriptors, inputs.run_lookup, dock_tacho_path, against_time=False)
-    for refusal in plan.refusals:
-        target.log(
-            f"ERROR: Cannot extract orders from '{refusal.file_name}' -- "
-            "no tacho channel is available for that measurement."
-        )
-    prepared = list(plan.prepared)
-    if not prepared:
-        return 0
+@dataclasses.dataclass(frozen=True)
+class _TrackedLane:
+    """What tells the tracked lanes -- Order Tracking, Result content and Overall
+    Level --
+    apart; everything else they share in ``_run_tracked``.
 
-    _run_claimed(
-        run, [p[0] for p in prepared],
-        functools.partial(_with_restore(run.workers.run_order_drops, restore),
-                          with_overall_level=inputs.with_overall_level),
-        prepared, target.cache_finder(), config, inputs.dock_tacho, dock_tacho_path,
-        render=functools.partial(_land_orders, run),
-        job_label=label or f"Order tracking — {len(prepared)} channels",
-        progress_units=len(prepared),
-    )
-    return len(prepared)
+    ``read_inputs(target)`` reads the lane's inputs on the GUI thread;
+    ``against_time(config)`` says the lane needs no tacho; ``refusal`` is the
+    line logged for a file without one (``{file_name}``); ``worker(workers,
+    inputs)`` is the background function; ``land`` lands what it brings back;
+    ``job_name`` names the job when the caller gives no label.
+    """
+
+    read_inputs: Callable[[DropTarget], Any]
+    against_time: Callable[[Any], bool]
+    refusal: str
+    worker: Callable[[Any, Any], Callable]
+    land: Callable[[_Run, Any], None]
+    job_name: str
+
+
+_ORDER_TRACKING = _TrackedLane(
+    read_inputs=lambda target: target.order_inputs(),
+    against_time=lambda config: False,
+    refusal=("ERROR: Cannot extract orders from '{file_name}' -- "
+             "no tacho channel is available for that measurement."),
+    worker=lambda workers, inputs: functools.partial(
+        workers.run_order_drops, with_overall_level=inputs.with_overall_level),
+    land=_land_orders,
+    job_name="Order tracking",
+)
+
+_OVERALL_LEVEL = _TrackedLane(
+    read_inputs=lambda target: target.overall_level_inputs(),
+    against_time=lambda config: config.tracking_mode == "time",
+    refusal=("ERROR: Cannot track Overall Level against RPM for '{file_name}' -- "
+             "no tacho channel is available for that measurement."),
+    worker=lambda workers, inputs: workers.run_overall_level_drops,
+    land=_land_overall_level,
+    job_name="Overall Level",
+)
+
+
+def _result_content_inputs(target: DropTarget, *, from_refresh: bool = False) -> OrderDropInputs:
+    """The order inputs as a dock holding result sets computes with them: the
+    config fits the dock -- or obeys the ribbon on a Refresh -- and the Overall
+    Level switch adds no curves to it: what the dock holds is said by its
+    Parameter Sets."""
+    inputs = target.order_inputs()
+    return dataclasses.replace(
+        inputs, with_overall_level=False,
+        config=resolve_result_content_drop_config(
+            inputs.config, target.parameter_sets(), from_refresh=from_refresh))
+
+
+_RESULT_CONTENT = dataclasses.replace(_ORDER_TRACKING, read_inputs=_result_content_inputs)
+_RESULT_CONTENT_REFRESH = dataclasses.replace(
+    _ORDER_TRACKING, read_inputs=functools.partial(_result_content_inputs, from_refresh=True))
+
+
+def _result_content_orders(target: DropTarget, from_refresh: bool) -> Callable[[Mapping], Any]:
+    """The orders a channel on the result-content lane asks for: of the config
+    it will compute with, its saved recipe's when it carries one -- whose order
+    list is the ribbon's, as a recipe names only its own order (ADR §1.204
+    point 5). The plan reads the dock's config once, and only when the lane is
+    taken."""
+    read_config = functools.cache(
+        lambda: _result_content_inputs(target, from_refresh=from_refresh).config)
+
+    def read_orders(descriptor):
+        recipe = descriptor.get(RECIPE_KEY)
+        config = target.restored_config(recipe).config if recipe else read_config()
+        return config.orders_to_extract
+
+    return read_orders
+
+
+def _run_orders(run: _Run, lane: _TrackedLane, descriptors, orders, label: str | None) -> int:
+    """Order cuts of one group of channels; how many channels are served."""
+    return _run_tracked(
+        run, lane, descriptors, label,
+        lambda config: dataclasses.replace(config, orders_to_extract=list(orders)))
 
 
 def _run_overall_level(run: _Run, descriptors, label: str | None) -> int:
-    """
-    Overall Level of one drop in one task (one per saved recipe); how many
-    channels are served.
-    Tacho is resolved once per source file.
-    """
-    inputs = run.target.overall_level_inputs()
+    """Overall Level of one drop; how many channels are served."""
+    return _run_tracked(run, _OVERALL_LEVEL, descriptors, label)
+
+
+def _run_tracked(run: _Run, lane: _TrackedLane, descriptors, label: str | None,
+                 for_group: Callable[[Any], Any] = lambda config: config) -> int:
+    """One task per saved recipe on a tracked lane; how many channels have a
+    tacho (or need none) and are served. ``for_group`` finishes the config
+    of each group."""
+    inputs = lane.read_inputs(run.target)
     served = 0
     for recipe, group in _by_recipe(descriptors):
         config, restore = _config_of(run.target, recipe, group, lambda: inputs.config)
-        served += _run_overall_level_group(run, group, config, inputs, label, restore)
+        served += _run_tracked_group(run, lane, group, for_group(config), inputs, label, restore)
     return served
 
 
-def _run_overall_level_group(run: _Run, descriptors, config, inputs, label: str | None,
-                             restore) -> int:
+def _run_tracked_group(run: _Run, lane: _TrackedLane, descriptors, config, inputs,
+                       label: str | None, restore) -> int:
+    """Tacho is resolved once per source file."""
     target = run.target
-    against_time = config.tracking_mode == "time"
     dock_tacho_path = inputs.dock_tacho.source.file_path if inputs.dock_tacho else None
     plan = plan_tacho_per_file(
-        descriptors, inputs.run_lookup, dock_tacho_path, against_time=against_time)
+        descriptors, inputs.run_lookup, dock_tacho_path, against_time=lane.against_time(config))
     for refusal in plan.refusals:
-        target.log(
-            f"ERROR: Cannot track Overall Level against RPM for "
-            f"'{refusal.file_name}' -- no tacho channel is available for that measurement."
-        )
+        if refusal.file_path not in run.refused_paths:
+            run.refused_paths.add(refusal.file_path)
+            line = _NOT_LOADED_REFUSAL if refusal.not_loaded else lane.refusal
+            target.log(line.format(file_name=refusal.file_name))
     prepared = list(plan.prepared)
     if not prepared:
         return 0
 
     _run_claimed(
-        run, [p[0] for p in prepared], _with_restore(run.workers.run_overall_level_drops, restore),
+        run, [p[0] for p in prepared], _with_restore(lane.worker(run.workers, inputs), restore),
         prepared, target.cache_finder(), config, inputs.dock_tacho, dock_tacho_path,
-        render=functools.partial(_land_overall_level, run),
-        job_label=label or f"Overall Level — {len(prepared)} channels",
+        render=functools.partial(lane.land, run),
+        job_label=label or f"{lane.job_name} — {len(prepared)} channels",
         progress_units=len(prepared),
     )
     return len(prepared)

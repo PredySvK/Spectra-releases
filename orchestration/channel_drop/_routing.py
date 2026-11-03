@@ -2,10 +2,10 @@
 
 from dataclasses import dataclass
 from typing import Iterable, Mapping
-from core.block_kinds import KIND_ORDER_CUT
 
 from selection.channel_identity import build_channel_key
-from view_models.analysis_kinds import ANALYSIS_ORDERS, ANALYSIS_OVERALL_LEVEL
+from selection.parameter_sets import orders_equal
+from view_models.analysis_kinds import ANALYSIS_ORDERS, ANALYSIS_OVERALL_LEVEL, resolve_imported_analysis_kind
 
 
 @dataclass(frozen=True)
@@ -17,7 +17,6 @@ class DropFacts:
     analysis_kind: str
     is_result_content_dock: bool
     plotted_keys: frozenset = frozenset()
-    live_pending_keys: frozenset = frozenset()
 
 
 @dataclass(frozen=True)
@@ -58,11 +57,13 @@ def filter_duplicate_descriptors(
     pending = set(pending_keys)
     valid = []
     seen = set()
+    plotted_orders = _orders_by_channel(plotted)
     for descriptor in descriptors:
         key = drop_key(descriptor)
         if is_graph and "orders_to_extract" in descriptor:
             remaining = [order for order in descriptor["orders_to_extract"]
-                         if (*key, float(order)) not in plotted | pending | seen
+                         if (*key, float(order)) not in pending | seen
+                         and not _holds_order(plotted_orders, key, order)
                          and key not in pending | seen]
             if remaining:
                 descriptor = {**descriptor, "orders_to_extract": remaining}
@@ -77,6 +78,26 @@ def filter_duplicate_descriptors(
     return valid
 
 
+def _orders_by_channel(keys: Iterable[tuple]) -> dict[tuple, list[float]]:
+    """The per-order keys among ``keys``, by the channel they belong to."""
+    orders: dict[tuple, list[float]] = {}
+    for key in keys:
+        if len(key) == 3:
+            orders.setdefault(key[:2], []).append(key[2])
+    return orders
+
+
+def _holds_order(orders_by_channel: Mapping[tuple, list[float]], key: tuple, order: float) -> bool:
+    """A plotted curve read off a result set names its order through float32,
+    so 2.3 comes back as 2.2999999523 -- still the same order."""
+    return any(orders_equal(order, held) for held in orders_by_channel.get(key, ()))
+
+
+def is_imported_descriptor(descriptor: Mapping) -> bool:
+    """Whether the descriptor names an Imported result: read, never computed."""
+    return resolve_imported_analysis_kind(descriptor.get("block_kind")) is not None
+
+
 def classify_drop_descriptors(
     descriptors: Iterable[dict], facts: DropFacts,
 ) -> DropRouting:
@@ -88,7 +109,7 @@ def classify_drop_descriptors(
     result_content = []
     imported = []
     for descriptor in descriptors:
-        if descriptor.get("block_kind") == KIND_ORDER_CUT:
+        if is_imported_descriptor(descriptor):
             imported.append(descriptor)
         elif (facts.is_graph and facts.analysis_kind == ANALYSIS_ORDERS
               and facts.is_result_content_dock and "orders_to_extract" not in descriptor):

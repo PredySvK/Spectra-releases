@@ -11,10 +11,12 @@ from session.data_pool import DeadLink
 
 @dataclass(frozen=True)
 class TachoRefusal:
-    """A source file whose tacho could not be resolved for a drop."""
+    """A source file whose tacho could not be resolved for a drop: it has none,
+    or -- ``not_loaded`` -- the Data Pool does not hold the file at all."""
 
     file_name: str
     file_path: str
+    not_loaded: bool = False
 
 
 @dataclass(frozen=True)
@@ -36,7 +38,7 @@ def plan_tacho_per_file(
 
     A dock tacho is already a resolved block, so its source file is never
     looked up through ``run_lookup`` (``DataPool.run_lookup``);
-    a file it reports as a ``DeadLink`` is refused like one without a tacho. In time mode no tacho lookup is performed.
+    a file it reports as a ``DeadLink`` is refused as ``not_loaded``. In time mode no tacho lookup is performed.
     The first descriptor from a file determines the order of refusal messages;
     later descriptors from the same refused file are skipped.
     """
@@ -58,18 +60,15 @@ def plan_tacho_per_file(
                 continue
             tacho_meta = tacho_meta_by_path.get(path)
             if tacho_meta is None:
-                tacho_meta = find_tacho_channel(_pooled_run(run_lookup, path))
+                run = run_lookup(path)
+                not_loaded = isinstance(run, DeadLink)
+                tacho_meta = None if not_loaded else find_tacho_channel(run)
                 if tacho_meta is None:
                     refused_paths.add(path)
-                    refusals.append(TachoRefusal(descriptor["file_name"], path))
+                    refusals.append(TachoRefusal(descriptor["file_name"], path, not_loaded))
                     continue
                 tacho_meta_by_path[path] = tacho_meta
 
         prepared.append((descriptor, channel_name, mock_run, mock_meta, tacho_meta))
 
     return TachoDropPlan(tuple(prepared), tuple(refusals))
-
-
-def _pooled_run(run_lookup, path):
-    run = run_lookup(path)
-    return None if isinstance(run, DeadLink) else run

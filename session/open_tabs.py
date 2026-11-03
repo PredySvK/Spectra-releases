@@ -116,6 +116,7 @@ class TabSpec:
     # evaluation algorithm name, parameters, and whether to respect the trace filter.
     # Single values are not persisted; they are recomputed on demand.
     evaluation_config: EvaluationConfig = field(default_factory=EvaluationConfig)
+    custom_label: Optional[str] = None
 
     def __post_init__(self) -> None:
         if isinstance(self.evaluation_config, dict):
@@ -131,6 +132,7 @@ class TabSpec:
             "filter_selections": {k: dict(v) for k, v in self.filter_selections.items()},
             "loaded_result_set_ids": list(self.loaded_result_set_ids),
             "evaluation_config": self.evaluation_config.to_dict(),
+            "custom_label": self.custom_label,
         }
 
     @classmethod
@@ -143,6 +145,7 @@ class TabSpec:
             loaded_result_set_ids=[str(rid) for rid in data.get("loaded_result_set_ids", [])],
             # Normalised once, by __post_init__.
             evaluation_config=data.get("evaluation_config"),
+            custom_label=data.get("custom_label"),
         )
 
 

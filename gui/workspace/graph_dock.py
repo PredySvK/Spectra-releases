@@ -43,15 +43,14 @@ from view_models.plot import (
     CurvesCleared,
     CurvesReplaced,
     DisplaySettings,
+    resolve_display_settings,
     GraphCurves,
-    LiveChannelDrops,
     format_display_unit,
     HiddenReason,
     resolve_curve_decimation,
     resolve_ordinate_quantity,
     RenderingMode,
     Trace,
-    amplitude_mode_for_kind,
     resolve_curve_look,
     resolve_rendering_mode,
 )
@@ -151,7 +150,6 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
         # window corrections) lives on model.band_rms_cursors[0].
         self.curves = GraphCurves(on_change=self._on_curves_changed,
                                   base_curve_color=GRAPH_TOKENS.base_curve)
-        self.live_drops = LiveChannelDrops()
         self.pending_drops = PendingDrops()
         self.companion_curves = CompanionCurvesState()
         # The dock's Evaluation configuration:
@@ -521,32 +519,18 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
             title=title,
         )
 
-    def _display_settings(self, kind: Optional[str] = None) -> DisplaySettings:
-        """The one place a dock reads app_context for how its curves are shown.
-
-        The order cut / Overall Level amplitude is this dock's own View/Amplitude
-       : keyed on the dock's own kind (or ``kind``), not on
-        the kind of a curve being dropped or loaded onto it -- so an order cut
-        dropped onto an Overall Level dock (or the reverse, issue #128) picks up
-        whatever RMS/Peak this dock is already showing.
-        """
+    def _display_settings(self) -> DisplaySettings:
+        """The one place a dock reads app_context for how its curves are shown;
+        which ribbon config belongs to which kind is resolve_display_settings'
+        (#833). The order cut / Overall Level amplitude is this dock's own
+        View/Amplitude."""
         ctx = self.app_context
-        d = DisplaySettings()
-        if ctx is None:
-            return d
-        spectrum = getattr(ctx, "spectrum_settings", None)
-        order = getattr(ctx, "order_tracking_settings", None)
-        overall = getattr(ctx, "overall_level_settings", None)
-        return DisplaySettings(
+        return resolve_display_settings(
+            self.analysis_kind,
             prefs=self._unit_preferences(),
-            spectrum_format=getattr(spectrum, "spectrum_format", d.spectrum_format),
-            spectrum_amplitude_mode=getattr(spectrum, "amplitude_mode", d.spectrum_amplitude_mode),
-            decibel_scale=getattr(spectrum, "decibel_scale", d.decibel_scale),
-            amplitude_mode=amplitude_mode_for_kind(
-                kind if kind is not None else self.analysis_kind,
-                getattr(order, "amplitude_mode", d.amplitude_mode),
-                getattr(overall, "amplitude_mode", d.amplitude_mode),
-            ),
+            spectrum=getattr(ctx, "spectrum_settings", None),
+            order_tracking=getattr(ctx, "order_tracking_settings", None),
+            overall_level=getattr(ctx, "overall_level_settings", None),
         )
 
     def rebuild_with_display_settings(
@@ -558,6 +542,8 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
         """
         Re-scales the current PlotModel on the fly from canonical data.
         Runs synchronously in < 1 ms without re-running FFT or background jobs.
+        The settings are this dock's own (_display_settings); an argument only
+        overrides one of them.
         """
         if self.curves.model is None:
             return

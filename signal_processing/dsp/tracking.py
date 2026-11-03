@@ -22,12 +22,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 from scipy.ndimage import uniform_filter1d
 
-from core.dsp_configs import (
-    VALID_SWEEP_DIRECTIONS,
-    VALID_TRACKING_MODES,
-    TrackingSweep,
-    normalize_dsp_choice,
-)
+from core.dsp_configs import VALID_SWEEP_DIRECTIONS, VALID_TRACKING_MODES, TrackingSweep, normalize_dsp_choice
 
 
 def clean_rpm_profile(
@@ -354,10 +349,7 @@ class TrackingPlan:
 
 def build_tracking_plan(
         tacho_data: Optional[np.ndarray], n_samples: int, fs: float,
-        step: float, direction: str,
-        tracking_mode: str = "rpm", start_time: float = 0.0,
-        rpm_min: Optional[float] = None, rpm_max: Optional[float] = None,
-        time_start: Optional[float] = None, time_end: Optional[float] = None,
+        sweep: TrackingSweep, start_time: float = 0.0,
 ) -> TrackingPlan:
     """
     Clean the tacho, place the triggers, and sort them into the order the
@@ -372,21 +364,32 @@ def build_tracking_plan(
     from it, so it reads like the time signal of a recording that does not
     start at 0 s (#739); rpm mode does not use it.
 
-    `rpm_min` / `rpm_max` are the Tracking range in rpm mode, in positive rpm
+    `sweep` is taken as `resolve_tracking_sweep` gave it: its mode and
+    direction are checked, not normalised, and its Tacho cleaning is used as is
+   . The plan keeps this very sweep, even when a missing tacho
+    runs it in time mode.
+
+    `sweep.rpm_min` / `sweep.rpm_max` are the Tracking range in rpm mode, in positive rpm
     even for a reverse-rotation run; None is auto -- 0 rpm and the record's top
     speed, which give exactly the plan without a range. A run-up starts at the
     last sample at or below the minimum before the top speed, a run-down ends
     at the first one after it, and targets above the maximum are dropped. The
     grid stays on multiples of the step. Time mode ignores them.
 
-    `time_start` / `time_end` are the Tracking range in time mode (#807), in
+    `sweep.time_start` / `sweep.time_end` are the Tracking range in time mode (#807), in
     the time of the axis -- from `start_time`, not from the first sample.
     None is auto, the whole record. The first block sits on the start, then
     every step, so the grid is not on multiples of the step. Rpm
     mode ignores them.
+
+    `sweep.tacho_cleaning` is what rpm mode cleans the tacho with (`clean_rpm_profile`,
+    ADR §1.211). Time mode ignores it.
     """
-    tracking_mode = normalize_dsp_choice(tracking_mode, VALID_TRACKING_MODES, "tracking_mode")
-    direction = normalize_dsp_choice(direction, VALID_SWEEP_DIRECTIONS, "direction")
+    _require_choice(sweep.mode, VALID_TRACKING_MODES, "tracking_mode")
+    _require_choice(sweep.direction, VALID_SWEEP_DIRECTIONS, "direction")
+    step, direction = sweep.step, sweep.direction
+    rpm_min, rpm_max = sweep.rpm_min, sweep.rpm_max
+    time_start, time_end = sweep.time_start, sweep.time_end
     # generate_tracking_triggers swaps inverted limits, which would put a block
     # above the maximum; the ribbon refuses this as typed, a workflow block not.
     if rpm_min is not None and rpm_max is not None and float(rpm_min) >= float(rpm_max):
@@ -402,7 +405,7 @@ def build_tracking_plan(
 
     time_vector = start_time + np.arange(n_samples) / fs
 
-    if tracking_mode == "time" or tacho_data is None:
+    if sweep.mode == "time" or tacho_data is None:
         mode = "time"
         cleaned_rpm = np.zeros(n_samples, dtype=np.float64)
         start_limit = float(time_vector[0]) if n_samples else 0.0
@@ -415,7 +418,8 @@ def build_tracking_plan(
             stop_limit = float(time_end)
     else:
         mode = "rpm"
-        cleaned_rpm = clean_rpm_profile(tacho_data, fs)
+        cleaned_rpm = clean_rpm_profile(
+            tacho_data, fs, smoothing_window_s=sweep.tacho_cleaning.tacho_smoothing_ms / 1000.0)
         # A motor run in reverse logs negative rpm all the way down to the
         # run's top speed (-35 000 in the Step2/Sweep2 exports, #456), while
         # order frequencies only follow the magnitude. Flip such a run rather
@@ -476,10 +480,15 @@ def build_tracking_plan(
         mode=mode, fs=fs, n_samples=n_samples, step=step, direction=direction,
         cleaned_rpm=cleaned_rpm,
         trigger_indices=trigger_indices, axis_values=axis_values, start_time=start_time,
-        sweep=TrackingSweep(mode=tracking_mode, step=step, direction=direction,
-                            rpm_min=rpm_min, rpm_max=rpm_max,
-                            time_start=time_start, time_end=time_end),
+        sweep=sweep,
     )
+
+
+def _require_choice(value: str, valid: tuple, field_name: str) -> None:
+    # resolve_tracking_sweep spells the mode and direction but leaves an
+    # unknown one for the computation to refuse.
+    if value not in valid:
+        raise ValueError(f"Unknown {field_name} {value!r}; expected one of {valid}.")
 
 
 def _format_bound(value: Optional[float]) -> str:

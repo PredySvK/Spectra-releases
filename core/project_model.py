@@ -52,7 +52,10 @@ def is_channel_layer(config: Dict[str, Any]) -> bool:
 # 3 (§1.170, ticket #654): `open_tabs` and `filter_profiles` leave `ui_state`,
 # which is renamed `view_state`. Not migrated: a format-2 project opens without
 # its tabs and custom Filter cards.
-PROJECT_FORMAT_VERSION = 3
+# 4 (#862): `import_templates`, the project's copies of the Import templates its
+# sources are assigned. An older build would drop them on save and the files read
+# by them would no longer open.
+PROJECT_FORMAT_VERSION = 4
 OLDEST_READABLE_PROJECT_FORMAT_VERSION = 1
 # On an incompatible format change, raise both limits together.
 
@@ -164,6 +167,11 @@ class SourceEntry:
     # project written before the question existed opens with unchanged curves.
     source_amplitude: str = ""
 
+    # The Import template the user assigned to this file, which decides the
+    # reader that opens it (io_modules.measurement_files.resolve_reader_name).
+    # Blank means none: the suffix decides.
+    import_template: str = ""
+
     # The Level 2 Excel row linked to this file (see io_modules.metadata_schema),
     # re-synced automatically on every scan.
     excel_metadata: Dict[str, Any] = field(default_factory=dict)
@@ -204,6 +212,7 @@ class SourceEntry:
             "setup_label": self.setup_label,
             "unit_overrides": dict(self.unit_overrides),
             "source_amplitude": self.source_amplitude,
+            "import_template": self.import_template,
             "excel_metadata": dict(self.excel_metadata),
             "file_metadata": dict(self.file_metadata),
             "parsed_metadata": dict(self.parsed_metadata),
@@ -222,6 +231,7 @@ class SourceEntry:
             setup_label=data.get("setup_label", ""),
             unit_overrides=dict(data.get("unit_overrides") or {}),
             source_amplitude=data.get("source_amplitude", ""),
+            import_template=data.get("import_template", ""),
             excel_metadata=dict(data.get("excel_metadata") or {}),
             file_metadata=dict(data.get("file_metadata") or {}),
             parsed_metadata=dict(data.get("parsed_metadata") or {}),
@@ -406,6 +416,11 @@ class NVHProject:
     sources: List[SourceEntry] = field(default_factory=list)
     result_sets: List[ResultSetRef] = field(default_factory=list)
 
+    # The project's own copy of every Import template a source is assigned, by
+    # name (`ImportTemplate.to_dict()`), so the project reads on a PC that has
+    # neither the built-in templates nor the user's library.
+    import_templates: Dict[str, dict] = field(default_factory=dict)
+
     # Named queries saying what a batch runs over. A project
     # decision like a metadata edit, not cosmetics, so it is a typed field
     # rather than another key in view_state -- a selection that quietly vanished
@@ -536,6 +551,7 @@ class NVHProject:
                 continue
             survivor.unit_overrides.update(entry.unit_overrides)
             survivor.source_amplitude = entry.source_amplitude or survivor.source_amplitude
+            survivor.import_template = entry.import_template or survivor.import_template
             survivor.setup_label = entry.setup_label or survivor.setup_label
             survivor.in_pool = survivor.in_pool or entry.in_pool
             renamed[entry.id] = survivor.id
@@ -637,6 +653,7 @@ class NVHProject:
             "data_roots": [r.to_dict() for r in self.data_roots],
             "sources": [s.to_dict() for s in self.sources],
             "result_sets": [rs.to_dict() for rs in self.result_sets],
+            "import_templates": {name: dict(copy) for name, copy in self.import_templates.items()},
             "selections": [s.to_dict() for s in self.selections],
             "workflows": [w.to_dict() for w in self.workflows],
             "filter_cards": [c.to_dict() for c in self.filter_cards],
@@ -656,6 +673,7 @@ class NVHProject:
             data_roots=[DataRoot.from_dict(d) for d in data.get("data_roots") or []],
             sources=[SourceEntry.from_dict(d) for d in data.get("sources") or []],
             result_sets=[ResultSetRef.from_dict(d) for d in data.get("result_sets") or []],
+            import_templates={name: dict(copy) for name, copy in (data.get("import_templates") or {}).items()},
             selections=[MeasurementSelection.from_dict(d) for d in data.get("selections") or []],
             workflows=[Workflow.from_dict(d) for d in data.get("workflows") or []],
             filter_cards=[FilterCardConfig.from_dict(d) for d in data.get("filter_cards") or []],

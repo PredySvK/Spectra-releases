@@ -189,7 +189,7 @@ class AnalysisTabsMixin:
 
         dock.curves.remove_overlays(_is_target)
 
-        self.route_channel_drop(dock, targets, mark_work_changed=False)
+        self.route_channel_drop(dock, targets, mark_work_changed=False, from_refresh=True)
 
     # =========================================================================
     # 2D SPECTROGRAM / WATERFALL ROUTING
@@ -389,14 +389,20 @@ class AnalysisTabsMixin:
         cache like the base curve; a restored one shown from its file keeps
         that file's name. The drop lanes that compute call this
         once the curve is drawn; a curve from a loaded result set never comes
-        here and keeps being read from its set.
+        here and keeps being read from its set. A channel has one file, so a
+        later drop that only added orders writes all the channel's curves to
+        it, or reopening would lose the earlier ones.
         """
         channel_key = build_channel_key(descriptor["file_path"], descriptor["channel_index"])
+        curve = tab_cache.TabCacheCurve(dock.dock_id, channel_key)
+        dropped = _dropped_traces(dock, channel_key)
         self.tab_cache_files.keep(
-            tab_cache.TabCacheCurve(dock.dock_id, channel_key),
-            channel_name=descriptor.get("channel_name", ""), blocks=result.blocks,
-            recipe=_overlay_recipe(dock, channel_key),
-            from_tab_cache=result.from_tab_cache, saved_name=descriptor.get(TAB_CACHE_KEY))
+            curve,
+            channel_name=descriptor.get("channel_name", ""),
+            blocks=[trace.block for trace in dropped if trace.block is not None] or result.blocks,
+            recipe=dropped[0].compute_spec if dropped else None,
+            from_tab_cache=result.from_tab_cache,
+            saved_name=descriptor.get(TAB_CACHE_KEY) or self.tab_cache_files.name(curve))
 
     def _project_path(self):
         """The project file's path; None while the project is Untitled."""
@@ -428,11 +434,11 @@ def _base_recipe(dock):
     return base.compute_spec if base is not None else None
 
 
-def _overlay_recipe(dock, channel_key):
-    """The recipe of the curve dropped on `dock` from the channel
-    `channel_key` names -- what its Tab cache file keeps next to the blocks."""
+def _dropped_traces(dock, channel_key):
+    """The curves dropped on `dock` from the channel `channel_key` names, an
+    Adopted curve too -- not the base curve, and not a curve only a result set
+    holds."""
     model = dock.curves.model
-    for trace in (model.traces if model is not None else []):
-        if not trace.is_base and resolve_curve_channel_key(trace) == channel_key:
-            return trace.compute_spec
-    return None
+    return [trace for trace in (model.traces if model is not None else [])
+            if trace.is_dropped_channel
+            and resolve_curve_channel_key(trace) == channel_key]

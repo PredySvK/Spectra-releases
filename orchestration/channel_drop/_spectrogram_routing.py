@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from typing import Any, Literal, Optional
 
+from core.channel_types import CHANNEL_TYPE_TACHO
+
 
 SpectrogramDropAction = Literal["reject", "replace", "wait", "compute"]
 
@@ -46,7 +48,7 @@ def decide_spectrogram_drop(
     held, a channel of another file is refused when that one is needed.
     """
     channel_type = data_block.channel_type
-    is_tacho = channel_type == "tacho"
+    is_tacho = channel_type == CHANNEL_TYPE_TACHO
     other = existing_vib_block if is_tacho else existing_tacho_block
     source_path = data_block.source.file_path
     # The channel the dock lacks, still to be read from its measurement.

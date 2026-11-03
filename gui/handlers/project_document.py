@@ -156,7 +156,7 @@ class ProjectDocumentHandler:
     """
 
     def __init__(self, app_context, project_ribbon_tab, workspace, explorer_panel,
-                 filter_panel, filter_routing, live_order_results, workflow_view,
+                 filter_panel, filter_routing, workflow_view,
                  log_panel, data_pool, parent_widget, *, show_welcome, show_workspace,
                  set_titlebar_text, job_runner, show_x_axis_unit=None):
         self.app_context = app_context
@@ -168,7 +168,6 @@ class ProjectDocumentHandler:
         self.explorer_panel = explorer_panel
         self.filter_panel = filter_panel
         self.filter_routing = filter_routing
-        self.live_order_results = live_order_results
         self.workflow_view = workflow_view
         self.log_panel = log_panel
         self.data_pool = data_pool
@@ -405,10 +404,6 @@ class ProjectDocumentHandler:
         # refresh would supersede it, but there may be no roots to refresh.
         self.data_pool.cancel()
 
-    def reset_live_order_results(self) -> None:
-        if self.live_order_results is not None:
-            self.live_order_results.reset()
-
     def close_analysis_tabs(self) -> None:
         # Never marks the project dirty (#640): the tabs belong to the outgoing one.
         if self.workspace is not None:
@@ -642,6 +637,14 @@ class ProjectDocumentHandler:
     # =========================================================================
     # METADATA SCHEMA
     # =========================================================================
+
+    def open_import_template_library(self) -> None:
+        """Opens the Import template library (built-ins, the user's library and the project's own copies)."""
+        from gui.dialogs.import_template_library import ImportTemplateLibraryDialog
+        ImportTemplateLibraryDialog(
+            self.parent_widget, self.job_runner,
+            project_templates=self.app_context.project_session.resolve_import_templates(),
+            edit_project_template=self.data_pool.edit_project_template).exec()
 
     def open_metadata_editor(self) -> None:
         """

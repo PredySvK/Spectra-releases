@@ -9,9 +9,11 @@ The window's other fields are not here: panel toggles are layout and the
 X axis unit is the open project's.
 """
 
+import math
 from dataclasses import dataclass
 from typing import Callable
 
+from core.tacho_cleaning import DEFAULT_TACHO_SMOOTHING_MS
 from core.theme import resolve_graph_theme, resolve_theme
 from core.units import DISPLAY_BASE_UNIT_GROUPS
 
@@ -45,6 +47,13 @@ def _integer(default: int, minimum: int, maximum: int) -> SettingDefinition:
     def coerce(value: object) -> int:
         return max(minimum, min(maximum, int(value)))
     return SettingDefinition(default, coerce, minimum=minimum, maximum=maximum)
+
+
+def _non_negative_number(value: object) -> float:
+    number = float(value)
+    if not math.isfinite(number) or number < 0:
+        raise ValueError(value)
+    return number
 
 
 def _choice(allowed) -> Callable[[object], str]:
@@ -105,6 +114,9 @@ SETTING_DEFINITIONS: dict[str, SettingDefinition] = {
     # so result sets already on disk stay readable.
     "result_cache_compression": SettingDefinition("", _choice(("", "lzf", "gzip"))),
     "use_result_cache_lookup": SettingDefinition(True, _flag),
+    # Stamped into every tracked DSP config for the next calculation; no upper
+    # limit -- a window longer than the record is clipped to it.
+    "tacho_smoothing_ms": SettingDefinition(DEFAULT_TACHO_SMOOTHING_MS, _non_negative_number),
 }
 
 

@@ -14,7 +14,7 @@ same result set folder where subsequent commits overwrite each other.
 All internal documentation strings and variable labels are standardly written
 in English.
 """
-from typing import Dict, Set, TYPE_CHECKING
+from typing import Dict, Set, Tuple, TYPE_CHECKING
 
 from core.project_model import ResultSetRef
 from core.workflow_graph import Workflow
@@ -38,17 +38,33 @@ def find_overwrite_candidates(session: "ProjectSession", workflow: Workflow | tu
     finding S1/1.1). Therefore, a result set may be claimed at most once: the first
     save block gets the duplicate candidate, and subsequent matching blocks do not.
     """
-    duplicates: Dict[str, ResultSetRef] = {}
-    claimed: Set[str] = set()
     workflows = (workflow,) if isinstance(workflow, Workflow) else workflow
-    for chain, block_id in ((chain, block_id) for chain in workflows for block_id in save_block_ids(chain)):
-        workflow_block = chain.block(block_id)
-        existing = session.find_duplicate_result_set(
-            result_params_from_block(chain, block_id),
-            kind=spec_for(workflow_block.block_type).produces,
-        )
-        if existing is not None and existing.id not in claimed:
-            duplicates[block_id] = existing
-            claimed.add(existing.id)
-
+    duplicates: Dict[str, ResultSetRef] = {}
+    for found in find_overwrite_candidates_by_workflow(session, workflows):
+        duplicates.update(found)
     return duplicates
+
+
+def find_overwrite_candidates_by_workflow(session: "ProjectSession",
+                                          workflows: Tuple[Workflow, ...]) -> Tuple[Dict[str, ResultSetRef], ...]:
+    """
+    `find_overwrite_candidates` kept apart per workflow, one dict each in
+    `workflows`' order -- for runs whose graphs share block ids, as the result
+    sets of one Compute Result Set over several Selections do. An existing set
+    is still claimed at most once across all of them.
+    """
+    claimed: Set[str] = set()
+    by_workflow = []
+    for chain in workflows:
+        duplicates: Dict[str, ResultSetRef] = {}
+        for block_id in save_block_ids(chain):
+            workflow_block = chain.block(block_id)
+            existing = session.find_duplicate_result_set(
+                result_params_from_block(chain, block_id),
+                kind=spec_for(workflow_block.block_type).produces,
+            )
+            if existing is not None and existing.id not in claimed:
+                duplicates[block_id] = existing
+                claimed.add(existing.id)
+        by_workflow.append(duplicates)
+    return tuple(by_workflow)

@@ -15,8 +15,9 @@ def require_alignable(vib_data: np.ndarray, fft_size: int) -> None:
     covered at least halfway and the gain never exceeds sqrt(2)).
     compute_averaged_spectrum enforces the same fft_size rule on its own.
 
-    That vibration and tacho share one sample grid is checked where the tacho
-    enters, before the TrackingPlan is built (result_blocks.resolve_and_convert_tacho):
+    That the tacho has one value per vibration sample is settled where the tacho
+    enters (a shared grid checked, or Tacho interpolation), before the TrackingPlan
+    is built (result_blocks.resolve_and_convert_tacho):
     the recipes only ever see the plan, never the tacho.
     """
     if len(vib_data) < fft_size:

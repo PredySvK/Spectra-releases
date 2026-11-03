@@ -73,13 +73,6 @@ class MainWindowFrame(QWidget):
         from gui.workspace.workflow_run_bridge import WorkflowRunBridge
         self.workflow_run_bridge = WorkflowRunBridge(self.app_context, self.job_runner)
 
-        # Same reason again: ProjectDocumentHandler resets the live-compute
-        # queue on every project swap and is built inside init_ui() (#236).
-        from gui.workspace.live_order_results import LiveOrderResults
-        self.live_order_results = LiveOrderResults(
-            self.app_context, self.job_runner,
-        )
-
         # The shell hands in how to install a downloaded Update
         # (None outside the shell); Settings uses the same background path.
         from gui.update import UpdateHandler
@@ -99,16 +92,6 @@ class MainWindowFrame(QWidget):
         # finished batch run can have changed the project's result-set list.
         self.project_document.bind_run_finished(self.workflow_run_bridge)
         self.project_document.bind_project_session()
-
-        # Coalesced rather than applied per finished channel: every re-apply
-        # re-reads every checked result set off disk, so dropping N channels at
-        # once used to cost N full reads (and N redraws) to arrive at the one
-        # that counts. Same settle-timer shape PoolWatcher uses for file bursts.
-        self._live_channel_settle = QTimer(self)
-        self._live_channel_settle.setSingleShot(True)
-        self._live_channel_settle.setInterval(150)
-        self._live_channel_settle.timeout.connect(self.live_drop_handler.refresh_pending)
-        self.live_order_results.channel_ready.connect(self._live_channel_settle.start)
 
         if startup_project_path is not None:
             # The shell shows the window before the event loop opens the project,
@@ -148,14 +131,6 @@ class MainWindowFrame(QWidget):
         self.workspace_tabs.setTabPosition(QTabWidget.South)
         self.workspace_tabs.setMovable(True)
         self.workspace_tabs.setTabsClosable(True)
-
-        # Built here rather than after init_ui, so workspace below can take it
-        # by constructor instead of reaching back into the window for it
-        # (#242); the drop handler only needs the tab widget above.
-        from gui.handlers.live_channel_drop import LiveChannelDropHandler
-        self.live_drop_handler = LiveChannelDropHandler(
-            self.app_context, self.live_order_results, self.workspace_tabs,
-        )
 
         # Built here, ahead of explorer_panel/workspace, so ResultPoolPanel
         # (nested in explorer_panel) and Workspace can both receive it
@@ -258,7 +233,6 @@ class MainWindowFrame(QWidget):
             placeholder_graph=self.placeholder_graph,
             filter_panel=self.filter_panel,
             job_runner=self.job_runner,
-            live_drop_handler=self.live_drop_handler,
             result_content_handler=self.result_content_handler,
             filter_routing=self.filter_routing,
         )
@@ -353,8 +327,8 @@ class MainWindowFrame(QWidget):
         project_tab = self.ribbon.tab_project
         self.project_document = ProjectDocumentHandler(
             self.app_context, project_tab, self.workspace, self.explorer_panel,
-            self.filter_panel, self.filter_routing, self.live_order_results,
-            self.workflow_view, self.log_panel, self.data_pool, self,
+            self.filter_panel, self.filter_routing, self.workflow_view,
+            self.log_panel, self.data_pool, self,
             show_welcome=self.show_welcome,
             show_workspace=self.show_workspace,
             set_titlebar_text=self.set_titlebar_text,
@@ -364,6 +338,7 @@ class MainWindowFrame(QWidget):
 
         project_tab.btn_select_dir.clicked.connect(self.project_document.select_data_directory)
         project_tab.btn_edit_meta.clicked.connect(self.project_document.open_metadata_editor)
+        project_tab.btn_import_templates.clicked.connect(self.project_document.open_import_template_library)
         project_tab.btn_new_project.clicked.connect(self.project_document.new_project)
         project_tab.btn_open_project.clicked.connect(
             lambda: self.project_document.open_project())

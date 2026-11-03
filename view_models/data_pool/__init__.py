@@ -13,6 +13,9 @@ Architecture:
   UNASSIGNED_SETUP bucket last, their measurements, workbook sheets and
   channels, then folders holding Unreadable files. Each node carries a stable
   expansion key and the domain object it stands for.
+- Measurement flags: MeasurementFlag, one report with a glyph and a text, derived
+  from the run when the tree is built. A new kind is a new type in
+  MEASUREMENT_FLAG_KINDS (PartiallyReadFlag and TachoInterpolationFlag are); drawing does not change.
 - Search and Filter visibility: resolve_pool_tree_visibility ->
   PoolTreeVisibility, the keys of the nodes to hide and to open for a search
   text and the channels the Filter lets through; the tree is not rebuilt.
@@ -26,11 +29,11 @@ curves or sources are filtered (selection/), or file I/O (io_modules/).
 """
 
 from ._group_by_setup import UNASSIGNED_SETUP
+from ._measurement_flag import MEASUREMENT_FLAG_KINDS, MeasurementFlag, PartiallyReadFlag, TachoInterpolationFlag
 from ._pool_tree import (
     MARKER_IMPORTED_RESULT,
     MARKER_MISSING,
     MARKER_NONE,
-    MARKER_PARTIALLY_READ,
     MARKER_UNASSIGNED,
     MARKER_UNREADABLE,
     NODE_CHANNEL,
@@ -50,15 +53,18 @@ __all__ = [
     "MARKER_IMPORTED_RESULT",
     "MARKER_MISSING",
     "MARKER_NONE",
-    "MARKER_PARTIALLY_READ",
     "MARKER_UNASSIGNED",
     "MARKER_UNREADABLE",
+    "MEASUREMENT_FLAG_KINDS",
+    "MeasurementFlag",
     "NODE_CHANNEL",
     "NODE_MEASUREMENT",
     "NODE_SETUP",
     "NODE_SHEET",
     "NODE_UNREADABLE_FILE",
     "NODE_UNREADABLE_FOLDER",
+    "PartiallyReadFlag",
+    "TachoInterpolationFlag",
     "PoolTree",
     "PoolTreeNode",
     "PoolTreeVisibility",

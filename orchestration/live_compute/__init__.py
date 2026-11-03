@@ -50,10 +50,6 @@ from orchestration.live_compute._drop_workers import (
     read_simple_drops,
 )
 from orchestration.live_compute._file_tracking import FileTracking
-from orchestration.live_compute._live_order_memo import (
-    RESULT_MEMO_LIMIT,
-    LiveOrderMemo,
-)
 
 __all__ = [
     "ComputeOrigin",
@@ -66,10 +62,8 @@ __all__ = [
     "LiveFailure",
     "LiveRequest",
     "LiveResult",
-    "LiveOrderMemo",
     "PHASE_COMPUTE",
     "PHASE_READ",
-    "RESULT_MEMO_LIMIT",
     "RestoreConfig",
     "build_cache_hit_line",
     "build_curve_subject",

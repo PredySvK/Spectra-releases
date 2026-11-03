@@ -3,7 +3,8 @@ Channel-drop orchestration: route drop descriptors using dock facts as data.
 
 This component decides which processing path a drop belongs to, removes
 duplicate channels, resolves drop descriptors against the Data Pool (and
-back) and the FFT settings of a Spectrum drop, and runs the drop: the order of
+back), the FFT settings of a Spectrum drop and the settings of a drop onto a
+dock holding result sets, and runs the drop: the order of
 its lanes, the claim-run-release skeleton, the landing of every result (its
 cache-hit lines, draw and keep, and the pairing of a spectrogram's channels)
 and the error policy (``run_channel_drop``).
@@ -32,6 +33,7 @@ from orchestration.channel_drop._drop_target import (
     SpectrumDropInputs,
 )
 from orchestration.channel_drop._spectrum_drop_config import resolve_spectrum_drop_config
+from orchestration.channel_drop._result_content_drop_config import resolve_result_content_drop_config
 from orchestration.channel_drop._pending_drops import PendingDrops
 from orchestration.channel_drop._dropped_channels import (
     build_channel_descriptors,
@@ -41,11 +43,6 @@ from orchestration.channel_drop._dropped_channels import (
 from orchestration.channel_drop._plotted_keys import read_plotted_keys
 from orchestration.channel_drop._tacho_plan import plan_tacho_per_file
 from orchestration.channel_drop._spectrogram_routing import decide_spectrogram_drop
-from orchestration.channel_drop._result_content_routing import (
-    ResultContentMemoKey,
-    plan_result_content_drop,
-    result_content_memo_key,
-)
 
 __all__ = [
     "plan_channel_drop",
@@ -56,6 +53,7 @@ __all__ = [
     "SpectrogramDropInputs",
     "SpectrumDropInputs",
     "resolve_spectrum_drop_config",
+    "resolve_result_content_drop_config",
     "DropFacts",
     "classify_drop_descriptors",
     "drop_key",
@@ -68,7 +66,4 @@ __all__ = [
     "read_plotted_keys",
     "plan_tacho_per_file",
     "decide_spectrogram_drop",
-    "ResultContentMemoKey",
-    "plan_result_content_drop",
-    "result_content_memo_key",
 ]

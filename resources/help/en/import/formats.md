@@ -1,12 +1,13 @@
 # Supported formats
 
-A file is picked up by its suffix: `.unv`, `.uff`, `.asc`, `.ldsf`, `.xlsx`, `.txt`, `.csv` (case does not matter). `.xlsx`, `.txt` and `.csv` are too common to trust, so they count as measurements only when their header is recognised. [`metadata.xlsx`](topic:import/metadata), a README or your notes are ignored.
+A file is picked up by its suffix: `.unv`, `.uff`, `.asc`, `.ldsf`, `.hdf`, `.xlsx`, `.txt`, `.csv` (case does not matter). `.xlsx`, `.txt` and `.csv` are too common to trust, so they count as measurements only when their header is recognised. [`metadata.xlsx`](topic:import/metadata), a README or your notes are ignored.
 
 | Suffix | Format | What it holds | Kind |
 |---|---|---|---|
 | `.unv`, `.uff` | Universal File Format, dataset 58 | [time waveforms](topic:raw_data/intro) | measured |
 | `.asc` | Siemens Testlab ASCII | [time waveforms](topic:raw_data/intro) | measured |
 | `.ldsf` | Simcenter Testlab recording | [time waveforms](topic:raw_data/intro) | measured |
+| `.hdf` | HEAD acoustics datafile | [time waveforms](topic:raw_data/intro) | measured |
 | `.txt` | tab-separated processed measurement | [order curves](topic:order_tracking/intro) against speed | measured |
 | `.xlsx` | MASTA result workbook | [order curves](topic:order_tracking/intro) against speed | simulated (paired via [Channel pairing](topic:import/channel_pairing)) |
 | `.csv` | ANSYS harmonic response | a first [order curve](topic:order_tracking/intro) against speed | simulated (paired via [Channel pairing](topic:import/channel_pairing)) |
@@ -51,7 +52,7 @@ A raw time recording saved by Simcenter Testlab, read without Testlab. One strea
 | Unit | the channel's unit |
 | Sampling rate, number of points | the file's header and index |
 | Time start | the file's time axis (0 s when the file does not store one) |
-| Node, direction | numbered like Testlab's UNV export: points 1.. in sorted order of the part of the name before the last `:`, direction from the `:+X`, `:+Y`, `:+Z` suffix (no suffix: 0) |
+| Node, direction | numbered like Testlab's UNV export: points 1.. in sorted order of the part of the name before the direction, direction from the `:+X` or ` +X` suffix for X, Y, Z, the sign ignored (no suffix: 0) |
 
 Only what has been checked against Testlab's own UNV export is read:
 
@@ -61,6 +62,19 @@ Only what has been checked against Testlab's own UNV export is read:
 | format version 21 (recordings from a measurement front-end) | 24-bit integers with a scale, converted to the channel's unit (`g`, `rpm`, …) |
 
 Not read yet: other sample types (16-bit or 32-bit integers, 64-bit floats), more than one stream (channels with different sampling rates), other format versions. Such a file is skipped and does not appear in the Data Pool. Sensitivity, range and front-end serial numbers stored in the file are not shown.
+
+## .hdf
+
+A raw time recording in the HEAD acoustics datafile format (converted by Simcenter Tecware or recorded by HEADlab). Despite the suffix it is not an HDF5 file. One abscissa (time). In a HEADlab recording channels can have different sampling rates. For order analysis a tacho at another rate is interpolated onto the time axis of the analysed channel, a faster one being averaged over one sample of the channel first; a tacho that starts at a different time is refused with a message. Interpolation adds no information and always runs by itself; the file is marked ⓘ in the Data Pool, and hovering over the row names the tacho and the rates ([details](topic:shared/tracking)).
+
+| Field | Read from |
+|---|---|
+| Channel name, unit | the channel's name and physical unit in the file's header |
+| Sampling rate, time start, number of points | the file's time axis (first value, delta value, number of scans) |
+| Values | Simcenter Tecware: 16-bit integers times the channel's map factor. HEADlab: 32-bit floats. Both in the channel's unit (`Pa`, `g`, `rpm`, …) |
+| Node, direction | numbered like the UNV export of the same file: points 1.. in sorted order of the part of the name before the last `:`, direction from the `:+X`, `:+Y`, `:+Z` suffix (no suffix: 0) |
+
+Only the two known layouts are read: version 2 release 2 (Simcenter Tecware) and version 4 release 6 (HEADlab), Intel byte order, time data, linear mapping. Anything else (other sample types, other data organisation, several abscissas, a file cut short) is skipped and does not appear in the Data Pool. Bytes after the samples and raw CAN channels are not read, and the file is then marked ◐ in the Data Pool. In Simcenter Tecware files the 16-bit storage means a value can differ from the unrounded UNV export by up to one count.
 
 ## .txt (processed measurement)
 
@@ -106,13 +120,13 @@ MASTA, processed measurement and ANSYS files carry a ready-made amplitude, and t
 
 | Format | Default answer |
 |---|---|
-| MASTA | RMS |
+| MASTA | Peak |
 | processed measurement | RMS |
 | ANSYS | Peak |
 
 - The answer is stored with each file in the project and is not asked again on Refresh or when the project is opened. New files that appear in a watched folder ask again.
 - Cancel adds nothing to the pool. To correct a wrong answer, remove the file from the pool and add it again.
-- Time signals (`.unv`, `.uff`, `.asc`, `.ldsf`) are never asked about: the program computes their amplitude itself.
+- Time signals (`.unv`, `.uff`, `.asc`, `.ldsf`, `.hdf`) are never asked about: the program computes their amplitude itself.
 - A project saved before the question existed keeps its curves unchanged (ANSYS Peak, others RMS).
 
 ## Channel type

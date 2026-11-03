@@ -9,9 +9,10 @@ Lives in core/ next to the block itself -- these are rules about pure data,
 with no I/O and no Qt.
 
 Adding a result type (order trend, Campbell, cepstrum, FRF, TSA, ...) is one
-entry here plus one factory on NVHDataBlock. Nothing else in the codebase
-branches on `kind`, so nothing else has to learn about the new one; that is the
-whole reason the discriminator is data rather than a subclass tree.
+entry here plus one factory on NVHDataBlock. Code elsewhere does branch on
+`kind` -- to pick a builder, a legend, a compute -- but a fact about a kind
+(its axes, its cache identity, whether it scales with RMS / Peak) lives only
+in its KindSpec, never in a second list next to this register (§1.216).
 
 What earns a `kind` and what does not:
 
@@ -35,11 +36,6 @@ KIND_SPECTROGRAM = "spectrogram"
 KIND_ORDER_CUT = "order_cut"
 KIND_OVERALL_LEVEL = "overall_level"
 KIND_ORDER_RESIDUAL = "order_residual"
-
-# Curves that scale with the RMS / Peak switch, and the two of them that
-# are levels rather than order cuts. One place, so a new kind is one edit.
-RMS_PEAK_CURVE_KINDS = (KIND_ORDER_CUT, KIND_OVERALL_LEVEL, KIND_ORDER_RESIDUAL)
-LEVEL_CURVE_KINDS = (KIND_OVERALL_LEVEL, KIND_ORDER_RESIDUAL)
 
 # Key under which an order cut records which order it is, in
 # Provenance.params. The order is a parameter of the computation that produced
@@ -109,6 +105,13 @@ class KindSpec:
     of the cache identity, so both read this one register instead of two that
     drift (audit 02 / 7.5): before this, a live spectrogram request carried
     `color_scale` and never matched a batch-saved set.
+
+    `scales_with_rms_peak` marks a curve whose values the View group's RMS /
+    Peak switch rescales (x sqrt(2) for Peak). A spectrum's amplitude_mode is
+    not this switch -- it goes through spectrum_format scaling instead.
+    `is_level` marks a curve that is the energy of a band (Overall Level,
+    Residual) rather than of one order, so the graph builds it from the block
+    alone (§1.62).
     """
     axis_quantities: Tuple[str, ...]
     requires_processing: bool
@@ -116,6 +119,8 @@ class KindSpec:
     description: str = ""
     cache_exempt_params: Tuple[str, ...] = ()
     display_only_params: Tuple[str, ...] = ()
+    scales_with_rms_peak: bool = False
+    is_level: bool = False
 
 
 KINDS: Dict[str, KindSpec] = {
@@ -138,11 +143,13 @@ KINDS: Dict[str, KindSpec] = {
         description="Amplitude of one order against speed.",
         cache_exempt_params=("orders_to_extract",),
         display_only_params=("amplitude_mode",),
+        scales_with_rms_peak=True,
     ),
     KIND_OVERALL_LEVEL: KindSpec(
         axis_quantities=("rpm|time",), requires_processing=True,
         description="Energy of one fixed frequency band against speed or time.",
         display_only_params=("amplitude_mode",),
+        scales_with_rms_peak=True, is_level=True,
     ),
     # No cache_exempt_params: a Residual is a function of the whole order list
     #, so a set with other orders is another result.
@@ -150,6 +157,7 @@ KINDS: Dict[str, KindSpec] = {
         axis_quantities=("rpm",), requires_processing=True,
         description="Energy of the Overall Level band outside the selected orders' bands.",
         display_only_params=("amplitude_mode",),
+        scales_with_rms_peak=True, is_level=True,
     ),
 }
 

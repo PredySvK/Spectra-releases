@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Collection, Iterable, List, Tuple
 
 from core.block_kinds import KIND_ORDER_CUT, KINDS
+from core.channel_types import CHANNEL_TYPE_GENERAL_DYNAMIC
 from io_modules.project_store import project_folder
 from selection.source_facets import sources_for_result_sets
 
@@ -91,7 +92,7 @@ def plan_result_set_load(
                     "relpath": source.relpath,
                     "channel_types": {
                         label: (source.channels.get(label, {}) or {}).get(
-                            "type", "general_dynamic"
+                            "type", CHANNEL_TYPE_GENERAL_DYNAMIC
                         )
                         for label in channel_matches[source.id]
                     },

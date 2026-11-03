@@ -22,6 +22,7 @@ def build_tab_spec(
     loaded_result_set_ids: List[str],
     filter_selections: Dict[str, dict],
     evaluation_config: EvaluationConfig,
+    custom_label: Optional[str] = None,
 ) -> Optional[TabSpec]:
     """The ``TabSpec`` a dock is saved as, or None when there is nothing worth saving.
 
@@ -36,7 +37,8 @@ def build_tab_spec(
     meanwhile (#384).
     """
     if restored is not None and dead_link is not None:
-        return dataclasses.replace(restored, dock_id=dock_id)
+        effective_custom = custom_label if custom_label is not None else restored.custom_label
+        return dataclasses.replace(restored, dock_id=dock_id, custom_label=effective_custom)
     if dead_link is not None:
         base = TraceSpec(source_id=dead_link.source_id, channel_name=dead_link.channel_name, is_base=True)
     if base is None:
@@ -46,6 +48,8 @@ def build_tab_spec(
     if restored is not None and awaiting_base:
         overlays += [o for o in restored.traces if not o.is_base and o not in overlays]
         result_set_ids |= set(restored.loaded_result_set_ids)
+    if restored is not None and awaiting_base and custom_label is None:
+        custom_label = restored.custom_label
     return TabSpec(
         analysis_kind=analysis_kind,
         traces=[base, *overlays],
@@ -53,4 +57,5 @@ def build_tab_spec(
         filter_selections=filter_selections,
         loaded_result_set_ids=sorted(result_set_ids),
         evaluation_config=evaluation_config,
+        custom_label=custom_label,
     )

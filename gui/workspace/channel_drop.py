@@ -13,6 +13,7 @@ import numpy as np
 
 from core.block_kinds import PARAM_ORDER
 from core.units import strip_channel_name_prefix
+from selection.parameter_sets import build_parameter_sets
 from view_models.analysis_kinds import (
     ANALYSIS_SPECTROGRAM, ANALYSIS_TIME, resolve_analysis_kind,
 )
@@ -25,17 +26,18 @@ from orchestration.channel_drop import (
     OverallLevelDropInputs,
     SpectrogramDropInputs,
     SpectrumDropInputs,
-    drop_keys,
     read_plotted_keys,
     resolve_dropped_channels,
     run_channel_drop,
 )
+from orchestration.trace_filter import build_identity_context
+from view_models.trace_filter import resolve_set_curve_same_as
 from gui.handlers.dock_tab_title import set_dock_tab_title, update_dock_tab_title
 
 
 def execute_channel_drop_processing(
     dock_instance, raw_descriptors: list, app_context, *,
-    workspace, live_drop_handler=None, batch_label=None,
+    workspace, batch_label=None, from_refresh=False,
 ) -> bool:
     """
     Main routing execution entry point triggered by UI dock drop signals.
@@ -46,40 +48,33 @@ def execute_channel_drop_processing(
     `orchestration.channel_drop.run_channel_drop`; this wraps the dock in the
     `DropTarget` it runs against, which only draws.
 
-    The two collaborators are passed in rather than read off the window
-    (#242): `workspace` is the Workspace whose `dock_tasks` every background
-    path goes through -- a spectrogram drop computes as the dock's own
-    compute -- and `live_drop_handler` serves result-content docks.
-    Only `workspace` is required: every background path runs through
-    it, so a caller that forgot it would otherwise fail with an AttributeError
-    deep inside a dispatcher instead of at the call. The handler serves one
-    branch and is genuinely absent when a drop cannot reach that branch.
+    `workspace` is passed in rather than read off the window (#242): it is the
+    Workspace whose `dock_tasks` every background path goes through -- a
+    spectrogram drop computes as the dock's own compute. It is required, so a
+    caller that forgot it fails at the call instead of with an AttributeError
+    deep inside a dispatcher.
     """
-    target = _DockDropTarget(dock_instance, app_context, workspace, live_drop_handler)
+    target = _DockDropTarget(dock_instance, app_context, workspace)
     return run_channel_drop(
         target, raw_descriptors, pending_drops=dock_instance.pending_drops,
-        workers=live_compute, batch_label=batch_label)
+        workers=live_compute, batch_label=batch_label, from_refresh=from_refresh)
 
 
 class _DockDropTarget:
     """One dock and the shell around it, as the `DropTarget` a drop run needs."""
 
-    def __init__(self, dock, app_context, workspace, live_drop_handler):
+    def __init__(self, dock, app_context, workspace):
         from gui.workspace.graph_dock import GraphDock
         from gui.workspace.spectrogram_dock import SpectrogramDock
 
         self._dock = dock
         self._context = app_context
         self._workspace = workspace
-        self._live_drop_handler = live_drop_handler
         self._is_graph = isinstance(dock, GraphDock)
         # An order dock holding h5 result-set curves (ADR §1.30,
-        # ResultContentHandler.load_into_dock) can hold channels from several
-        # source files at once, so it has no single dock-wide tacho to reuse --
-        # routed separately, see live_channel_drop.LiveChannelDropHandler.
+        # ResultContentHandler.load_into_dock) is served by its own lane of
+        # the run: a new channel fits what the dock shows.
         curves = dock.curves if self._is_graph else None
-        # Pending result-content live orders are one more way a drop is in flight.
-        live_drops = getattr(dock, "live_drops", None)
         self.facts = DropFacts(
             self._is_graph, isinstance(dock, SpectrogramDock),
             getattr(dock, "analysis_kind", ANALYSIS_TIME),
@@ -88,9 +83,6 @@ class _DockDropTarget:
                 curves.descriptors() if curves else [],
                 curves.model.traces if curves and curves.model else [],
             )),
-            live_pending_keys=frozenset(
-                key for desc in (live_drops.pending_descriptors() if live_drops is not None else [])
-                for key in drop_keys(desc)),
         )
 
     def log(self, message):
@@ -105,14 +97,6 @@ class _DockDropTarget:
         context = self._context
         self._workspace.open_channels_tab(
             resolve_dropped_channels(descriptors, context.pool.run_lookup, context.log))
-
-    def result_content_batch(self, label):
-        handler = self._live_drop_handler
-        return handler.batch(label) if handler is not None else nullcontext()
-
-    def serve_result_content(self, descriptor):
-        handler = self._live_drop_handler
-        return handler is not None and handler.handle_dropped_channel(self._dock, descriptor)
 
     def spectrum_inputs(self):
         """The ribbon config, the "new curve takes the trace's settings"
@@ -160,28 +144,52 @@ class _DockDropTarget:
             dock_tacho=getattr(self._dock, "tacho_block", None),
         )
 
+    def parameter_sets(self):
+        project = getattr(getattr(self._context, "project_session", None), "project", None)
+        if project is None:
+            return []
+        return build_parameter_sets(project, self._dock.curves.loaded_or_pending_result_set_ids)
+
     def drawing(self):
         # A SpectrogramDock holds no curves to coalesce.
         return self._dock.curves.coalesce_changes() if self._is_graph else nullcontext()
 
     def draw_time_curve(self, descriptor, block):
-        _add_curve(self._dock, block, source_label=_source_label(descriptor),
-                   incoming_unit=block.value_unit)
+        self._add_curve(block, source_label=_source_label(descriptor),
+                        incoming_unit=block.value_unit)
 
     def draw_spectrum_curve(self, descriptor, block):
         # The block carries its channel's identity, computed or from a cache.
-        _add_curve(self._dock, block, source_label=_source_label(descriptor),
-                   incoming_unit=block.value_unit)
+        self._add_curve(block, source_label=_source_label(descriptor),
+                        incoming_unit=block.value_unit)
 
     def draw_order_curves(self, descriptor, channel_name, blocks):
         for block in blocks:
             order = block.provenance.params.get(PARAM_ORDER)
-            _add_curve(self._dock, block, source_label=f"Order {order} [{channel_name}]",
-                       incoming_unit=block.value_unit,
-                       title=f"Order Compare: [{descriptor['file_name']}]")
+            self._add_curve(block, source_label=f"Order {order} [{channel_name}]",
+                            incoming_unit=block.value_unit,
+                            title=f"Order Compare: [{descriptor['file_name']}]")
 
     def draw_overall_level_curve(self, block):
-        _add_curve(self._dock, block)
+        self._add_curve(block)
+
+    def _add_curve(self, block, **labels):
+        """One curve of ``block`` on the dock; ``labels`` are add_curve's own
+        (an Overall Level curve is added without any, as it always was). A curve
+        a result set already holds on the graph merges into it (#923)."""
+        dock = self._dock
+        landed = dock.add_curve(
+            x=block.primary_axis.values.astype(np.float64),
+            y=block.values.astype(np.float64),
+            source_meta=block.display_meta(),
+            block=block,
+            **labels,
+        )
+        if not dock.curves.holds_result_content:
+            return
+        identities = build_identity_context(getattr(self._context, "project_session", None))
+        dock.curves.merge_into_held_set(landed, resolve_set_curve_same_as(
+            landed, dock.curves.model.traces, identities.sources_by_path))
 
     def plot_model(self):
         return self._dock.curves.model
@@ -223,18 +231,6 @@ def _source_label(descriptor):
     return f"[{descriptor['file_name']}] {descriptor['channel_name']}"
 
 
-def _add_curve(dock, block, **labels):
-    """One curve of ``block`` on ``dock``; ``labels`` are add_curve's own
-    (an Overall Level curve is added without any, as it always was)."""
-    dock.add_curve(
-        x=block.primary_axis.values.astype(np.float64),
-        y=block.values.astype(np.float64),
-        source_meta=block.display_meta(),
-        block=block,
-        **labels,
-    )
-
-
 def _restored_measurement_path(dock_instance):
     """The file of a spectrogram that shows an image it holds no raw channels
     for (restored from the Tab cache); None for any other."""
@@ -247,13 +243,10 @@ def _restored_measurement_path(dock_instance):
 
 def _update_spectrogram_tab_title(dock_instance):
     """
-    Mirrors the "Spec: <file> [<channel>]" title Workspace gives a
-    freshly opened spectrogram dock, so a channel replace (see Session J)
-    keeps the tab in sync instead of leaving it on the first drop's name.
+    Keeps a spectrogram dock's tab label and tooltip in sync when a channel
+    is replaced.
     """
     vib_block = getattr(dock_instance, "vib_block", None)
     if vib_block is None or dock_instance.parentWidget() is None:
         return
-    clean_name = strip_channel_name_prefix(vib_block.source.channel_name)
-    prefix = resolve_analysis_kind(ANALYSIS_SPECTROGRAM).title_prefix
-    set_dock_tab_title(dock_instance, f"{prefix}{vib_block.source.file_name} [{clean_name}]")
+    update_dock_tab_title(dock_instance)

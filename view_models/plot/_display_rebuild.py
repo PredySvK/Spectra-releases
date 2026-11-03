@@ -11,7 +11,7 @@ from typing import Callable, List, Optional, Tuple
 import numpy as np
 
 from core.axis_projections import can_project, project_x
-from core.block_kinds import RMS_PEAK_CURVE_KINDS
+from core.block_kinds import KINDS
 
 from ._block_values import BlockValues, resolve_block_values
 from ._display_settings import DisplaySettings
@@ -37,9 +37,38 @@ def _linear_values(tr: Trace, values: Optional[BlockValues],
     """
     if values is not None and values.rescaled:
         return values.values, values.unit
-    if getattr(tr.block, "kind", None) in RMS_PEAK_CURVE_KINDS:
+    spec = KINDS.get(getattr(tr.block, "kind", None))
+    if spec is not None and spec.scales_with_rms_peak:
         return linear_amplitude_display(tr.block.values, tr.block.value_unit, settings.amplitude_mode)
     return tr.y_raw, tr.source_unit
+
+
+def _shown_trace(tr: Trace, settings: DisplaySettings, against: Optional[BaseCurve]) -> Trace:
+    """``tr`` rebuilt from its raw data in ``settings``, placed ``against`` the
+    base curve (None: ``tr`` is the base curve)."""
+    values = resolve_block_values(tr.block, settings.spectrum_format, settings.spectrum_amplitude_mode)
+    y_lin, unit_lin = _linear_values(tr, values, settings)
+    db_squared = values.db_is_squared if settings.decibel_scale and values is not None else None
+    return build_trace_in_display_settings(
+        tr, y_lin, unit_lin, settings.prefs, db_squared=db_squared, against=against)
+
+
+def build_trace_with_block_numbers(model: PlotModel, trace: Trace, block, settings: DisplaySettings) -> Trace:
+    """``trace``, held by ``model``, with the numbers of ``block`` shown in
+    ``settings`` where it stands now: its pen, names and channel stay. What lets an
+    Adopted curve show its result set's numbers when the set lands second (#921)."""
+    axis = block.primary_axis
+    x = axis.values
+    domain = model.x_domain
+    if domain and axis.quantity and domain != axis.quantity and can_project(
+            axis.quantity, domain, trace.compute_spec or {}):
+        x = project_x(axis.values, axis.quantity, domain, trace.compute_spec or {})
+    renumbered = replace(trace, x=x, x_raw=axis.values, y_raw=block.values, source_unit=block.value_unit,
+                         block=block, data_block=block)
+    if trace.is_base:
+        return _shown_trace(renumbered, settings, None)
+    base = model.traces[base_trace_index(model)]
+    return _shown_trace(renumbered, settings, resolve_base_curve(base, settings.prefs))
 
 
 def _rebuild_traces(model: PlotModel, settings: DisplaySettings, *,
@@ -59,13 +88,7 @@ def _rebuild_traces(model: PlotModel, settings: DisplaySettings, *,
     base_idx = base_trace_index(model) if base_index is None else base_index
 
     def shown(tr: Trace, against: Optional[BaseCurve]) -> Trace:
-        values = resolve_block_values(tr.block, settings.spectrum_format, settings.spectrum_amplitude_mode)
-        y_lin, unit_lin = _linear_values(tr, values, settings)
-        if shown_as is not None:
-            tr = shown_as(tr)
-        db_squared = values.db_is_squared if settings.decibel_scale and values is not None else None
-        return build_trace_in_display_settings(
-            tr, y_lin, unit_lin, settings.prefs, db_squared=db_squared, against=against)
+        return _shown_trace(tr if shown_as is None else shown_as(tr), settings, against)
 
     base = shown(model.traces[base_idx], None)
     against = resolve_base_curve(base, settings.prefs)

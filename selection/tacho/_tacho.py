@@ -1,9 +1,12 @@
+from core.channel_types import CHANNEL_TYPE_TACHO
+
+
 def find_tacho_channel(run_index):
     """Return the first tacho channel of a run, or ``None`` when it has none."""
     if run_index is None:
         return None
     for channel_meta in getattr(run_index, "available_channels", {}).values():
-        if getattr(channel_meta, "type", None) == "tacho":
+        if getattr(channel_meta, "type", None) == CHANNEL_TYPE_TACHO:
             return channel_meta
     return None
 

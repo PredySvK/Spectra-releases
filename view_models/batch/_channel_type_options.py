@@ -2,11 +2,32 @@
 
 from typing import AbstractSet, FrozenSet, Mapping, Optional
 
+from core.channel_types import (
+    CHANNEL_TYPE_ACCELEROMETER,
+    CHANNEL_TYPE_MICROPHONE,
+    MAIN_INPUT_CHANNEL_TYPES,
+)
+
 SAVE_CHANNEL_TYPE_OPTIONS: Mapping[str, FrozenSet[str]] = {
-    "Acceleration": frozenset({"accelerometer"}),
-    "Sound": frozenset({"microphone"}),
-    "Acceleration + Sound": frozenset({"accelerometer", "microphone"}),
+    "Accelerometer": frozenset({CHANNEL_TYPE_ACCELEROMETER}),
+    "Microphone": frozenset({CHANNEL_TYPE_MICROPHONE}),
+    "Accelerometer + Microphone": MAIN_INPUT_CHANNEL_TYPES,
 }
+
+
+# The Compute Result Set dialog's combo over the Data Pool. "All" is both
+# sensors -- never the tacho, voltage or unclassified channels.
+DATA_POOL_TYPE_OPTIONS: Mapping[str, FrozenSet[str]] = {
+    "All": MAIN_INPUT_CHANNEL_TYPES,
+    "Accelerometer": frozenset({CHANNEL_TYPE_ACCELEROMETER}),
+    "Microphone": frozenset({CHANNEL_TYPE_MICROPHONE}),
+}
+DEFAULT_DATA_POOL_TYPE = "All"
+
+
+def resolve_data_pool_types(label: str) -> FrozenSet[str]:
+    """The sensor types the Data Pool combo's `label` stands for; All for an unknown one."""
+    return DATA_POOL_TYPE_OPTIONS.get(label, DATA_POOL_TYPE_OPTIONS[DEFAULT_DATA_POOL_TYPE])
 
 
 def resolve_channel_types(label: str) -> Optional[FrozenSet[str]]:

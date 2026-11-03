@@ -9,6 +9,7 @@ All internal documentation strings and variable labels are standardly written in
 import datetime as _dt
 import re
 from typing import List, Dict, Any, Callable, Iterable, Optional
+from core.import_template import FIELD_KINDS
 from core.models import MeasurementRunIndex
 from io_modules.metadata_parser import find_matching_row, normalize_file_key
 
@@ -21,7 +22,6 @@ from io_modules.metadata_parser import find_matching_row, normalize_file_key
 # so a later rescan does not re-infer over the user's choice. Values are parsed
 # to their typed form once at ingest (see session.project), never per
 # filter -- a numeric facet compares numbers, not "10000" < "9000" as text.
-FIELD_KINDS = ("str", "int", "float", "date")
 NUMERIC_KINDS = ("int", "float")
 
 # Accepted on input; a date value is *stored* normalised to ISO "YYYY-MM-DD"
@@ -193,6 +193,8 @@ def resolve_schema_field(defaults: dict, stored: Optional[dict] = None) -> dict:
         kind_is_manual=manual,
         inferred_kind=resolve_schema_field_kind(stored, defaults),
     )
+    if "unit" in defaults:
+        entry["unit"] = defaults["unit"]
     date_format = (stored.get("date_format") if manual else defaults.get("date_format"))
     date_format = date_format or defaults.get("date_format") or stored.get("date_format")
     if date_format:
@@ -361,4 +363,28 @@ def generate_baseline_schema_master(indexed_runs: List[MeasurementRunIndex]) -> 
                 "kind": kind,
             })
 
+    # 3. The kept metadata pieces of the Import templates the channels were read
+    #    by, from the project's copies (#866): channel layer, offered by default.
+    for key, definition in _template_fields(indexed_runs).items():
+        schema.setdefault(key, definition)
+
     return schema
+
+
+def _template_fields(indexed_runs: List[MeasurementRunIndex]) -> Dict[str, Any]:
+    # Imported here: io_modules.import_template reads this module's kinds.
+    from io_modules.import_template import (
+        TEMPLATE_FIELD_PREFIX, build_template_schema_fields, resolve_installed_template,
+    )
+
+    templates, values_by_key = {}, {}
+    for run in indexed_runs:
+        for meta in (getattr(run, "available_channels", None) or {}).values():
+            name = getattr(meta, "import_template", "")
+            if name and name not in templates:
+                templates[name] = resolve_installed_template(name)
+            for key, value in vars(meta).items():
+                if key.startswith(TEMPLATE_FIELD_PREFIX):
+                    values_by_key.setdefault(key, []).append(value)
+    return build_template_schema_fields(
+        (template for template in templates.values() if template is not None), values_by_key)

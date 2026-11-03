@@ -18,7 +18,7 @@ so it is a plain callback list instead.
 All internal documentation strings and variable labels are standardly written
 in English.
 """
-from typing import Callable, List, Mapping, Optional
+from typing import Callable, List, Mapping, Optional, Sequence, Tuple
 
 from core.measurement_selection import MeasurementSelection
 from core.jobs import CancelToken
@@ -85,6 +85,42 @@ class WorkflowRunBridge:
             cancel=self._chain_cancel,
         )
 
+    def start_runs(self, runs: Sequence[Tuple[Workflow, MeasurementSelection, str, Optional[Mapping[str, str]]]],
+                   what: str = "Run workflow") -> None:
+        """
+        `start` for several runs at once -- one `(workflow, selection, label,
+        overwrite_by_block)` each, as Compute Result Set over several
+        Selections asks for. Each is planned and logged like `start`; the
+        runnable ones then run one after another, so a later one does not
+        supersede an earlier one. Every run reports `run_finished` once, a refused
+        one included: that is the contract of `run_chain_batches`.
+        """
+        context = self.app_context
+        session = context.project_session
+        self.supersede()
+        self._chain_cancel = CancelToken()
+
+        batches = []
+        for workflow, selection, label, overwrite_by_block in runs:
+            plan = plan_batch(
+                workflow, selection,
+                sources=session.project.sources,
+                schema=context.pool.schema().master,
+                project_path=session.path,
+                data_roots=session.project.data_roots,
+                label=label, what=what, overwrite_by_block=overwrite_by_block,
+            )
+            for message in plan.messages:
+                context.log(message)
+            batches.append(WorkflowChainBatch(workflow, plan))
+
+        run_chain_batches(
+            tuple(batches), session, self.job_runner,
+            compression=getattr(context, "result_cache_compression", None),
+            on_message=context.log, on_finished=self._on_finished,
+            cancel=self._chain_cancel,
+        )
+
     def supersede(self) -> None:
         """Stop the active batch and its not-yet-submitted chains."""
         self._chain_cancel.cancel()
@@ -100,32 +136,10 @@ class WorkflowRunBridge:
         `overwrite_by_block` and `what` are `plan_batch`'s; see it for what they
         decide.
         """
-        context = self.app_context
-        session = context.project_session
-
-        # Before the plan, not after it: pressing Run ends the live batch even
-        # when this run turns out to be refused (that is what it always did).
-        self.supersede()
-
-        plan = plan_batch(
-            workflow, selection,
-            sources=session.project.sources,
-            schema=context.pool.schema().master,
-            project_path=session.path,
-            data_roots=session.project.data_roots,
-            label=label, what=what, overwrite_by_block=overwrite_by_block,
-        )
-        for message in plan.messages:
-            context.log(message)
-        if not plan.runnable:
-            self.run_finished.emit(label, False)
-            return
-
-        run_batch(
-            plan, workflow, session, self.job_runner,
-            compression=getattr(context, "result_cache_compression", None),
-            on_message=context.log, on_finished=self._on_finished,
-        )
+        # The plan comes after superseding, not before: pressing Run ends the
+        # live batch even when this run turns out to be refused (that is what
+        # it always did).
+        self.start_runs(((workflow, selection, label, overwrite_by_block),), what=what)
 
     def _on_finished(self, outcome: BatchOutcome) -> None:
         for message in outcome.messages:

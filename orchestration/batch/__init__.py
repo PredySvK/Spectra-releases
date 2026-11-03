@@ -5,12 +5,18 @@ contain Qt widgets, GUI controllers, or presentation concerns.
 """
 
 from ._label import default_result_set_label
-from ._overwrite import find_overwrite_candidates
+from ._overwrite import find_overwrite_candidates, find_overwrite_candidates_by_workflow
 from ._plan import (
     CALCULATE_AND_SAVE_WHAT,
     CalculateAndSavePlan,
     CalculateAndSaveRequest,
+    DataPoolInput,
+    DataPoolScope,
+    SelectionScope,
+    SelectionsInput,
     WorkflowRunPlan,
+    resolve_data_pool_scope,
+    resolve_selection_scope,
     plan_calculate_and_save,
     resolve_calculate_and_save_refusal,
     plan_workflow_run,
@@ -34,10 +40,17 @@ __all__ = [
     "CALCULATE_AND_SAVE_WHAT",
     "CalculateAndSavePlan",
     "CalculateAndSaveRequest",
+    "DataPoolInput",
+    "DataPoolScope",
+    "resolve_data_pool_scope",
+    "SelectionScope",
+    "SelectionsInput",
+    "resolve_selection_scope",
     "ResultSetSink",
     "WorkflowRunPlan",
     "default_result_set_label",
     "find_overwrite_candidates",
+    "find_overwrite_candidates_by_workflow",
     "plan_batch",
     "plan_calculate_and_save",
     "resolve_calculate_and_save_refusal",

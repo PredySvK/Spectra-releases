@@ -19,7 +19,6 @@ class ProjectSwapSteps(Protocol):
         """Tells the user the file could not be opened."""
 
     def cancel_scan(self) -> None: ...
-    def reset_live_order_results(self) -> None: ...
     def close_analysis_tabs(self) -> None: ...
     def empty_data_pool(self) -> None: ...
 
@@ -58,9 +57,8 @@ def run_project_swap(steps: ProjectSwapSteps, project_path: Optional[str] = None
             steps.report_unreadable(project_path, error)
             return False
 
-    # Discard the outgoing project: the same four steps for New and Open.
+    # Discard the outgoing project: the same three steps for New and Open.
     steps.cancel_scan()
-    steps.reset_live_order_results()
     steps.close_analysis_tabs()
     steps.empty_data_pool()
 

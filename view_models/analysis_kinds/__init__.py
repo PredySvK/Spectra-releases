@@ -14,7 +14,8 @@ Architecture:
   two ribbon tabs that open no Analysis kind and are not in ANALYSIS_MODES).
 - Open plan: resolve_open_plan decides, from channels and an Analysis mode,
   which kind opens, as one tab or a comparison tab, and which channels are
-  skipped.
+  skipped. An Imported result opens in the Analysis kind that shows its Block
+  kind (resolve_imported_analysis_kind, resolve_channel_analysis_kind).
 - DSP choices: resolve_dsp_choices (by Analysis kind) and
   resolve_dsp_choices_of_config (by DSP config DTO class) give a DSP kind's
   DspChoices -- every DSP parameter's ParameterChoices as ordered (label,
@@ -41,6 +42,7 @@ from ._analysis_kind import (
     ANALYSIS_TIME,
     AnalysisKind,
     resolve_analysis_kind,
+    resolve_imported_analysis_kind,
 )
 from ._analysis_mode import (
     ANALYSIS_MODES,
@@ -62,7 +64,9 @@ from ._dsp_choices import (
     resolve_dsp_choices,
     resolve_dsp_choices_of_config,
 )
-from ._open_plan import SKIP_CAPACITY, SKIP_IMPORTED, OpenPlan, resolve_open_plan
+from ._open_plan import (
+    SKIP_CAPACITY, SKIP_IMPORTED, OpenPlan, resolve_channel_analysis_kind, resolve_open_plan,
+)
 
 __all__ = [
     "DspChoices",
@@ -83,6 +87,8 @@ __all__ = [
     "SKIP_CAPACITY",
     "SKIP_IMPORTED",
     "resolve_open_plan",
+    "resolve_channel_analysis_kind",
+    "resolve_imported_analysis_kind",
     "resolve_analysis_mode",
     "resolve_analysis_mode_of_kind",
     "ANALYSIS_KINDS",

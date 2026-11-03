@@ -70,8 +70,11 @@ class TabProject(QWidget):
         self.btn_edit_meta = make_ribbon_button(
             "Metadata and Filter Settings", "list",
             tooltip="Edit per-measurement metadata, the schema, and which fields are active")
+        self.btn_import_templates = make_ribbon_button(
+            "Import Templates…", "file-text",
+            tooltip="Edit, export, import and delete the Import templates that read table files")
         data = RibbonGroup("Data")
-        data.add_column(self.btn_select_dir, self.btn_edit_meta, spacing=4)
+        data.add_column(self.btn_select_dir, self.btn_edit_meta, self.btn_import_templates, spacing=4)
         layout.addWidget(data)
         layout.addWidget(vertical_separator())
 

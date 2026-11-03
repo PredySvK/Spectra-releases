@@ -8,15 +8,15 @@ in other display settings both go through it and end in exactly one
 ``on_change`` call, so the dock draws what changed and never builds the model
 itself.
 
-Settings (colour scale, spectrum format, amplitude mode, dB) arrive as
-arguments, for the same reason as in ``GraphCurves``: which settings object
-belongs to a dock is a GUI question.
+Settings arrive as one ``DisplaySettings``, as in ``GraphCurves``; which
+ribbon config they come from is ``resolve_display_settings``' question.
 """
 
 from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
+from ._display_settings import DisplaySettings
 from ._graph_curves import _weak_listener
 from ._plot_model import SpectrogramModel
 from ._plot_model_builder import build_spectrogram_model
@@ -43,41 +43,21 @@ class GraphSpectrogram:
 
     # ----------------------------------------------------------------- writes
 
-    def show_block(
-        self,
-        block: Any,
-        *,
-        color_scale: str = "Linear",
-        spectrum_format: str = "linear",
-        amplitude_mode: str = "rms",
-        decibel_scale: Optional[bool] = None,
-    ) -> None:
-        """Show ``block`` instead of whatever was held."""
+    def show_block(self, block: Any, settings: DisplaySettings = DisplaySettings()) -> None:
+        """Show ``block`` instead of whatever was held, in ``settings`` (its
+        spectrum format, amplitude, dB and colour scale)."""
         self._replace(build_spectrogram_model(
             block,
-            color_scale=color_scale,
-            spectrum_format=spectrum_format,
-            amplitude_mode=amplitude_mode,
-            decibel_scale=decibel_scale,
+            color_scale=settings.color_scale,
+            spectrum_format=settings.spectrum_format,
+            amplitude_mode=settings.spectrum_amplitude_mode,
+            decibel_scale=settings.decibel_scale,
         ))
 
-    def rebuild_display(
-        self,
-        *,
-        color_scale: str,
-        spectrum_format: str,
-        amplitude_mode: str,
-        decibel_scale: Optional[bool] = None,
-    ) -> None:
+    def rebuild_display(self, settings: DisplaySettings) -> None:
         """The held block again in other display settings -- no STFT re-run."""
         if self.block is not None:
-            self.show_block(
-                self.block,
-                color_scale=color_scale,
-                spectrum_format=spectrum_format,
-                amplitude_mode=amplitude_mode,
-                decibel_scale=decibel_scale,
-            )
+            self.show_block(self.block, settings)
 
     def _replace(self, model: SpectrogramModel) -> None:
         self._current = model
