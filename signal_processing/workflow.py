@@ -81,8 +81,10 @@ PRIMARY_PORT = ""
 # 7C) may name its input block anything; the ribbon fast path uses this one.
 INPUT_BLOCK_ID = "input"
 
-# The refusal text for a graph that has blocks but no input block; shared with
-# `workflow_readiness`, which reports the same fact as a readiness issue.
+# The refusal texts for a graph with no block, and for one that has blocks but no
+# input block; shared with `workflow_readiness`, which reports the same facts as
+# readiness issues.
+EMPTY_WORKFLOW_MESSAGE = "A workflow needs at least one block."
 NO_INPUT_BLOCK_MESSAGE = "A workflow needs at least one input block."
 
 
@@ -263,7 +265,7 @@ def build_workflow_with_tacho_cleaning(workflow: Workflow, tacho_cleaning: Tacho
     its recipe ignore them there.
     """
     def stamped(workflow_block: WorkflowBlock) -> WorkflowBlock:
-        # An unknown block type is left for `validate_graph` to refuse.
+        # An unknown block type is left for `resolve_block_errors` to refuse.
         spec = BLOCKS.get(workflow_block.block_type)
         if spec is None or not spec.settings_params:
             return workflow_block
@@ -346,7 +348,7 @@ _PARAM_TYPE_RULES: Mapping[type, Tuple[Callable[[Any], bool], str]] = {
 def resolve_block_params_refusal(block_type: str, params: Mapping[str, Any]) -> str:
     """
     Why `params` cannot be a `block_type` block's params, or "" when they can. The
-    one params rule: Apply and `validate_graph` (so also readiness and Run) ask it.
+    one params rule: Apply and `resolve_block_errors` (so also readiness and Run) ask it.
 
     Read from `config_cls`: every key must be one of its fields, with a value of
     that field's type, and `None` only in an `Optional` field (an empty `f_stop`
@@ -410,8 +412,8 @@ def build_workflow_with_wire(workflow: Workflow, source_id: str, block_id: str,
 
 
 def _incoming_on_port(workflow: Workflow, block_id: str, port: str) -> Optional[WorkflowWire]:
-    """The one wire feeding `port` of `block_id`, or None. `validate_graph`
-    guarantees at most one; unvalidated, the first wins."""
+    """The one wire feeding `port` of `block_id`, or None. A graph `resolve_block_errors`
+    passes has at most one; unvalidated, the first wins."""
     for wire in workflow.incoming(block_id):
         if resolve_wire_port(workflow, wire) == port:
             return wire
@@ -525,40 +527,27 @@ def needed_block_ids(workflow: Workflow, roots: Optional[Set[str]] = None) -> Se
 
 # -- validation --------------------------------------------------------------
 
-def validate_graph(workflow: Workflow) -> None:
-    """
-    Raises ValueError unless the graph type-checks end to end -- rejected before
-    a batch runs over forty files, the way Testlab refuses an incompatible
-    connection rather than failing mid-run.
-
-    Checks: at least one block and at least one input block; the graph is acyclic;
-    no port is wired twice; an input block has no incoming wire and no `SaveSpec`;
-    every non-input block type is registered; each block's primary port is fed;
-    every mandatory extra port is fed by a wire or a binding, and no binding names
-    a port the block does not have; a port is not both wired and bound; every wire
-    passes `resolve_wire_refusal`; a multi-output block has no outgoing wire; a
-    block's params pass `resolve_block_params_refusal`.
-    """
-    if workflow.blocks and not any(block.is_input for block in workflow.blocks):
-        raise ValueError(NO_INPUT_BLOCK_MESSAGE)
-    errors = resolve_block_errors(workflow)
-    if errors:
-        raise ValueError(next(iter(errors.values())))
-
-
 def resolve_block_errors(workflow: Workflow) -> Dict[str, str]:
     """
-    Every block's first `validate_graph` error, keyed by block id in the order
-    `validate_graph` reports them -- so the canvas can outline each faulty block,
-    not just the first. Graph-wide failures (no block, a cycle) belong to no single
-    block and still raise ValueError. A missing input block is `validate_graph`'s
-    to refuse: a chain without one still has blocks worth naming (the unwired ones).
+    Every block's first error, keyed by block id in block order -- so the canvas
+    can outline each faulty block, not just the first, and readiness refuses Run
+    before a batch runs over forty files, the way Testlab refuses an incompatible
+    connection rather than failing mid-run. Never raises: the answer is the value,
+    never text to parse.
+
+    Checks: no port is wired twice; an input block has no incoming wire and no
+    `SaveSpec`; every non-input block type is registered; each block's primary
+    port is fed; every mandatory extra port is fed by a wire or a binding, and no
+    binding names a port the block does not have; a port is not both wired and
+    bound; every wire passes `resolve_wire_refusal`; a multi-output block has no
+    outgoing wire; a block's params pass `resolve_block_params_refusal`.
+
+    A cycle is a block error, not a graph-wide one: every block on a cycle has one
+    incoming wire that closes it, and `resolve_wire_refusal` refuses that wire, so
+    each block of the cycle is named. A graph with no block, or no input block, is
+    readiness's to refuse -- a chain without an input still has blocks worth
+    naming (the unwired ones).
     """
-    if not workflow.blocks:
-        raise ValueError("A workflow needs at least one block.")
-
-    topological_order(workflow)   # raises on a cycle
-
     errors: Dict[str, str] = {}
     wired: Set[Tuple[str, str]] = set()
     for wire in workflow.wires:
@@ -578,8 +567,8 @@ def resolve_block_errors(workflow: Workflow) -> Dict[str, str]:
 
 
 def _validate_block(workflow: Workflow, workflow_block: WorkflowBlock) -> None:
-    """Type-check one block's inputs. Split out of `validate_graph` only for
-    readability -- the graph-wide checks (cycle, double-wired port) stay there."""
+    """Type-check one block's inputs. Split out of `resolve_block_errors` only for
+    readability -- the graph-wide check (double-wired port) stays there."""
     incoming = workflow.incoming(workflow_block.block_id)
 
     if workflow_block.is_input:
@@ -765,8 +754,8 @@ def run_graph(workflow: Workflow, inputs: Mapping[str, NVHDataBlock],
               roots: Optional[Set[str]] = None,
               ) -> Dict[str, List[NVHDataBlock]]:
     """
-    Run `workflow` over one set of loaded input blocks. Assumes `validate_graph`
-    has already passed.
+    Run `workflow` over one set of loaded input blocks. Assumes `resolve_block_errors`
+    found nothing (readiness refuses a Run otherwise).
 
     `inputs` maps each input block's id to the block that stands for it -- one
     channel of one measurement, resolved by the runner (decision 2). This layer
@@ -828,7 +817,7 @@ def run_graph(workflow: Workflow, inputs: Mapping[str, NVHDataBlock],
         if primary_wire is None or primary_wire.from_block not in single:
             raise ValueError(
                 f"Block '{block_id}' ('{workflow_block.block_type}') has no usable primary input; "
-                f"validate_graph should have refused this workflow."
+                f"readiness should have refused this workflow."
             )
         primary_block = single[primary_wire.from_block]
 
@@ -843,7 +832,7 @@ def run_graph(workflow: Workflow, inputs: Mapping[str, NVHDataBlock],
             if not spec.multi_output:
                 raise ValueError(
                     f"Block '{block_id}' ('{workflow_block.block_type}') produced a list but is not "
-                    f"multi_output; validate_graph should have refused this workflow."
+                    f"multi_output; readiness should have refused this workflow."
                 )
             produced[block_id] = [build_block_with_workflow_stamp(block, version, lineage)
                                   for block in result]
@@ -915,7 +904,7 @@ def _ancestor_repr(workflow: Workflow, block_id: str, seen: Set[str]) -> Any:
     workflow_block = workflow.block(block_id)
     if workflow_block.is_input:
         return {"input": True}
-    if block_id in seen:                      # defensive: validate_graph rejects cycles
+    if block_id in seen:                      # defensive: readiness rejects cycles
         return {"cycle": block_id}
     seen = seen | {block_id}
     return {

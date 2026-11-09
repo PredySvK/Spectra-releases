@@ -7,9 +7,9 @@ does not do. It works on a `Workbook` already in memory (`read_workbook` is the
 only disk access) and never raises for a file that does not fit: a whole-file
 misfit is `TemplateReading.misfit`, a channel the template cannot name, order
 or unit is that channel's `problem`. Rows of a channel that are not two numbers
-are lost rows (§1.177), not problems. Metadata (_metadata.py) that does not fit
-is a misfit of the file (file name, folder, sheet name) or a problem of the
-channel (column header).
+are lost rows (§1.177), not problems. A text that does not fit the template's
+roles (_text_chips.py) is a problem of the channel; a sheet without the heading
+row is skipped, not a misfit.
 """
 
 import os
@@ -21,16 +21,16 @@ import numpy as np
 
 from core.channel_types import CHANNEL_TYPE_TACHO
 from core.import_template import (
-    DATA_KIND_ORDER_CUT, DATA_KIND_SPECTRUM, DATA_KIND_TIME_SIGNAL, LAYOUT_SHARED_X, LAYOUT_SINGLE_CURVE, LAYOUT_XY_PAIRS,
-    PICK_FILE_NAME, PICK_FOLDER, PICK_HEADER, PICK_SHEET, SHEETS_ALL, SHEETS_FIRST_N, SHEETS_WITHOUT_LAST_N,
-    ImportTemplate, MetadataSource, TextPick,
+    DATA_KIND_SPECTRUM, DATA_KIND_TIME_SIGNAL, LAYOUT_SHARED_X, LAYOUT_SINGLE_CURVE, LAYOUT_XY_PAIRS,
+    SOURCE_FILE_NAME, SOURCE_FOLDER, SOURCE_HEADER, SOURCE_SHEET, SHEETS_ALL, SHEETS_FIRST_N, SHEETS_WITHOUT_LAST_N,
+    ChipRef, ImportTemplate, TextSource,
 )
-from io_modules.import_template._db_reference import convert_db_to_linear, resolve_db_reference
+from io_modules.import_template._db_reference import convert_db_to_linear, resolve_source_db_reference
 from core.source_amplitude import (
     SOURCE_AMPLITUDE_PEAK, SOURCE_AMPLITUDE_PEAK_TO_PEAK, SOURCE_AMPLITUDE_RMS,
 )
 from core.units import determine_channel_type
-from io_modules.import_template._metadata import resolve_source_fields
+from io_modules.import_template._text_chips import ChipRoles, build_chip_roles, resolve_rate_hz
 from io_modules.import_template._text_table import TextFormat, is_text_table, read_text_rows
 from io_modules.number_pairs import NumberPairs, read_number_pairs
 
@@ -42,9 +42,6 @@ ANCHOR_SEARCH_ROWS = 60
 
 _UNIT_RE = re.compile(r"\(([^)]*)\)\s*$")
 _PEAK_TO_PEAK_RE = re.compile(r"peak[\s-]*to[\s-]*peak|\bp[\s-]?p\b|\bpk[\s-]?pk\b")
-_NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
-_RATE_RE = re.compile(r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?")
-_AXIS_RE = re.compile(r"^[+-]?[XYZ]$")
 
 # Speed units the X of an order cut, Overall Level or residual may be in, and their factor to rpm.
 RPM_PER_UNIT = {"rev/min": 1.0, "rpm": 1.0, "rev/s": 60.0, "hz": 60.0}
@@ -167,12 +164,24 @@ class SheetReading:
 
 
 @dataclass(frozen=True)
+class SkippedSheet:
+    """A sheet a template does not read, and why (it has no heading row)."""
+
+    sheet: str
+    reason: str
+
+
+@dataclass(frozen=True)
 class TemplateReading:
-    """A file read by a template: its sheets, or why it does not fit the template."""
+    """
+    A file read by a template: its sheets, or why it does not fit the template.
+    `skipped_sheets` are the sheets a template skips -- not a misfit.
+    """
 
     sheets: Tuple[SheetReading, ...] = ()
     misfit: str = ""
     channels: Tuple[TemplateChannel, ...] = field(default=())
+    skipped_sheets: Tuple[SkippedSheet, ...] = ()
 
     def first_problem(self) -> str:
         """The misfit, else the first channel's problem, blank when the file reads clean."""
@@ -251,16 +260,11 @@ def _channel_columns(heading: tuple, layout: str, time_column: bool = True) -> L
     raise ValueError(f"Unknown column layout {layout!r}.")
 
 
-def _resolve_sample_rate(template: ImportTemplate, rows, heading_row: int, sheet: str, file_path: str) -> float:
-    """The sample rate in Hz a time signal without a time column states; ValueError when it states none."""
-    stated = template.sample_rate
-    if not isinstance(stated, TextPick):
-        return float(stated)
-    text = resolve_pick(rows, heading_row, 0, stated, sheet, file_path)
-    match = _RATE_RE.search(text if "." in text else text.replace(",", "."))
-    if match is None:
+def _resolve_stated_rate(text: str) -> float:
+    rate = resolve_rate_hz(text)
+    if rate is None:
         raise ValueError("no sample rate in the header text the template takes it from")
-    return float(match.group()) * (1000.0 if "khz" in text.lower() else 1.0)
+    return rate
 
 
 def resolve_uniform_sample_rate(seconds: np.ndarray) -> Tuple[float, str]:
@@ -282,35 +286,20 @@ def resolve_header_column(layout: str, x_column: int, y_column: int) -> int:
     return x_column if layout == LAYOUT_XY_PAIRS else y_column
 
 
-def _apply_pick(text: str, pick: TextPick) -> str:
-    if pick.split:
-        parts = text.split(pick.split)
-        text = parts[pick.piece] if pick.piece < len(parts) else ""
-    if pick.after:
-        text = text.split(pick.after, 1)[1] if pick.after in text else ""
-    if pick.before:
-        text = text.split(pick.before, 1)[0]
-    return text.strip()
-
-
-def resolve_pick_source_text(rows: Sequence[tuple], heading_row: int, column: int, pick: TextPick,
-                             sheet: str, file_path: str) -> str:
-    """The whole text a pick cuts its piece from; ValueError for a header row above the sheet."""
-    if pick.source == PICK_SHEET:
+def resolve_source_text(rows: Sequence[tuple], heading_row: int, column: int, source: Union[TextSource, ChipRef],
+                        sheet: str, file_path: str) -> str:
+    """The whole text of a source (its header row, the sheet name, the file name or the folder); ValueError for a header row above the sheet."""
+    if source.source == SOURCE_SHEET:
         return sheet
-    if pick.source == PICK_FILE_NAME:
+    if source.source == SOURCE_FILE_NAME:
         return os.path.splitext(os.path.basename(file_path))[0]
-    if pick.source == PICK_FOLDER:
+    if source.source == SOURCE_FOLDER:
         return os.path.basename(os.path.dirname(os.path.abspath(file_path)))
-    row = heading_row - pick.row_above
+    row = heading_row - source.row_above
     if row < 0:
-        raise ValueError(f"header row {pick.row_above} above the heading row does not exist")
+        raise ValueError(f"header row {source.row_above} above the heading row does not exist")
     cells = rows[row]
     return resolve_cell_text(cells[column]) if column < len(cells) else ""
-
-
-def resolve_pick(rows, heading_row: int, column: int, pick: TextPick, sheet: str, file_path: str) -> str:
-    return _apply_pick(resolve_pick_source_text(rows, heading_row, column, pick, sheet, file_path), pick)
 
 
 def resolve_source_amplitude(cell, bare: str) -> str:
@@ -331,48 +320,26 @@ def resolve_header_unit(cell) -> str:
     return match.group(1).strip().replace("˛", "²") if match else "unknown"   # ANSYS writes ² as ˛.
 
 
-def resolve_metadata_source_text(rows: Sequence[tuple], heading_row: int, column: int,
-                                 source: MetadataSource, sheet: str, file_path: str) -> str:
-    """The whole text a metadata source splits into pieces; ValueError for a header row above the sheet."""
-    return resolve_pick_source_text(rows, heading_row, column,
-                                    TextPick(row_above=source.row_above, source=source.source), sheet, file_path)
+def resolve_chip_source_text(rows: Sequence[tuple], heading_row: int, column: int, y_column: int,
+                              source: TextSource, sheet: str, file_path: str) -> str:
+    """
+    The text of a source for one channel: the heading row is the
+    amplitude column's heading cell without its "(unit)", a row above it the
+    channel's header column; ValueError for a header row above the sheet.
+    """
+    if source.source == SOURCE_HEADER and source.row_above == 0:
+        return _UNIT_RE.sub("", resolve_cell_text(_cell(rows[heading_row], y_column))).strip()
+    return resolve_source_text(rows, heading_row, column, source, sheet, file_path)
 
 
-def resolve_metadata_source_label(source: MetadataSource) -> str:
-    """Where a metadata source's text is, as a sentence names it."""
-    if source.source == PICK_HEADER:
-        if source.row_above == 0:
-            return "the heading row's header"
-        return f"the header {source.row_above} row{'s' if source.row_above > 1 else ''} above the heading row"
-    return {PICK_SHEET: "the sheet name", PICK_FILE_NAME: "the file name", PICK_FOLDER: "the folder"}[source.source]
-
-
-# Metadata kept from each of a template's sources, by the source's position in `template.metadata`.
-_SourceFields = Dict[int, Tuple[Tuple[str, Any], ...]]
-
-
-def _resolve_fields(template: ImportTemplate, kinds: Tuple[str, ...], rows, heading_row: int, column: int,
-                    sheet: str, file_path: str) -> Tuple[_SourceFields, str]:
-    """The fields of the template's metadata sources of these kinds, and why one does not fit."""
-    fields: _SourceFields = {}
-    for number, source in enumerate(template.metadata):
-        if source.source not in kinds:
-            continue
-        try:
-            text = resolve_metadata_source_text(rows, heading_row, column, source, sheet, file_path)
-        except ValueError as error:
-            return fields, str(error)
-        fields[number], problem = resolve_source_fields(text, source, resolve_metadata_source_label(source))
-        if problem:
-            return fields, problem
-    return fields, ""
-
-
-def _in_template_order(*parts: _SourceFields) -> Tuple[Tuple[str, Any], ...]:
-    merged: _SourceFields = {}
-    for part in parts:
-        merged.update(part)
-    return tuple(field for number in sorted(merged) for field in merged[number])
+def _resolve_chip_roles(template: ImportTemplate, rows, heading_row: int, column: int, y_column: int,
+                        sheet: str, file_path: str) -> ChipRoles:
+    try:
+        texts = {source.key: resolve_chip_source_text(rows, heading_row, column, y_column, source, sheet, file_path)
+                 for source in template.texts}
+    except ValueError as error:
+        return ChipRoles(problem=str(error))
+    return build_chip_roles(template, texts)
 
 
 def _cell(row: tuple, column: int):
@@ -380,8 +347,7 @@ def _cell(row: tuple, column: int):
 
 
 def _read_channel(index: int, sheet: str, rows, heading_row: int, data_row: int,
-                  columns: Tuple[int, int], template: ImportTemplate, file_path: str,
-                  outer_fields: _SourceFields) -> TemplateChannel:
+                  columns: Tuple[int, int], template: ImportTemplate, file_path: str) -> TemplateChannel:
     x_column, y_column = columns
     described_by = resolve_header_column(template.layout, x_column, y_column)
     heading = rows[heading_row]
@@ -402,17 +368,16 @@ def _read_channel(index: int, sheet: str, rows, heading_row: int, data_row: int,
         pairs = NumberPairs([(float(number), pair[1]) for number, pair in enumerate(values.pairs)],
                             values.lost_rows)
 
-    def pick(part: TextPick) -> str:
-        try:
-            return resolve_pick(rows, heading_row, described_by, part, sheet, file_path)
-        except ValueError as error:
-            problems.append(str(error))
-            return ""
-
+    chip_roles = _resolve_chip_roles(template, rows, heading_row, described_by, y_column, sheet, file_path)
+    if chip_roles.problem:
+        problems.append(chip_roles.problem)
+    if not source_amplitude and not timed:
+        problems.append(f"the amplitude header '{resolve_cell_text(_cell(heading, y_column))}' does not say "
+                        f"whether it is Peak, RMS or Peak-to-Peak, and the template takes it from the header")
     sample_rate = 0.0
     if timed and not has_x:
         try:
-            sample_rate = _resolve_sample_rate(template, rows, heading_row, sheet, file_path)
+            sample_rate = _resolve_chip_sample_rate(template, chip_roles)
         except ValueError as error:
             problems.append(str(error))
         else:
@@ -421,28 +386,10 @@ def _read_channel(index: int, sheet: str, rows, heading_row: int, data_row: int,
                                     pairs.lost_rows)
             else:
                 problems.append("the sample rate is not a positive number")
-    name = "".join(part if isinstance(part, str) else pick(part) for part in template.channel_name)
-    if not name.strip(": ") and not problems:
-        problems.append(f"column {y_column + 1} has no header text for the channel name")
-    if template.axis is not None:
-        axis = pick(template.axis).upper()
-        if _AXIS_RE.match(axis):
-            name = f"{name}:{axis}"
-        elif not problems:
-            problems.append(f"'{axis}' is not an axis X, Y or Z")
-    order: Optional[float] = None
-    if template.data_kind == DATA_KIND_ORDER_CUT:       # only an order cut has an order
-        if isinstance(template.order, TextPick):
-            match = _NUMBER_RE.search(pick(template.order))
-            if match is not None:
-                order = float(match.group())
-            elif not problems:
-                problems.append("no order in the text the template takes it from")
-        else:
-            order = float(template.order)
+    name, order = chip_roles.name, chip_roles.order
     db_reference = 0.0
     if template.values_in_db:
-        reference = resolve_db_reference(unit, template.db_reference)
+        reference = resolve_source_db_reference(unit, template.db_reference)
         if reference is None and not problems:
             problems.append(f"no dB reference is known for the unit '{unit}'; state the amplitude unit "
                             f"of the linear value and the reference")
@@ -456,17 +403,20 @@ def _read_channel(index: int, sheet: str, rows, heading_row: int, data_row: int,
         sample_rate, problem = resolve_uniform_sample_rate(seconds)
         if problem:
             problems.append(problem)
-    header_fields, problem = _resolve_fields(template, (PICK_HEADER,), rows, heading_row, described_by,
-                                             sheet, file_path)
-    if problem and not problems:
-        problems.append(problem)
     return TemplateChannel(
         index=index, sheet=sheet, x_column=x_column, y_column=y_column, name=name,
         x_unit=x_unit, unit=unit, channel_type=_resolve_channel_type(template, unit, name),
         order=order, source_amplitude=source_amplitude, pairs=pairs, db_reference=db_reference,
         sample_rate=sample_rate,
         problem=problems[0] if problems else "",
-        metadata=_in_template_order(outer_fields, header_fields))
+        metadata=chip_roles.metadata)
+
+
+def _resolve_chip_sample_rate(template: ImportTemplate, chip_roles: ChipRoles) -> float:
+    """The sample rate in Hz of a template: fixed, or stated by its chip; ValueError when it states none."""
+    if not isinstance(template.sample_rate, ChipRef):
+        return float(template.sample_rate)
+    return 0.0 if chip_roles.problem else _resolve_stated_rate(chip_roles.sample_rate_text)
 
 
 def _resolve_channel_type(template: ImportTemplate, unit: str, name: str) -> str:
@@ -478,12 +428,7 @@ def _resolve_channel_type(template: ImportTemplate, unit: str, name: str) -> str
 
 
 def _header_top_row(template: ImportTemplate, heading_row: int) -> int:
-    picks = [part for part in template.channel_name if isinstance(part, TextPick)]
-    picks += [pick for pick in (template.axis, template.order) if isinstance(pick, TextPick)]
-    picks += list(template.metadata)
-    if isinstance(template.sample_rate, TextPick):
-        picks.append(template.sample_rate)
-    reach = max((pick.row_above for pick in picks if pick.source == PICK_HEADER), default=0)
+    reach = max((source.row_above for source in template.texts if source.source == SOURCE_HEADER), default=0)
     return max(0, heading_row - reach)
 
 
@@ -495,16 +440,15 @@ def build_template_reading(workbook: Workbook, template: ImportTemplate) -> Temp
     if not sheets:
         return TemplateReading(misfit="the workbook has no sheet")
     timed = template.data_kind == DATA_KIND_TIME_SIGNAL
-    file_fields, misfit = _resolve_fields(template, (PICK_FILE_NAME, PICK_FOLDER), (), 0, 0, "", workbook.path)
-    if misfit:
-        return TemplateReading(misfit=misfit)
+    skipped_sheets: List[SkippedSheet] = []
     for sheet in sheets:
         rows = workbook.rows_of(sheet)
         if rows is None:
             return TemplateReading(misfit=f"the workbook has no sheet '{sheet}'")
         heading_row = resolve_heading_row(rows, template)
-        if heading_row is None:
-            return TemplateReading(misfit=_describe_missing_heading(template, sheet))
+        if heading_row is None:     # a sheet of another kind: skipped, not a misfit
+            skipped_sheets.append(SkippedSheet(sheet, _describe_missing_heading(template, sheet)))
+            continue
         skipped = {column for name, column in template.skipped_columns if name == sheet}
         columns = [pair for pair in _channel_columns(rows[heading_row], template.layout,
                                                      template.time_column or not timed)
@@ -512,21 +456,19 @@ def build_template_reading(workbook: Workbook, template: ImportTemplate) -> Temp
         if not columns:
             return TemplateReading(misfit=f"the heading row of sheet '{sheet}' forms no channel "
                                           f"in the column layout {template.layout}")
-        sheet_fields, misfit = _resolve_fields(template, (PICK_SHEET,), rows, heading_row, 0, sheet,
-                                               workbook.path)
-        if misfit:
-            return TemplateReading(misfit=misfit)
         data_row = heading_row + template.data_offset
-        outer_fields = {**file_fields, **sheet_fields}
         sheet_channels = tuple(
             _read_channel(len(channels) + number, sheet, rows, heading_row, data_row, pair, template,
-                          workbook.path, outer_fields)
+                          workbook.path)
             for number, pair in enumerate(columns))
         channels.extend(sheet_channels)
         readings.append(SheetReading(sheet, heading_row, _header_top_row(template, heading_row),
                                      data_row, sheet_channels))
+    skipped = tuple(skipped_sheets)
+    if not readings:
+        return TemplateReading(misfit=f"no sheet has the heading row: {skipped[0].reason}", skipped_sheets=skipped)
     speed = template.speed_channel.strip().lower()
     if timed and speed and not any(channel.name.strip().lower() == speed for channel in channels):
         return TemplateReading(misfit=f"no channel is named '{template.speed_channel}', the speed channel "
-                                      f"of the template")
-    return TemplateReading(sheets=tuple(readings), channels=tuple(channels))
+                                      f"of the template", skipped_sheets=skipped)
+    return TemplateReading(sheets=tuple(readings), channels=tuple(channels), skipped_sheets=skipped)

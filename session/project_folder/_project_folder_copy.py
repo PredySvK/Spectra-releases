@@ -5,6 +5,8 @@ project (its scan caches, ADR §1.22).
 
 Mixed into ProjectSession like `session/result_sets.py`: the plan reads the
 open project's result sets, path and commit count, and `save_as` applies it.
+What lies on disk comes in a `ProjectFolderListing` read on a background job;
+planning from it never touches the disk (§1.253).
 
 All internal documentation strings and variable labels are standardly written
 in English.
@@ -14,12 +16,37 @@ import os
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
+from io_modules.project_folder import ProjectFolderListing
 from io_modules.project_store import (
-    CACHE_DIR_NAME, PROJECT_WORKBOOK_NAMES, adopt_untitled_scan_caches, cache_folder,
-    names_a_cache_subfolder, project_files_in, project_folder, scan_cache_folder,
-    tab_cache_folder)
-from io_modules.result_cache import label_folder_exists, measure_result_sets
-from io_modules.tab_cache import read_tab_cache_names, resolve_tab_cache_path
+    CACHE_DIR_NAME, adopt_untitled_scan_caches, cache_folder, names_a_cache_subfolder,
+    project_files_in, project_folder, scan_cache_folder, tab_cache_folder)
+from io_modules.tab_cache import resolve_tab_cache_path
+
+_CHANGED_MEANWHILE = (
+    "The project's result sets changed while they were being copied "
+    "(a batch run finished). Nothing was saved; try Save As again.")
+
+
+@dataclass(frozen=True)
+class ProjectFolderListingRequest:
+    """
+    What a Save As to `project_path` must read from disk before it can plan
+    the copy, made by `build_project_folder_listing_request`.
+
+    `moves_folder` is False when the save stays in the project's own folder
+    or is the first save of an Untitled project: nothing is read and the
+    copy is empty. Otherwise `source_path` and `result_set_files` are what
+    `read_project_folder_listing` reads, and `fingerprint` is what the
+    result sets were when the listing was asked for -- a batch that commits
+    or overwrites one while the listing is read or the copy runs makes the
+    plan stale, and the Save As is refused rather than name a set the
+    listing never saw (§1.253).
+    """
+    project_path: str
+    moves_folder: bool = False
+    source_path: str = ""
+    result_set_files: Tuple[str, ...] = ()
+    fingerprint: Tuple = ()
 
 
 @dataclass(frozen=True)
@@ -31,11 +58,11 @@ class ProjectFolderCopy:
     absolute `(source, destination)` pairs -- the result sets first, then the
     scan caches and the Tab cache files the destination does not have yet; `relabels` is
     `(result_set_id, label, file)` for every result set the new project keeps.
-    `fingerprint` is what the result sets were when the plan was made: a batch
-    that commits or overwrites one while the copy runs makes the plan stale,
-    and `save_as` refuses it rather than name a set that was never copied.
-    With `keep_result_sets=False` the new project keeps none and only the scan
-    caches and the Tab cache are copied.
+    `fingerprint` is what the result sets were when the listing was asked
+    for: a batch that commits or overwrites one while the copy runs makes the
+    plan stale, and `save_as` refuses it rather than name a set that was
+    never copied. With `keep_result_sets=False` the new project keeps none
+    and only the scan caches and the Tab cache are copied.
 
     `workbook_copies` are the project's own workbooks (`metadata.xlsx`,
     `channel_pairing.xlsx`): small, copied with the rest or -- with nothing in
@@ -91,11 +118,31 @@ class ProjectFolderMixin:
 
     # ---- Save As into another folder ------------------------
 
-    def build_project_folder_copy(self, project_path: str,
+    def build_project_folder_listing_request(self, project_path: str) -> ProjectFolderListingRequest:
+        """
+        Says what a Save As to `project_path` has to read from disk before
+        `build_project_folder_copy` can plan it.
+
+        Raises ValueError when the destination folder already holds another
+        project -- before anything is read, so the user hears it at once.
+        """
+        new_path = os.path.abspath(project_path)
+        self._refuse_shared_folder(new_path)
+        if not self._moves_folder(new_path):
+            return ProjectFolderListingRequest(project_path=new_path)
+        return ProjectFolderListingRequest(
+            project_path=new_path, moves_folder=True, source_path=self._path,
+            result_set_files=tuple(rs.file for rs in self._project.result_sets),
+            fingerprint=self._result_set_fingerprint())
+
+    def build_project_folder_copy(self, request: ProjectFolderListingRequest,
+                                  listing: Optional[ProjectFolderListing] = None,
                                   keep_result_sets: bool = True) -> ProjectFolderCopy:
         """
-        Plans what a Save As to `project_path` has to copy so that the new
-        project reads its own results, never another copy's.
+        Plans what the Save As in `request` has to copy so that the new
+        project reads its own results, never another copy's. `listing` is
+        what `request` asked to read; it is not needed when the save stays
+        in the folder.
 
         The cache belongs to the folder, and a result set is named relative to
         it -- so a project moved to another folder without its cache would read
@@ -104,56 +151,61 @@ class ProjectFolderMixin:
         the destination cache (`_2`, `_3`... as `_unique_label` does), so a
         leftover there is neither overwritten nor adopted.
 
-        Raises ValueError when the destination folder already holds another
-        project. Copies nothing itself: the copy can be gigabytes and runs on
-        a background job; `save_as(project_path, folder_copy=plan)` then
-        commits it.
+        Raises ValueError when the result sets changed since the listing was
+        asked for (a batch finished meanwhile). Copies nothing and reads
+        nothing itself: the copy can be gigabytes and runs on a background
+        job; `save_as(project_path, folder_copy=plan)` then commits it.
         """
-        new_path = os.path.abspath(project_path)
-        self._refuse_shared_folder(new_path)
-        if not self._moves_folder(new_path):
-            return ProjectFolderCopy(project_path=new_path)
+        if not request.moves_folder:
+            return ProjectFolderCopy(project_path=request.project_path)
+        if listing is None or os.path.normcase(listing.project_path) != os.path.normcase(
+                request.project_path):
+            raise ValueError("Saving into another folder needs the listing of its Project folder.")
 
-        old_folder = project_folder(self._path)
+        new_path = request.project_path
+        old_folder = project_folder(request.source_path)
         new_cache = cache_folder(new_path)
         copies: List[Tuple[str, str]] = []
         relabels: List[Tuple[str, str, str]] = []
-        taken = set()
+        result_set_bytes = 0
         if keep_result_sets:
+            if request.fingerprint != self._result_set_fingerprint():
+                raise ValueError(_CHANGED_MEANWHILE)
+            taken = set()
             for result_set in self._project.result_sets:
                 label = result_set.label
                 n = 2
-                while self._destination_label_taken(new_cache, label, taken):
+                while self._destination_label_taken(listing, label, taken):
                     label = f"{result_set.label}_{n}"
                     n += 1
-                taken.add(label)
-                source = os.path.join(old_folder, result_set.file)
-                is_file = os.path.isfile(source)
-                name = f"{label}.h5" if is_file else label
+                taken.add(label.casefold())
+                on_disk = listing.result_sets.get(result_set.file)
+                name = f"{label}.h5" if on_disk is not None and on_disk.is_file else label
                 relabels.append((result_set.id, label, os.path.join(CACHE_DIR_NAME, name)))
                 # A set whose folder is already gone has nothing to copy; it
                 # keeps its fresh label, so it stays missing rather than
                 # reading whatever the destination holds under the old one.
-                if os.path.exists(source):
-                    copies.append((source, os.path.join(new_cache, name)))
-        result_set_bytes = measure_result_sets(s for s, _ in copies)
+                if on_disk is not None:
+                    copies.append((os.path.join(old_folder, result_set.file),
+                                   os.path.join(new_cache, name)))
+                    result_set_bytes += on_disk.size
 
-        old_scan, new_scan = scan_cache_folder(self._path), scan_cache_folder(new_path)
-        if os.path.isdir(old_scan):
-            for name in sorted(os.listdir(old_scan)):
-                source, destination = os.path.join(old_scan, name), os.path.join(new_scan, name)
-                if os.path.isfile(source) and not os.path.exists(destination):
-                    copies.append((source, destination))
+        old_scan, new_scan = scan_cache_folder(request.source_path), scan_cache_folder(new_path)
+        copies.extend((os.path.join(old_scan, name), os.path.join(new_scan, name))
+                      for name in listing.scan_cache_names)
 
-        copies.extend(self._tab_cache_copies(new_path))
+        # Every Tab cache file, so the new project's tabs open without a
+        # compute. Names are relative to `cache/tabs/`, so they
+        # stay valid; kept whatever the user chose for result sets.
+        old_tabs, new_tabs = tab_cache_folder(request.source_path), tab_cache_folder(new_path)
+        copies.extend((resolve_tab_cache_path(old_tabs, name), resolve_tab_cache_path(new_tabs, name))
+                      for name in listing.tab_cache_names)
 
         workbook_copies, kept_workbooks = [], []
         new_folder = project_folder(new_path)
-        for name in PROJECT_WORKBOOK_NAMES:
+        for name in listing.workbook_names:
             source, destination = os.path.join(old_folder, name), os.path.join(new_folder, name)
-            if not os.path.isfile(source):
-                continue
-            if os.path.exists(destination):
+            if name in listing.destination_workbook_names:
                 kept_workbooks.append(destination)
             else:
                 workbook_copies.append((source, destination))
@@ -162,27 +214,10 @@ class ProjectFolderMixin:
             project_path=new_path, keep_result_sets=keep_result_sets,
             copies=tuple(copies), relabels=tuple(relabels),
             result_set_bytes=result_set_bytes,
-            fingerprint=self._result_set_fingerprint(),
+            fingerprint=request.fingerprint,
             workbook_copies=tuple(workbook_copies),
             kept_workbooks=tuple(kept_workbooks),
         )
-
-    def _tab_cache_copies(self, new_path: str) -> List[Tuple[str, str]]:
-        """
-        Every Tab cache file, so the new project's tabs open without a compute
-       . Names are relative to `cache/tabs/`, so they stay valid.
-        Kept whatever the user chose for result sets: a Tab cache is no
-        result set. One the destination already has is left alone. A write
-        still in progress is not listed: Save As waits for those before it
-        builds the copy.
-        """
-        old_tabs, new_tabs = tab_cache_folder(self._path), tab_cache_folder(new_path)
-        copies = []
-        for name in read_tab_cache_names(old_tabs):
-            destination = resolve_tab_cache_path(new_tabs, name)
-            if destination is not None and not os.path.exists(destination):
-                copies.append((resolve_tab_cache_path(old_tabs, name), destination))
-        return copies
 
     def _result_set_fingerprint(self) -> Tuple:
         # The commit count, not the refs alone: an overwrite keeps id, label
@@ -191,9 +226,9 @@ class ProjectFolderMixin:
                 tuple((rs.id, rs.file) for rs in self._project.result_sets))
 
     @staticmethod
-    def _destination_label_taken(new_cache: str, label: str, taken) -> bool:
-        return (names_a_cache_subfolder(label) or label in taken
-                or label_folder_exists(os.path.join(new_cache, label)))
+    def _destination_label_taken(listing: ProjectFolderListing, label: str, taken) -> bool:
+        return (names_a_cache_subfolder(label) or label.casefold() in taken
+                or listing.label_taken(label))
 
     def _moves_folder(self, new_path: str) -> bool:
         """Whether saving to `new_path` leaves the folder the cache lives in."""
@@ -226,9 +261,7 @@ class ProjectFolderMixin:
             self._project.result_sets = []
             return snapshot
         if self._moves_folder(new_path) and plan.fingerprint != self._result_set_fingerprint():
-            raise ValueError(
-                "The project's result sets changed while they were being copied "
-                "(a batch run finished). Nothing was saved; try Save As again.")
+            raise ValueError(_CHANGED_MEANWHILE)
         by_id = {rs.id: rs for rs in self._project.result_sets}
         for result_set_id, label, file in plan.relabels:
             result_set = by_id.get(result_set_id)

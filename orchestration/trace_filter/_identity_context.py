@@ -7,7 +7,7 @@ caller of `identity_for_trace` builds identities from the same inputs.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 from core.project_model import SourceEntry
 
@@ -33,3 +33,14 @@ def build_identity_context(session: Optional[Any]) -> IdentityContext:
         sources_by_path=session.source_location.entries_by_path,
         result_set_labels={ref.id: ref.label for ref in project.result_sets},
     )
+
+
+def resolve_curve_metadata_sources(
+    session: Optional[Any], pool: Optional[Any],
+) -> Optional[Tuple[Mapping[str, Dict], IdentityContext]]:
+    """The open project's schema and identity lookups a Curve metadata record is
+    read from -- the one route for the Cursor Box, the Track table and the
+    Curve name (#1022); None with no project. In memory only, no disk."""
+    if session is None or pool is None:
+        return None
+    return pool.schema().master, build_identity_context(session)

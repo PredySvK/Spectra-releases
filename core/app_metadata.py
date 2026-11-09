@@ -15,7 +15,7 @@ SETTINGS_ORGANIZATION = "Spectra"
 SETTINGS_ROOT = "Root"
 SETTINGS_SHARED = "Shared"
 # 0.MINOR.PATCH while in alpha; the release tag is {APP_VERSION}, no "v".
-APP_VERSION = "0.2.3"
+APP_VERSION = "0.3.0"
 # Public repository holding only the installers and patch notes.
 RELEASES_REPO = "PredySvK/Spectra-releases"
 # Windows taskbar identity. No version in it: a new ID on every Update would

@@ -1,0 +1,21 @@
+{
+  "scenario": "track_cursor",
+  "size": [1700, 1000],
+  "elements": [
+    {"kind": "marker", "target": "TrackCursorButton", "text": {
+      "en": "Track: Track cursor on/off for every open graph (also T). Off by default.",
+      "cs": "Track: zapíná a vypíná Track cursor ve všech otevřených grafech (také T). Ve výchozím stavu vypnutý."}},
+    {"kind": "marker", "target": "TrackCursorSettingsButton", "text": {
+      "en": "Track cursor Settings: choose the columns of the Track table and its opacity.",
+      "cs": "Track cursor Settings: výběr sloupců Track table a její průhlednosti."}},
+    {"kind": "marker", "target": "TrackCursorHighlightButton", "text": {
+      "en": "Highlight: a dot on every curve where the line crosses it, other curves dimmed.",
+      "cs": "Highlight: tečka na každé křivce v místě průsečíku s čárou, ostatní křivky ztlumené."}},
+    {"kind": "marker", "target": "TrackCursorPinButton", "text": {
+      "en": "Pin: on, the line stays and you drag it; off, it follows the mouse.",
+      "cs": "Pin: zapnutý, čára zůstává a táhnete ji; vypnutý, sleduje myš."}},
+    {"kind": "marker", "rect": [1462, 203, 190, 105], "text": {
+      "en": "Track table: X at the line, then every curve's value there, highest first.",
+      "cs": "Track table: X na čáře a pod ním hodnota každé křivky, od nejvyšší."}}
+  ]
+}

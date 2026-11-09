@@ -129,12 +129,13 @@ class AccReaderMasta:
     def __init__(self, file_path: str):
         self.file_path = file_path
 
-    def scan_file_structure(self) -> MeasurementRunIndex:
-        return MeasurementRunIndex(os.path.basename(self.file_path), self.file_path)
+    def read_run_index(self) -> MeasurementRunIndex:
+        """The file's channels and Lost parts, read from its header (MeasurementReader)."""
+        run_index = MeasurementRunIndex(os.path.basename(self.file_path), self.file_path)
+        self._read_channels(run_index)
+        return run_index
 
-    def load_channels_on_demand(self, run_index: MeasurementRunIndex):
-        if run_index.available_channels:
-            return
+    def _read_channels(self, run_index: MeasurementRunIndex) -> None:
         for position, (sheet, rows) in enumerate(_read_sheets_cached(self.file_path)):
             for pair in _resolve_channel_indices(rows):
                 index = position * _SHEET_STRIDE + pair

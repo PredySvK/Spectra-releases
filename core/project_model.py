@@ -168,7 +168,7 @@ class SourceEntry:
     source_amplitude: str = ""
 
     # The Import template the user assigned to this file, which decides the
-    # reader that opens it (io_modules.measurement_files.resolve_reader_name).
+    # reader that opens it (io_modules.measurement_files.resolve_reader_description).
     # Blank means none: the suffix decides.
     import_template: str = ""
 
@@ -318,7 +318,7 @@ class FilterSelection:
     to live directly on FilterProfile before scope stopped being a property
     of the profile *object* and became a property of *where its state lives*.
     See FilterProfile's own docstring, and
-    plans/2026-09-05_filtre-maska-nad-kazdym-grafom.md T1.
+    the filter-mask plan T1.
     """
     checked_metadata_values: Dict[str, Set[str]] = field(default_factory=dict)
     # Built-in Identity facets other than Channel (Direction, Channel type, File
@@ -368,7 +368,7 @@ class FilterProfile:
     (global) or (profile id, dock id) (local), so the same profile shows the
     same tab in every dock's tab bar regardless of scope; only the content
     behind a "local" tab differs by dock. See
-    plans/2026-09-05_filtre-maska-nad-kazdym-grafom.md T1 for why the previous
+    the filter-mask plan T1 for why the previous
     `dock_id` field (and the whole "unclaimed until a dock focuses" dance that
     went with it) is gone.
 

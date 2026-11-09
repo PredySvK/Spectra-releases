@@ -12,11 +12,17 @@ primary one, and the legend entries for its curves. Colocated with graph_dock.py
 because it is that dock's rendering concern, not a workspace-wide service.
 
 GraphDock holds one SecondaryAxis and drives it with ensure() / add() /
-teardown() / sweep_clip(); the ViewBox, the sync handlers and the legend
-bookkeeping never leak past that interface.
+apply_logarithmic_axes() / teardown(); the ViewBox, the sync handlers and the
+legend bookkeeping never leak past that interface.
+
+On a Logarithmic axis (§1.276) the secondary ViewBox and its curves follow
+the primary axis: log X always (the X is shared), log Y together with the
+primary Y. The dock hands in its screen rules; this class never reads the
+plot menu's switches.
 """
 
 from typing import Any, Callable, List, Optional, Sequence, Tuple
+from core.axis_projections import AxisScreenRule
 from core.units import UnitPreferences
 from gui.workspace.display_prefix_axis import DisplayPrefixAxisItem
 
@@ -33,6 +39,12 @@ def project_synced_range(
     driver_old: Range, driver_new: Range, follower_old: Range
 ) -> Tuple[float, float]:
     """Project the driver axis's range change onto the follower axis.
+
+    All three ranges are screen coordinates (what ViewBox.viewRange gives: the
+    log10 of the value on a Logarithmic axis, §1.276), so a log Y axis
+    is panned and zoomed by the same fraction of its screen span as a linear
+    one. The caller re-takes its old ranges whenever the screen rule changes
+    -- an old linear range against a new log10 one would carry no meaning.
 
     Both sync directions (primary drives secondary, secondary drives primary)
     use the identical normalisation: express the driver's new bounds as
@@ -186,10 +198,16 @@ class SecondaryAxis:
             (self._view_box.sigYRangeChanged, on_sec_y_changed),
         ]
 
-    def add(self, trace: Trace, pen, *, in_legend: bool, x: np.ndarray) -> Optional[Any]:
+    def add(
+        self, trace: Trace, pen, *, in_legend: bool, x: np.ndarray,
+        x_rule: AxisScreenRule, y_rule: AxisScreenRule,
+    ) -> Optional[Any]:
         """Draw one curve onto the secondary ViewBox with its own initial range.
         ``x`` is the curve's X as the dock draws it (the global X axis unit,
-        issue #459), not ``trace.x``. Returns the drawn item (None without an axis)."""
+        issue #459), not ``trace.x``. ``x_rule`` / ``y_rule`` are the dock's
+        screen rules right now, so a curve added while a Logarithmic axis is on
+        is drawn in log mode like the primary ones (§1.276). Returns the
+        drawn item (None without an axis)."""
         if self._view_box is None:
             return None
 
@@ -199,19 +217,10 @@ class SecondaryAxis:
         )
         self._view_box.addItem(curve_item)
 
-        # nanmin/nanmax: an order cut legitimately carries NaN where the order is
-        # unmeasurable; plain min/max would return NaN and collapse the range.
-        finite_values = trace.y[np.isfinite(trace.y)]
-        if finite_values.size:
-            y_min = float(np.min(finite_values))
-            y_max = float(np.max(finite_values))
-            y_pad = (y_max - y_min) * 0.05 if y_max != y_min else 1.0
-            self._is_syncing = True
-            self._view_box.setYRange(y_min - y_pad, y_max + y_pad, padding=0)
-            self._is_syncing = False
-
-        self._p1_last_yrange = self._plot_widget.plotItem.vb.viewRange()[1]
-        self._p2_last_yrange = self._view_box.viewRange()[1]
+        self._set_view_log_mode(x_rule, y_rule)
+        curve_item.setLogMode(x_rule.logarithmic, y_rule.logarithmic)
+        self._fit_y_range([trace.y], y_rule)
+        self._take_sync_baselines()
 
         legend = self._plot_widget.plotItem.legend
         if legend is not None and in_legend:
@@ -221,6 +230,52 @@ class SecondaryAxis:
             legend.addItem(curve_item, f"{trace.label}  ▸ right axis")
             self._legend_items.append(curve_item)
         return curve_item
+
+    def apply_logarithmic_axes(self, x_rule: AxisScreenRule, y_rule: AxisScreenRule) -> None:
+        """Follow a switch of log X / log Y (§1.276): the ViewBox and every
+        curve on it take the primary axis' log mode, the Y range is fitted to
+        the curves again in screen coordinates and the range sync starts from
+        the new ranges. The switch only asks the primary ViewBox for an auto
+        range, which it would otherwise run at the next paint and the sync
+        would then project with the old linear range against the new log10 one,
+        moving this range off the curve (#990). So the primary range is settled
+        first; the fit then wins and both sync baselines are screen coordinates
+        of the same rule. No axis: nothing to do."""
+        if self._view_box is None:
+            return
+        self._plot_widget.plotItem.vb.updateAutoRange()
+        self._set_view_log_mode(x_rule, y_rule)
+        curves = [item for item in self._view_box.addedItems if isinstance(item, pg.PlotDataItem)]
+        for curve_item in curves:
+            curve_item.setLogMode(x_rule.logarithmic, y_rule.logarithmic)
+        self._fit_y_range([curve_item.getOriginalDataset()[1] for curve_item in curves], y_rule)
+        self._take_sync_baselines()
+
+    def _set_view_log_mode(self, x_rule: AxisScreenRule, y_rule: AxisScreenRule) -> None:
+        # The ViewBox uses its log mode only to bound the range it accepts.
+        self._view_box.setLogMode("x", x_rule.logarithmic)
+        self._view_box.setLogMode("y", y_rule.logarithmic)
+
+    def _fit_y_range(self, ys: Sequence[Optional[np.ndarray]], y_rule: AxisScreenRule) -> None:
+        """Fit the Y range to ``ys`` (native values) as they sit on screen."""
+        # Finite only: an order cut legitimately carries NaN where the order is
+        # unmeasurable, and on a log axis a value <= 0 has no screen position;
+        # either would collapse the range.
+        shown = [np.atleast_1d(y_rule.to_screen(y)) for y in ys if y is not None and len(y)]
+        values = np.concatenate(shown) if shown else np.empty(0)
+        finite_values = values[np.isfinite(values)]
+        if not finite_values.size:
+            return
+        y_min = float(np.min(finite_values))
+        y_max = float(np.max(finite_values))
+        y_pad = (y_max - y_min) * 0.05 if y_max != y_min else 1.0
+        self._is_syncing = True
+        self._view_box.setYRange(y_min - y_pad, y_max + y_pad, padding=0)
+        self._is_syncing = False
+
+    def _take_sync_baselines(self) -> None:
+        self._p1_last_yrange = self._plot_widget.plotItem.vb.viewRange()[1]
+        self._p2_last_yrange = self._view_box.viewRange()[1]
 
     def teardown(self) -> None:
         """Remove the axis, its ViewBox, its legend entries and its sync wiring.

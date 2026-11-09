@@ -4,7 +4,8 @@
 """
 GraphDock: one graph tab's PyQtGraph canvas. Its curves live in
 view_models.plot.GraphCurves; the dock draws each change to them
-(_on_curves_changed), takes channel drops and hosts the Band RMS cursors.
+(_on_curves_changed), takes channel drops and hosts the Band RMS cursors,
+the Track cursor and Legend Settings.
 """
 
 from dataclasses import replace
@@ -12,32 +13,45 @@ import json
 import uuid
 import pyqtgraph as pg
 import numpy as np
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QApplication
-from PySide6.QtCore import QTimer, Qt, QPoint, QMimeData, Signal
+from PySide6.QtWidgets import QVBoxLayout, QApplication
+from PySide6.QtCore import QTimer, Qt, QPoint, QMimeData
 from PySide6.QtGui import QDrag
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 
 from core.units import (
     UnitPreferences,
 )
-from core.axis_projections import XAxisDisplay, resolve_x_axis_display
+from core.axis_projections import (
+    AxisScreenRule, XAxisDisplay, resolve_log_axis_floor, resolve_x_axis_display,
+    resolve_x_axis_screen_rule,
+)
 from core.block_kinds import KIND_SPECTRUM
 from orchestration.channel_drop import PendingDrops
 from orchestration.companion_curves import CompanionCurvesState
-from view_models.analysis_kinds import ANALYSIS_ORDERS, ANALYSIS_OVERALL_LEVEL, ANALYSIS_SPECTRUM, ANALYSIS_TIME
+from view_models.analysis_kinds import (
+    ANALYSIS_ORDERS,
+    ANALYSIS_OVERALL_LEVEL,
+    ANALYSIS_SPECTRUM,
+    ANALYSIS_TIME,
+)
 from core.benchmark import benchmark_step
 from core.evaluation import EvaluationConfig
 from core.data_block import NVHDataBlock
 from core.models import MeasurementRunIndex, ChannelMetadata
+from gui.workspace.plot_title import set_plot_title
 from gui.workspace.band_rms_cursors import BandRmsCursorsMixin
 from gui.workspace.cursor import CursorMixin
 from gui.workspace.highlight import HighlightMixin, HighlightSample
+from gui.workspace.legend_settings import LegendSettingsMixin
+from gui.workspace.track_cursor import TrackCursorMixin
 from gui.workspace.plot_area import GRAPH_TOKENS, style_plot_area
 from gui.workspace.channel_drop_target import ChannelDropTargetMixin, CHANNEL_DRAG_MIME
 from gui.workspace.display_prefix_axis import DisplayPrefixAxisItem
 from gui.workspace.secondary_axis import SecondaryAxis
+from gui.workspace.workspace_dock import WorkspaceDock
 from view_models.plot import (
     AcceptOutcome,
+    BandRmsBandMoved,
     CurveAppended,
     CurvesChange,
     CurvesCleared,
@@ -67,44 +81,14 @@ _QT_LINE_STYLES = {
 _LONG_DASH_PATTERN = [12, 4]
 
 
-class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, HighlightMixin, QWidget):
+class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, TrackCursorMixin, CursorMixin, HighlightMixin,
+                LegendSettingsMixin, WorkspaceDock):
     """High-performance PyQtGraph canvas sheet widget rendering raw signals time waveforms."""
 
     # The most drawn curves a dock still gives legend rows. pyqtgraph's
     # LegendItem re-measures every row on each addItem, so a legend costs
     # O(N^2) -- and 2000 rows are unreadable anyway (#441).
     _LEGEND_CURVE_LIMIT = 50
-
-    # Fired the first time this dock's model goes from empty to holding a
-    # base trace. Workspace uses it to re-run the Local filter's
-    # focus-change routing (FilterRoutingHandler.dock_focus_changed): that
-    # routing already runs once at build_shell/tab-focus time, but a fresh
-    # dock's model is still None then, so a Local filter's Channel facet
-    # comes back empty and never gets a chance to default itself onto this
-    # dock's own (still nonexistent) channel -- see gui/handlers/
-    # filter_routing.py._apply_mask_filter predicate, which then hides the base trace
-    # the moment it actually renders. Not emitted on later renders (unit
-    # change, refresh): those don't change which channels this dock offers.
-    sig_first_trace_rendered = Signal()
-
-    # Fired every time a trace is appended to an already-rendered dock (a
-    # second/third channel dropped in, an overlay curve; once per coalesced
-    # batch that added curves). A Local filter's Channel facet is built from this dock's own
-    # traces (filter_routing.refresh_filter_panel), and that only
-    # gets re-run on a dock-focus or profile-focus change -- so a channel
-    # added to the dock that already has focus left the panel showing the
-    # stale trace count until something else (Configure Filters' Apply,
-    # switching tabs and back) happened to re-trigger it.
-    sig_trace_added = Signal()
-
-    # Fired every time this dock's drawn content or its Trace-filter mask
-    # could have changed: after every drawn change (a mask change via
-    # set_trace_filter, a full model rebuild, a curve removed, a curve appended).
-    # The Evaluation card is the one
-    # listener -- one signal at this chokepoint instead of a recompute call
-    # threaded through every action that can add/remove/hide a curve
-    # (channel drop, overlay, live compute, Result Pool load/unload).
-    sig_content_or_mask_changed = Signal()
 
     def __init__(self, parent=None, app_context=None):
         super().__init__(parent)
@@ -134,7 +118,7 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
         self.analysis_kind: str = ANALYSIS_TIME
 
         # Which source channel this dock is showing. Set by Workspace
-        # right after construction (open_acc_spectrum_tab / open_acc_order_tracking_tab),
+        # right after construction (build_shell),
         # not passed to __init__, since a dock is also built before any channel
         # is chosen (see the startup placeholder). tacho_block is only ever
         # populated for an "orders" dock.
@@ -145,9 +129,8 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
         # Which curves this dock holds (CONTEXT.md "Graph curves", #272): the
         # PlotModel, the Trace filter mask and the visibility
         # decision through it, the overlay count, the loaded result sets and
-        # the applied mask key. Every change ends in _on_curves_changed, the
-        # only thing here that draws. Band RMS cursor state (enabled / band /
-        # window corrections) lives on model.band_rms_cursors[0].
+        # the applied mask key and the Band RMS band. Every change ends in
+        # _on_curves_changed, the only thing here that draws.
         self.curves = GraphCurves(on_change=self._on_curves_changed,
                                   base_curve_color=GRAPH_TOKENS.base_curve)
         self.pending_drops = PendingDrops()
@@ -184,6 +167,11 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
             }
         )
         self.plot_widget.setObjectName("GraphPlot")  # Help figure target
+        # The axes read the log switches through the dock (§1.276), not the
+        # library's own log mode; they exist before the switches do.
+        for side, x_axis in (("bottom", True), ("left", False), ("right", False)):
+            self.plot_widget.getAxis(side).set_shown_rule_provider(
+                lambda x_axis=x_axis: self._shown_value_rule(x_axis=x_axis))
         # A new plot widget draws as main.py configured (OpenGL); every full
         # draw then picks the mode its curves need (_apply_rendering_mode).
         self._rendering_mode = (RenderingMode.OPENGL if pg.getConfigOption('useOpenGL')
@@ -200,6 +188,101 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
         self.secondary_axis = SecondaryAxis(self.plot_widget, unit_preferences_provider=self._unit_preferences)
         self._init_cursor()
         self._init_highlight()
+        self._init_track_cursor()
+        self._init_legend_settings()
+        self._track_cursor_refresh = QTimer(self)
+        self._track_cursor_refresh.setSingleShot(True)
+        self._track_cursor_refresh.setInterval(0)
+        self._track_cursor_refresh.timeout.connect(self.refresh_track_cursor)
+        # Connected after PlotItem's own updateLogMode (PlotItem.__init__), so the
+        # hook runs with the ViewBox and the primary curves already switched.
+        ctrl = self.plot_widget.plotItem.ctrl
+        ctrl.logXCheck.toggled.connect(self._on_log_x_toggled)
+        ctrl.logYCheck.toggled.connect(self._on_log_y_toggled)
+
+    def _logarithmic_axes(self) -> Tuple[bool, bool]:
+        """(log X, log Y) as switched in the plot library's menu (Plot Options >
+        Transforms) -- the one place in gui/ that reads those switches (§1.276).
+        The state lives in the menu: it belongs to this graph, survives a replot
+        and a Refresh, and is never saved into the project."""
+        ctrl = self.plot_widget.plotItem.ctrl
+        return ctrl.logXCheck.isChecked(), ctrl.logYCheck.isChecked()
+
+    def x_screen_rule(self) -> AxisScreenRule:
+        """Where a native X (the model's unit) sits on screen right now: the
+        X axis unit scale of the axis as last drawn, then log10 on a
+        Logarithmic axis (§1.276). Everything placed on X goes through it."""
+        return resolve_x_axis_screen_rule(self._x_axis, self._logarithmic_axes()[0])
+
+    def y_screen_rule(self) -> AxisScreenRule:
+        """Where a Y value sits on screen right now: as it is, or its log10 on
+        a Logarithmic Y axis (§1.276)."""
+        return AxisScreenRule(logarithmic=self._logarithmic_axes()[1])
+
+    def _shown_value_rule(self, *, x_axis: bool) -> AxisScreenRule:
+        """Where a value as the axis shows it (the Display unit, no X axis unit
+        scale) sits on the axis ticks: the rule the axis labels read (§1.276)."""
+        return AxisScreenRule(logarithmic=self._logarithmic_axes()[0 if x_axis else 1])
+
+    def _on_log_x_toggled(self, _checked: bool) -> None:
+        # Looked up at call time, so a test (or a subclass) sees the call.
+        self.apply_logarithmic_axes()
+
+    def _on_log_y_toggled(self, _checked: bool) -> None:
+        # A log Y switch leaves the X range as the user left it.
+        self.apply_logarithmic_axes(reset_x_range=False)
+
+    def apply_logarithmic_axes(self, *, reset_x_range: bool = True) -> None:
+        """The hook a switch of log X / log Y ends in (§1.276): put back on
+        screen, through x_screen_rule / y_screen_rule, everything Spectra itself
+        places on the axes -- the library only re-transforms the ViewBox and the
+        curves it added. Synchronous on the GUI thread: a few values, no curve
+        data, no disk. Steps that follow the switch belong here, in this order:
+        the secondary axis and its curves, the bottom axis labels, the Band RMS
+        band, the X range, the Track cursor line on its native X, and last the
+        Cursor Box that reads all of them. ``reset_x_range`` is False for a
+        switch of log Y alone, which keeps the X range as the user left it."""
+        if self.curves.model is None:
+            return
+        # The library asked for an auto range of both axes with the switch; it
+        # would run at the next paint. A log Y switch keeps the X range as it is.
+        kept_x_range = None if reset_x_range else tuple(self.plot_widget.plotItem.vb.viewRange()[0])
+        self.secondary_axis.apply_logarithmic_axes(self.x_screen_rule(), self.y_screen_rule())
+        for side in ("bottom", "left", "right"):
+            self.plot_widget.getAxis(side).update_display_prefix()
+        self.refresh_band_rms_cursors()
+        if reset_x_range:
+            self._place_x_range()
+        else:
+            self.plot_widget.setXRange(*kept_x_range, padding=0)
+        self.refresh_track_cursor()
+        self.refresh_cursor_box()
+
+    def log_x_floor(self) -> Optional[float]:
+        """The lower edge of a Logarithmic X axis: the smallest positive X of
+        the visible curves (§1.276). The one place it is worked out -- the X
+        range and the Band RMS band both clip to it."""
+        return resolve_log_axis_floor(*(trace.x for trace in self.curves.visible.draw))
+
+    def _place_x_range(self) -> None:
+        """Put the model's locked X range (native unit, left as it is) on the
+        view through x_screen_rule: scaled to the X axis unit, log10 on a
+        Logarithmic X axis. A lower edge with no screen position there (0 Hz,
+        a negative rpm) becomes the smallest positive X of the visible curves
+        (§1.276); an edge that still has none leaves the range alone."""
+        x_range = self.curves.model.view.x_range
+        if x_range is None:
+            return
+        rule = self.x_screen_rule()
+        low, high = x_range
+        if rule.logarithmic and not rule.has_screen_position(low):
+            floor = self.log_x_floor()
+            if floor is None:
+                return
+            low = floor
+        edges = (rule.to_screen(low), rule.to_screen(high))
+        if all(np.isfinite(edges)) and edges[0] < edges[1]:
+            self.plot_widget.setXRange(*edges)
 
     @property
     def _legend_shown(self) -> bool:
@@ -243,6 +326,9 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
         time (every fresh curve twice in the legend)."""
         if isinstance(change, CurvesCleared):
             self._draw_cleared()
+            return
+        if isinstance(change, BandRmsBandMoved):
+            self._show_band_rms_readout()
             return
         if isinstance(change, CurvesReplaced):
             with benchmark_step("draw"):
@@ -303,6 +389,13 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
                 f"{view.title} — {n} of {n} curves can't be "
                 f"shown against the {model.x_domain or 'current'} axis"
             )
+        elif reason is HiddenReason.FORMAT:
+            hidden = visible.format_dropped
+            plural = "s" if hidden != 1 else ""
+            title = (
+                f"{view.title} — {hidden} curve{plural} hidden: "
+                f"Linear average shows only the Linear format"
+            )
         elif reason is HiddenReason.THIRD_AXIS:
             dropped = visible.third_axis_dropped
             plural = "s" if dropped != 1 else ""
@@ -313,7 +406,7 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
         if not self._legend_shown:
             # Worded against the limit, not the count: appends don't retitle.
             title = f"{title} — legend hidden above {self._LEGEND_CURVE_LIMIT} curves"
-        self.plot_widget.setTitle(title)
+        set_plot_title(self.plot_widget, title)
         self._x_axis = self._resolve_x_axis()
         self.plot_widget.getAxis('bottom').set_quantity(model.x_domain)
         self.plot_widget.getAxis('left').set_quantity(view.y_quantity)
@@ -324,10 +417,11 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
         for trace in visible_traces:
             self._draw_trace(trace)
 
-        if view.x_range is not None:
-            self.plot_widget.setXRange(*(edge * self._x_axis.scale for edge in view.x_range))
+        self._place_x_range()
 
-        self._refresh_band_rms_cursors()
+        self.refresh_band_rms_cursors()
+        self.refresh_cursor_box()
+        self.refresh_track_cursor()
 
         if self._geometry_initialized:
             self.apply_viewport_clipping()
@@ -358,7 +452,10 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
         self.secondary_axis.ensure(
             format_display_unit(trace.unit), quantity=resolve_ordinate_quantity(trace)
         )
-        item = self.secondary_axis.add(trace, pen, in_legend=self._legend_shown, x=x)
+        item = self.secondary_axis.add(
+            trace, pen, in_legend=self._legend_shown, x=x,
+            x_rule=self.x_screen_rule(), y_rule=self.y_screen_rule(),
+        )
         if item is not None:
             self.remember_highlight_item(trace, item, pen)
 
@@ -380,9 +477,7 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
             return
         self._rendering_mode = mode
         self.plot_widget.useOpenGL(mode is RenderingMode.OPENGL)
-        viewport = self.plot_widget.viewport()
-        viewport.setMouseTracking(True)
-        viewport.installEventFilter(self)
+        self._install_hover_viewport_filter()
 
     def _resolve_x_axis(self) -> XAxisDisplay:
         """The bottom axis as drawn: read off the dock's X domain rather than
@@ -401,13 +496,37 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
         return x if scale == 1.0 else x * scale
 
     def apply_unit_preferences(self) -> None:
-        """Update axis display prefixes when unit preferences change."""
+        """
+        Follow changed global unit preferences: the axes' display prefixes,
+        the curves themselves whatever this dock's Analysis kind,
+        and the Cursor Box.
+
+        The rebuild re-scales from the untouched ``y_raw``
+        (``GraphCurves.rebuild_units``) -- no disk, no DSP, and the frame
+        (title, axes) is preserved rather than reset (a time-record
+        replacement would relabel a spectrum / order-cut dock as a time
+        record while the curve stays put, audit 02/9.1).
+        """
+        # All three are DisplayPrefixAxisItems (init_ui); the secondary Y axis
+        # draws on the "right" one, so it follows here too.
         for axis_name in ("bottom", "left", "right"):
-            axis = self.plot_widget.getAxis(axis_name)
-            if hasattr(axis, "update_display_prefix"):
-                axis.update_display_prefix()
-        if self.secondary_axis is not None and hasattr(self.secondary_axis, "update_display_prefix"):
-            self.secondary_axis.update_display_prefix()
+            self.plot_widget.getAxis(axis_name).update_display_prefix()
+        self._rebuild_units()
+        self.refresh_cursor_box()
+        self.refresh_track_cursor()
+
+    def _rebuild_units(self) -> None:
+        model = self.curves.model
+        if model is None:
+            return
+        # The model's own analysis_kind has to agree with the dock's: a dock
+        # tagged e.g. "spectrum" over a plain time-built model (no real
+        # spectrum draw ever landed yet) is left alone rather than routed into
+        # a redraw whose view (title, axis labels) belongs to a different
+        # analysis kind.
+        if model.analysis_kind != self.analysis_kind:
+            return
+        self.curves.rebuild_units(self._unit_preferences())
 
     def apply_x_axis_unit(self) -> None:
         """Redraw for a changed global X axis unit and let the view range
@@ -442,6 +561,9 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
             return
 
         self._draw_trace(trace)
+        # Curves arrive one at a time in a loop; the Track cursor reads every
+        # drawn curve, so it is refreshed once after the loop, not per curve.
+        self._track_cursor_refresh.start()
 
         if self._geometry_initialized:
             self.apply_viewport_clipping()
@@ -453,6 +575,7 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
         block.kind, not by which Qt signal delivered them: a workflow engine
         (§1.6) hands over blocks with no calling context at all.
         """
+        self._clear_cursor()
         self._adopt_kind_of(blocks[0])
         self.curves.show_blocks(blocks, self._display_settings())
 
@@ -473,7 +596,7 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
         would leave its curves behind.
         """
         self.curves.clear()
-        self.plot_widget.setTitle(title)
+        set_plot_title(self.plot_widget, title)
 
     def _draw_cleared(self) -> None:
         self.secondary_axis.teardown()
@@ -481,6 +604,8 @@ class GraphDock(ChannelDropTargetMixin, BandRmsCursorsMixin, CursorMixin, Highli
         self.forget_highlight_items()
 
         self._remove_band_rms_cursors()
+        self._clear_cursor()
+        self.refresh_track_cursor()
 
     def add_curve(
         self,

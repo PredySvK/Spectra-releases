@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from core.axis_projections import X_AXIS_HZ, X_AXIS_NATIVE, X_AXIS_RPM
 from core.settings import DECIMALS_CHOICES, SETTING_DEFINITIONS
-from core.units import DISPLAY_BASE_UNIT_GROUPS
+from core.units import DB_REFERENCE_UNITS, DISPLAY_BASE_UNIT_GROUPS
 from view_models.display_prefix import resolve_display_prefix_setting_choices
 
 
@@ -18,7 +18,9 @@ class SettingsField:
 
     key: str
     label: str
-    kind: str  # "choice", "flag", "integer", non-negative "number" or immediate "toggle"
+    # "choice", "flag", "integer", non-negative "number", "positive" number, positive
+    # "scientific" or immediate "toggle"
+    kind: str
     choices: tuple[tuple[str, object], ...] = ()
     description: str = ""
     group: str = ""  # heading above the field on the page; "" = none
@@ -41,12 +43,38 @@ class SettingsField:
 
 
 @dataclass(frozen=True)
+class UnitsRow:
+    """One row of the Units page: a quantity with the keys of its editors.
+
+    ``unit_key`` / ``reference_key`` are None where the quantity has no unit choice
+    or no dB reference. ``preview_unit`` is the fixed unit of a row without
+    ``unit_key`` (Hz, s); with ``unit_key`` the preview takes the unit from the draft.
+    """
+
+    label: str
+    prefix_key: str
+    decimals_key: str
+    unit_key: str | None = None
+    reference_key: str | None = None
+    preview_unit: str = ""
+
+    @property
+    def keys(self) -> tuple[str, ...]:
+        """Every field key the row shows."""
+        return tuple(k for k in (self.unit_key, self.prefix_key, self.decimals_key, self.reference_key) if k)
+
+
+@dataclass(frozen=True)
 class SettingsPage:
-    """One page; ``path`` is its place in the tree, section names first."""
+    """One page; ``path`` is its place in the tree, section names first.
+
+    ``rows`` are fields drawn as table rows above the rest of ``fields``.
+    """
 
     page_id: str
     path: tuple[str, ...]
     fields: tuple[SettingsField, ...]
+    rows: tuple[UnitsRow, ...] = ()
 
 
 def _unit_field(key: str, label: str, domain: int) -> SettingsField:
@@ -59,9 +87,31 @@ def _prefix_field(key: str, label: str, default_unit: str) -> SettingsField:
     return SettingsField(key, label, "choice", choices, group="Application")
 
 
+def _db_reference_field(quantity: str, label: str) -> SettingsField:
+    unit = {"m/s2": "m/s²"}.get(DB_REFERENCE_UNITS[quantity], DB_REFERENCE_UNITS[quantity])
+    return SettingsField(
+        f"db_reference_{quantity}", f"{label} dB reference", "scientific",
+        description=f"The {label.lower()} that is 0 dB wherever a value is shown in dB, "
+                    f"in {unit} whatever the unit chosen.",
+        group="Application", suffix=unit)
+
+
 def _decimals_field(key: str, label: str) -> SettingsField:
     choices = tuple((c.capitalize() if c == "auto" else c, c) for c in DECIMALS_CHOICES)
     return SettingsField(key, label, "choice", choices, group="Application")
+
+
+_UNITS_ROWS: tuple[UnitsRow, ...] = (
+    UnitsRow("Acceleration", "prefix_acceleration", "decimals_acceleration",
+             "global_unit_acceleration", "db_reference_acceleration"),
+    UnitsRow("Pressure", "prefix_pressure", "decimals_pressure",
+             "global_unit_pressure", "db_reference_pressure"),
+    UnitsRow("Voltage", "prefix_voltage", "decimals_voltage",
+             "global_unit_voltage", "db_reference_voltage"),
+    UnitsRow("Speed", "prefix_speed", "decimals_speed", "global_unit_speed"),
+    UnitsRow("Frequency", "prefix_frequency", "decimals_frequency", preview_unit="Hz"),
+    UnitsRow("Time", "prefix_time", "decimals_time", preview_unit="s"),
+)
 
 
 SETTINGS_PAGES: tuple[SettingsPage, ...] = (
@@ -84,12 +134,15 @@ SETTINGS_PAGES: tuple[SettingsPage, ...] = (
             _unit_field("global_unit_acceleration", "Acceleration", 0),
             _prefix_field("prefix_acceleration", "Acceleration prefix", "g"),
             _decimals_field("decimals_acceleration", "Acceleration decimals"),
+            _db_reference_field("acceleration", "Acceleration"),
             _unit_field("global_unit_pressure", "Pressure", 1),
             _prefix_field("prefix_pressure", "Pressure prefix", "Pa"),
             _decimals_field("decimals_pressure", "Pressure decimals"),
+            _db_reference_field("pressure", "Pressure"),
             _unit_field("global_unit_voltage", "Voltage", 2),
             _prefix_field("prefix_voltage", "Voltage prefix", "V"),
             _decimals_field("decimals_voltage", "Voltage decimals"),
+            _db_reference_field("voltage", "Voltage"),
             _unit_field("global_unit_speed", "Speed", 3),
             _prefix_field("prefix_speed", "Speed prefix", "rpm"),
             _decimals_field("decimals_speed", "Speed decimals"),
@@ -109,6 +162,7 @@ SETTINGS_PAGES: tuple[SettingsPage, ...] = (
                 project=True,
             ),
         ),
+        _UNITS_ROWS,
     ),
     SettingsPage(
         "graphic/global",
@@ -172,11 +226,30 @@ SETTINGS_PAGES: tuple[SettingsPage, ...] = (
         ("Computation", "DSP"),
         (
             SettingsField(
+                "tacho_hampel_filter",
+                "Hampel filter",
+                "flag",
+                description="Replaces tacho spikes and dropouts before an RPM Tracked calculation "
+                            "places its blocks: a sample further than the threshold from the median "
+                            "of its 11 neighbours. Off = only missing samples are filled.",
+                group="Tacho cleaning",
+            ),
+            SettingsField(
+                "tacho_hampel_sigma",
+                "Hampel threshold [σ]",
+                "positive",
+                description="How far from its neighbours' median a sample must lie to be replaced, "
+                            "in standard deviations of the tacho's own noise. Small values (about 3) "
+                            "replace plain noise too.",
+                group="Tacho cleaning",
+                enabled_when=(("tacho_hampel_filter", True),),
+            ),
+            SettingsField(
                 "tacho_smoothing_ms",
                 "Tacho smoothing window [ms]",
                 "number",
-                description="Moving average the tacho is smoothed with before an RPM Tracked "
-                            "calculation places its blocks; 0 = no smoothing.",
+                description="Moving average the tacho is smoothed with after the Hampel filter; "
+                            "0 = no smoothing.",
                 group="Tacho cleaning",
                 note="Applies from the next RPM Tracked calculation.",
             ),
@@ -190,6 +263,9 @@ SETTINGS_PAGES: tuple[SettingsPage, ...] = (
     SettingsPage("about", ("About Spectra",), ()),
 )
 
+
+SETTINGS_FIELD_KEYS = frozenset(field.key for page in SETTINGS_PAGES for field in page.fields)
+"""Every key the window shows. The Tools tab switches are settings too, but not among them."""
 
 SETTINGS_PROJECT_KEYS = frozenset(
     field.key for page in SETTINGS_PAGES for field in page.fields if field.project)

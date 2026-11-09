@@ -10,6 +10,10 @@ curve's Tab cache file, cache lookup, read, DSP -- in one worker task; `plan_com
 table of what a failure does to the tab, by `ComputeOrigin`.
 `resolve_restore_config` is the config a restored tab computes with: its
 saved Curve recipe, the ribbon's only without one.
+`BaseCurveCompute` owns the whole life of a tab's Base curve compute -- start,
+landing, failure, what the tab gets back and what the Tab cache keeps -- with
+the tab behind `BaseCurveTarget`; `plan_last_n_refresh` decides
+which curves a Refresh Last N recomputes.
 
 What does not belong here: Qt widgets or dock manipulation (gui/), plot
 models or curve formatting (view_models/), active project state (session/),
@@ -50,8 +54,12 @@ from orchestration.live_compute._drop_workers import (
     read_simple_drops,
 )
 from orchestration.live_compute._file_tracking import FileTracking
+from orchestration.live_compute._base_curve_compute import BaseCurveCompute, BaseCurveTarget
+from orchestration.live_compute._last_n_refresh import plan_last_n_refresh
 
 __all__ = [
+    "BaseCurveCompute",
+    "BaseCurveTarget",
     "ComputeOrigin",
     "DropRestore",
     "FAILURE_CLOSE_TAB",
@@ -72,6 +80,7 @@ __all__ = [
     "run_live_compute",
     "run_order_drops",
     "plan_compute_failure",
+    "plan_last_n_refresh",
     "read_simple_drops",
     "resolve_cache_finder",
     "resolve_restore_config",

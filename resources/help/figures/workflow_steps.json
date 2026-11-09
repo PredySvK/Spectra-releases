@@ -21,8 +21,8 @@
       "en": "Step 6: Evaluation tab in the Output dock, pick Max (or Top-N maxima, Typed orders, Dominant orders).",
       "cs": "Krok 6: záložka Evaluation v doku Output, zvolte Max (nebo Top-N maxima, Typed orders, Dominant orders)."}},
     {"kind": "marker", "target": "StepExport", "text": {
-      "en": "Step 7: Export CSV.",
-      "cs": "Krok 7: Export CSV."}},
+      "en": "Step 7: Export XLSX.",
+      "cs": "Krok 7: Export XLSX."}},
     {"kind": "marker", "target": "StepSave", "text": {
       "en": "Step 8: Project tab, press Save.",
       "cs": "Krok 8: záložka Project, stiskněte Save."}}

@@ -1,0 +1,27 @@
+{
+  "scenario": "wizard_check",
+  "size": [1500, 1000],
+  "elements": [
+    {"kind": "marker", "target": "WizardTemplateName", "text": {
+      "en": "Template name: how the template is listed in the library.",
+      "cs": "Template name: pod jakým jménem je šablona v knihovně."}},
+    {"kind": "marker", "target": "WizardFilePattern", "text": {
+      "en": "File name pattern: which files the template reads (e.g. *.xlsx).",
+      "cs": "File name pattern: které soubory šablona čte (např. *.xlsx)."}},
+    {"kind": "marker", "target": "WizardSummary", "text": {
+      "en": "How many channels from how many sheets of how many samples.",
+      "cs": "Kolik kanálů z kolika listů kolika vzorků."}},
+    {"kind": "marker", "target": "WizardCheckResults", "text": {
+      "en": "Every channel with its order, units and number of points; click a row to see it in the preview.",
+      "cs": "Každý kanál s řádem, jednotkami a počtem bodů; klik na řádek ho ukáže v náhledu."}},
+    {"kind": "marker", "target": "WizardAdvanced", "text": {
+      "en": "Advanced: optional check for duplicate curves.",
+      "cs": "Advanced: volitelná kontrola duplicitních křivek."}},
+    {"kind": "marker", "target": "WizardPreview", "text": {
+      "en": "The columns of the selected channel are marked blue; dimmed cells are not read.",
+      "cs": "Sloupce vybraného kanálu jsou modře; ztlumené buňky se nečtou."}},
+    {"kind": "marker", "target": "WizardSave", "text": {
+      "en": "Save writes the template into your library and adds the files with it.",
+      "cs": "Save zapíše šablonu do vaší knihovny a přidá s ní soubory."}}
+  ]
+}

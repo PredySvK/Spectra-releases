@@ -29,17 +29,24 @@ class AnalysisKind:
     `max_channels` is how many channels one dock of the kind holds (None: no
     limit) -- a property of the dock, not of the Analysis mode that opens it.
 
-    `rebuilds_on_unit_change` marks a kind whose curves a global unit change
-    re-scales through GraphCurves.rebuild_units. False for a kind
-    with nothing here to rebuild through yet.
+    `refresh_action` names the ribbon action that recomputes a tab of the kind
+    in a refusal, `refresh_title` is what the graph says meanwhile; a kind
+    that is only read (time) has neither. `cache_hit_settings` is what a
+    cache hit's log line says matched. `tacho_missing_message` is the refusal,
+    with a `{file_name}` slot, of a kind that cannot go without a tacho (empty:
+    it can); `tacho_only_in_rpm_mode` limits that to rpm tracking.
     """
     name: str
     display_name: str
     title_prefix: str
     block_kind: str
     icon: str = ""
-    rebuilds_on_unit_change: bool = False
     max_channels: Optional[int] = None
+    refresh_action: str = ""
+    refresh_title: str = ""
+    cache_hit_settings: str = "FFT settings"
+    tacho_missing_message: str = ""
+    tacho_only_in_rpm_mode: bool = False
 
     @property
     def display_only_params(self) -> Tuple[str, ...]:
@@ -51,24 +58,32 @@ ANALYSIS_KINDS: Tuple[AnalysisKind, ...] = (
     AnalysisKind(
         name=ANALYSIS_TIME, display_name="Time", title_prefix="",
         block_kind=KIND_TIME_RESPONSE, icon="⏱",
-        rebuilds_on_unit_change=True,
     ),
     AnalysisKind(
         name=ANALYSIS_SPECTRUM, display_name="Spectrum", title_prefix="📈 1D: ",
         block_kind=KIND_SPECTRUM, icon="📈",
-        rebuilds_on_unit_change=True,
+        refresh_action="Refresh Spectrum", refresh_title="⏳ Recalculating 1D Spectrum...",
     ),
     AnalysisKind(
         name=ANALYSIS_SPECTROGRAM, display_name="Spectrogram", title_prefix="📦 Spec: ",
         block_kind=KIND_SPECTROGRAM, icon="📦", max_channels=1,
+        refresh_action="Refresh Spectrogram", refresh_title="⏳ Recalculating...",
     ),
     AnalysisKind(
         name=ANALYSIS_ORDERS, display_name="Order tracking", title_prefix="⚡ Orders: ",
         block_kind=KIND_ORDER_CUT, icon="⚡",
+        refresh_action="Extract Order Cuts", refresh_title="⏳ Reading channel...",
+        tacho_missing_message="ERROR: Order Tracking strictly requires a Tacho channel in '{file_name}'.",
     ),
     AnalysisKind(
         name=ANALYSIS_OVERALL_LEVEL, display_name="Overall Level", title_prefix="📶 Overall Level: ",
         block_kind=KIND_OVERALL_LEVEL, icon="📶",
+        refresh_action="Refresh Overall Level", refresh_title="⏳ Reading channel...",
+        cache_hit_settings="settings",
+        tacho_missing_message=(
+            "ERROR: Overall Level tracked against RPM needs a Tacho channel in '{file_name}'. "
+            "Switch Tracking Mode to 'Free Run (Time)' to view this channel."),
+        tacho_only_in_rpm_mode=True,
     ),
 )
 

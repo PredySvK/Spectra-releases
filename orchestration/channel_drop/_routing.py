@@ -5,7 +5,12 @@ from typing import Iterable, Mapping
 
 from selection.channel_identity import build_channel_key
 from selection.parameter_sets import orders_equal
-from view_models.analysis_kinds import ANALYSIS_ORDERS, ANALYSIS_OVERALL_LEVEL, resolve_imported_analysis_kind
+from view_models.analysis_kinds import (
+    ANALYSIS_ORDERS,
+    ANALYSIS_OVERALL_LEVEL,
+    ANALYSIS_SPECTRUM,
+    resolve_imported_analysis_kind,
+)
 
 
 @dataclass(frozen=True)
@@ -21,9 +26,11 @@ class DropFacts:
 
 @dataclass(frozen=True)
 class DropRouting:
-    """Descriptors grouped by the processing path selected for the drop."""
+    """Descriptors grouped by the Drop lane that serves them."""
 
-    simple: tuple[dict, ...] = ()
+    time: tuple[dict, ...] = ()
+    spectrum: tuple[dict, ...] = ()
+    spectrogram: tuple[dict, ...] = ()
     order: tuple[dict, ...] = ()
     overall_level: tuple[dict, ...] = ()
     result_content: tuple[dict, ...] = ()
@@ -101,9 +108,11 @@ def is_imported_descriptor(descriptor: Mapping) -> bool:
 def classify_drop_descriptors(
     descriptors: Iterable[dict], facts: DropFacts,
 ) -> DropRouting:
-    """Partition descriptors into the path that can serve the target dock."""
+    """Partition descriptors into the Drop lane that can serve the target dock."""
 
-    simple = []
+    time = []
+    spectrum = []
+    spectrogram = []
     order = []
     overall_level = []
     result_content = []
@@ -118,6 +127,12 @@ def classify_drop_descriptors(
             order.append(descriptor)
         elif facts.is_graph and facts.analysis_kind == ANALYSIS_OVERALL_LEVEL:
             overall_level.append(descriptor)
+        elif facts.is_spec:
+            spectrogram.append(descriptor)
+        elif facts.is_graph and facts.analysis_kind == ANALYSIS_SPECTRUM:
+            spectrum.append(descriptor)
         else:
-            simple.append(descriptor)
-    return DropRouting(tuple(simple), tuple(order), tuple(overall_level), tuple(result_content), tuple(imported))
+            time.append(descriptor)
+    return DropRouting(time=tuple(time), spectrum=tuple(spectrum), spectrogram=tuple(spectrogram),
+                       order=tuple(order), overall_level=tuple(overall_level),
+                       result_content=tuple(result_content), imported=tuple(imported))

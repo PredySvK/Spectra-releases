@@ -33,13 +33,19 @@ from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 from core.jobs import JobState, job_step
 from core.import_template import ImportTemplate
 from io_modules.import_template import (
-    resolve_installed_template, read_template_candidates, resolve_template_name_fit,
+    resolve_installed_template, resolve_installed_templates, read_template_candidates, resolve_template_name_fit,
 )
 from io_modules.pool_ingest_plan import discover_selection_tree
 from io_modules.measurement_files import (
     canonical_path, discover_measurement_files, resolve_imported_result_reader, is_measurement_file,
 )
+from orchestration.data_pool._ingest_request import (
+    IngestAskers, IngestKind, IngestRequest, LibraryChangeAsker,
+)
 from orchestration.data_pool._missing_measurement_check import MissingMeasurementCheck
+from orchestration.data_pool._template_edit import (
+    build_copy_change_summary, plan_misfit_fix, plan_template_edit,
+)
 from orchestration.data_pool._selection_plan import (
     build_ingest_folder_map, find_parent_metadata_files,
 )
@@ -54,7 +60,7 @@ from orchestration.data_pool._source_amplitude import (
 )
 from orchestration.jobs import JobRunner
 from io_modules.scan_cache import ScannedDirectory, read_pool_folder
-from session.data_pool import IntegrateResult
+from session.data_pool import Admission, IntegrateResult
 from session.project import apply_setup_label
 from session.source_location import build_source_location
 
@@ -64,7 +70,9 @@ INGEST_SLOT_KEY = "pool_ingest"
 @dataclass(frozen=True)
 class IngestPlan:
     """
-    Which folders an ingest reads, and what each of them was selected as.
+    Which folders an ingest reads, and what each of them admits into the pool
+    (`admissions`, directory -> `Admission`: set by the kind of run, and for an
+    Add by whether the folder or files in it were picked).
 
     `skipped_files` are files the user picked that no reader recognises -- a
     README or the metadata Excel offered by the browser on suffix alone; the
@@ -82,7 +90,7 @@ class IngestPlan:
     """
 
     directories: Tuple[str, ...] = ()
-    only_files: Dict[str, Optional[set]] = field(default_factory=dict)
+    admissions: Dict[str, Admission] = field(default_factory=dict)
     parent_excel: Dict[str, str] = field(default_factory=dict)
     skipped_files: Tuple[str, ...] = ()
     imported_files: Dict[str, Tuple[str, ...]] = field(default_factory=dict)
@@ -104,22 +112,25 @@ def plan_pool_ingest(paths, folder_files: Optional[dict] = None, project_path=No
     sheet, so both maps come out empty.
 
     Walks each selected folder tree once and reads the headers of generic-suffix
-    files, so for a path selection it runs on a worker (`PoolIngestUseCase.start_selection`).
+    files, so for a path selection it runs on a worker (`plan_ingest_run`).
     `roots` and `sources` (copies, as for `plan_pool_refresh`) let a file the project
     already knows keep the Import template it was assigned. `templates` are
     what this Add reads with: a file whose name and header fit one is assigned
     it, one that fits several is `ambiguous`, one whose name belongs to a
-    template its header does not fit is a misfit.
+    template its header does not fit is a misfit. They recognise measurements
+    here over the project's copies of their names, because the project takes
+    them only once the run starts reading.
     """
-    tree = discover_selection_tree(paths)
+    recognising = (tuple({**resolve_installed_templates(), **{template.name: template for template in templates}}
+                         .values()) if templates else None)
+    tree = discover_selection_tree(paths, recognising)
     known = build_source_location(roots, sources, read_root_directories(project_path, roots))
-    folder_files = folder_files if folder_files is not None else build_ingest_folder_map(paths, tree)
+    folder_files = folder_files if folder_files is not None else build_ingest_folder_map(tree)
     candidates = {canonical_path(path): path for directory in tree.walked
                   for path in read_template_candidates(directory, templates)}
-    candidates.update({canonical_path(path): path for path in paths
-                       if os.path.isfile(path) and any(
-                           resolve_template_name_fit(path, template) for template in templates)})
-    found = plan_template_assignment(candidates.values(), templates)
+    candidates.update({canonical_path(path): path for path in tree.selected_files
+                       if any(resolve_template_name_fit(path, template) for template in templates)})
+    found = plan_template_assignment(candidates.values(), templates, recognising)
     assigned_by_key = {canonical_path(path): name for path, name in found.assigned.items()}
     ambiguous_keys = {canonical_path(path) for path in found.ambiguous}
     misfits = tuple(misfit for misfit in found.misfits
@@ -138,10 +149,11 @@ def plan_pool_ingest(paths, folder_files: Optional[dict] = None, project_path=No
     misfit_keys = {canonical_path(misfit.path) for misfit in misfits}
     return IngestPlan(
         directories=tuple(folder_files.keys()),
-        only_files=dict(folder_files),
+        admissions={directory: Admission.folder() if files is None else Admission.files(files)
+                    for directory, files in folder_files.items()},
         parent_excel=find_parent_metadata_files(tree),
-        skipped_files=tuple(path for path in paths
-                            if os.path.isfile(path) and not is_measurement_file(path)
+        skipped_files=tuple(path for path in tree.selected_files
+                            if not is_measurement_file(path, recognising)
                             and canonical_path(path) not in misfit_keys),
         imported_files={reader: tuple(files) for reader, files in imported.items()},
         import_templates=dict(found.assigned),
@@ -162,7 +174,7 @@ def plan_pool_refresh(directories, project_path, roots, sources) -> IngestPlan:
     yet; a file it knows -- in the pool or taken out of it -- keeps its answer
     and is never asked again. `roots` and `sources` are copies taken on the
     calling thread; listing the folders and resolving the roots is disk work,
-    so this runs on a worker (`PoolIngestUseCase.start_refresh`).
+    so this runs on a worker (`plan_ingest_run`).
     """
     known = build_source_location(roots, sources, read_root_directories(project_path, roots)).entries_by_path
     imported: Dict[str, list] = {}
@@ -189,7 +201,7 @@ def plan_pool_refresh(directories, project_path, roots, sources) -> IngestPlan:
                 imported.setdefault(reader, []).append(path)
     return IngestPlan(
         directories=tuple(directories),
-        only_files={directory: set() for directory in directories},
+        admissions={directory: Admission.refresh() for directory in directories},
         imported_files={reader: tuple(files) for reader, files in imported.items()},
         import_templates=assigned,
         ambiguous=ambiguous,
@@ -212,7 +224,8 @@ def plan_template_rescan(name: str, project_path, roots, sources, pool_directori
     pooled = {canonical_path(directory): directory for directory in pool_directories}
     held = {canonical_path(os.path.dirname(path)) for path, entry in known.items() if entry.import_template == name}
     directories = tuple(pooled[key] for key in sorted(held) if key in pooled)
-    return IngestPlan(directories=directories, only_files={directory: set() for directory in directories})
+    return IngestPlan(directories=directories,
+                      admissions={directory: Admission.in_pool() for directory in directories})
 
 
 def _templates_of_folder(directory: str, known: Mapping[str, Any]) -> Tuple[ImportTemplate, ...]:
@@ -286,17 +299,72 @@ class IngestOutcome:
     # shows them (a refresh nobody asked for reports through the log only).
     misfits: Tuple[Misfit, ...] = ()
     report_misfits: bool = False
+    # A template edit the shell offers to save into the library too, once the
+    # run that re-read its files completed (`PoolIngestUseCase.plan_follow_up`).
+    offer_to_library: Optional[ImportTemplate] = None
+
+
+def _with_rescan(plan: IngestPlan, rescan: IngestPlan) -> IngestPlan:
+    """`plan` plus the folders of `rescan` it does not read yet, each admitting only what is in the pool."""
+    present = {canonical_path(directory) for directory in plan.directories}
+    extra = tuple(directory for directory in rescan.directories if canonical_path(directory) not in present)
+    if not extra:
+        return plan
+    return replace(plan, directories=plan.directories + extra,
+                   admissions={**plan.admissions, **{directory: Admission.in_pool() for directory in extra}})
+
+
+def plan_ingest_run(kind: IngestKind, paths, project_path, roots, sources,
+                    templates: Sequence[ImportTemplate] = (), replaced: Sequence[str] = (),
+                    pool_directories=()) -> IngestPlan:
+    """
+    The plan of one run of `kind`, on a worker: an Add plans its selection
+    (`plan_pool_ingest`), a Refresh its folders (`plan_pool_refresh`). The
+    folders holding files of each `replaced` template are added to it, so a
+    replaced copy's files are re-read in the same run (`plan_template_rescan`);
+    for a Template edit that is the whole plan. `roots` and `sources` are the
+    copies the caller took on its own thread.
+    """
+    if kind is IngestKind.REFRESH:
+        plan = plan_pool_refresh(tuple(paths), project_path, roots, sources)
+    elif kind is IngestKind.ADD:
+        plan = plan_pool_ingest(list(paths), None, project_path, roots, sources, templates)
+    else:
+        plan = IngestPlan()
+    for name in replaced:
+        plan = _with_rescan(plan, plan_template_rescan(name, project_path, roots, sources, pool_directories))
+    return plan
+
+
+_PLANNING_LABELS = {
+    IngestKind.ADD: ("Add to Data Pool - finding measurements", "the selection"),
+    IngestKind.REFRESH: ("Re-reading Data Pool folders - finding new measurements", "the folders"),
+    IngestKind.TEMPLATE_EDIT: ("Re-reading the files of the Import template '{name}'", "the files"),
+}
+
+
+@dataclass(frozen=True)
+class _Templates:
+    """What an Add reads with, once the library-change questions are answered; nothing written yet."""
+
+    reading: Tuple[ImportTemplate, ...] = ()
+    replacements: Tuple[ImportTemplate, ...] = ()
 
 
 class PoolIngestUseCase:
     """
-    Runs one ingest at a time: folders in, reports out.
+    Runs one ingest at a time: an `IngestRequest` in, reports out.
 
     Knows the pool, the project session and a `JobRunner`, and nothing else --
     no `app_context`, no window, no Qt. `start()` returns the job id the shell
     needs in order to follow the run's progress and to cancel it; cancelling is
     not this object's business, because the only cancel it would ever decide on
     its own is the supersede that `slot_key` already performs.
+
+    Every run is planned on a worker first, then asks its questions, then reads
+    its folders. The project is not changed until the reading starts: a
+    question the user cancels, or a run cancelled or superseded while it plans,
+    leaves the project as it was.
     """
 
     def __init__(self, pool, session, runner: JobRunner, *,
@@ -324,127 +392,69 @@ class PoolIngestUseCase:
     def job_id(self) -> Optional[int]:
         """
         The job the running run is on right now, for the shell's progress and
-        Cancel. A run from `start_selection` moves from its planning job to its
-        folder job, so the shell asks here rather than keeping `submit`'s id.
+        Cancel. A run moves from its planning job to its folder job, so the
+        shell asks here rather than keeping `submit`'s id.
         """
         return self._job_id
 
-    def start_selection(self, paths, *, quiet: bool = False,
-                        admit_unknown: bool = False, ask_for_setup: bool = False,
-                        import_templates: Sequence[ImportTemplate] = (),
-                        ask_source_amplitude: Optional[SourceAmplitudeAsker] = None,
-                        ask_import_template: Optional[ImportTemplateAsker] = None,
-                        on_folder: Optional[Callable[[FolderReport], None]] = None,
-                        on_finished: Optional[Callable[[IngestOutcome], None]] = None) -> int:
+    def start(self, request: IngestRequest, *, askers: IngestAskers = IngestAskers(),
+              on_folder: Optional[Callable[[FolderReport], None]] = None,
+              on_finished: Optional[Callable[[IngestOutcome], None]] = None) -> Optional[int]:
         """
-        Plans `paths` on a worker, then reads the planned folders as `start` does.
+        Plans `request` on a worker, asks its questions, then reads the planned
+        folders one at a time, folding each into the pool as it lands, and
+        reports the run through `on_folder` / `on_finished`. Returns the
+        planning job's id, or None when the run was declined before it began.
 
-        Planning walks the selected trees and reads the headers of `.xlsx` /
+        Planning walks trees, lists folders and reads the headers of `.xlsx` /
         `.txt` files, which is disk work the calling (GUI) thread must not do
         (#507). It is a job of its own under the same `slot_key`, so a second
-        Add supersedes a run still planning exactly as one already reading.
+        run supersedes one still planning exactly as one already reading.
 
-        `ask_source_amplitude`, when given, is called once the plan is known and
-        before anything is read, with one question per Imported-result reader
-        that has files in it; returning None cancels the whole Add.
+        An Add with a template that differs from the project's copy of its
+        name asks `askers.library_change` first, before planning, because the
+        plan checks each file's fit against the copy that will read it:
+        replacing makes the same run re-read the copy's files too. Once the
+        plan is known, a file that fits several templates is put to
+        `askers.import_template` (without it the file is a misfit), and the
+        Source amplitude question is asked once per Imported-result reader that
+        has files in the plan; files read by a template are not asked -- the
+        template says. Any of them cancelled reports a declined outcome.
 
-        `import_templates` are the templates the user added with: the project
-        takes a copy of each now (on this thread), and every file one fits is
-        read by that copy and assigned to its source. A copy the project holds
-        already under the name stays, so the fit is checked against the copy
-        that reads the file, never against the template passed. The files they
-        read are not asked about their Source amplitude -- the template says. A file
-        that fits several is put to `ask_import_template` (without it the file
-        is a misfit); files that fit none of the templates their name belongs
-        to are reported as misfits and not read.
+        One folder is one step and `max_parallel=1`: folders are read one at a
+        time so the tree fills in progressively and several hundred-megabyte
+        reads are not competing for the same disk. A folder of large files
+        would then be a single jump from 0 to 100 percent, so the step is given
+        a `progress_fn` (`progress_keyword`) it calls as it re-parses each
+        stale file.
         """
-        session = self._session
-        for template in import_templates:
-            session.adopt_import_template(template)
-        copies = tuple(session.resolve_import_template(template.name) or template for template in import_templates)
-        return self._start_planned(
-            "Add to Data Pool - finding measurements", "the selection",
-            plan_pool_ingest,
-            [list(paths), None, session.path, tuple(replace(root) for root in session.project.data_roots),
-             tuple(session.project.sources), copies],
-            quiet=quiet, admit_unknown=admit_unknown, ask_for_setup=ask_for_setup,
-            ask_source_amplitude=ask_source_amplitude, ask_import_template=ask_import_template,
-            on_folder=on_folder, on_finished=on_finished)
-
-    def start_refresh(self, directories, *, quiet: bool = False,
-                      ask_source_amplitude: Optional[SourceAmplitudeAsker] = None,
-                      ask_import_template: Optional[ImportTemplateAsker] = None,
-                      on_folder: Optional[Callable[[FolderReport], None]] = None,
-                      on_finished: Optional[Callable[[IngestOutcome], None]] = None) -> int:
-        """
-        Re-reads folders already in the pool, asking about files the project
-        does not know yet before they join it.
-
-        Like `start_selection` it plans on a worker first: telling a new
-        Imported-result file from a known one means listing the folder and
-        reading generic-suffix headers. Without `ask_source_amplitude` nothing
-        is asked, which is what opening a project wants.
-
-        A new file whose name fits an Import template its folder already uses
-        is read by it, or reported as a misfit when its content does not fit.
-        """
-        session = self._session
-        return self._start_planned(
-            "Re-reading Data Pool folders - finding new measurements", "the folders",
-            plan_pool_refresh,
-            [tuple(directories), session.path, tuple(replace(root) for root in session.project.data_roots),
-             tuple(session.project.sources)],
-            quiet=quiet, admit_unknown=True, ask_for_setup=False,
-            ask_source_amplitude=ask_source_amplitude, ask_import_template=ask_import_template,
-            on_folder=on_folder, on_finished=on_finished)
-
-    def start_template_edit(self, template: ImportTemplate, *, quiet: bool = False,
-                            on_folder: Optional[Callable[[FolderReport], None]] = None,
-                            on_finished: Optional[Callable[[IngestOutcome], None]] = None) -> int:
-        """
-        Confirms an edit of the project's copy of an Import template: the copy
-        of `template`'s name is replaced now (on this thread), and the files it
-        reads are re-read on a worker -- only those (`plan_template_rescan`).
-
-        Nothing is asked: the files are known, their template and Source
-        amplitude already decided. A file the edited template no longer fits
-        is Unreadable, naming the template, and leaves the pool until it fits.
-        """
-        session = self._session
-        session.replace_import_template(template)
-        return self._start_planned(
-            f"Re-reading the files of the Import template '{template.name}'", "the files",
-            plan_template_rescan,
-            [template.name, session.path, tuple(replace(root) for root in session.project.data_roots),
-             tuple(session.project.sources), tuple(self._pool.pool_directories)],
-            quiet=quiet, admit_unknown=False, ask_for_setup=False,
-            ask_source_amplitude=None, ask_import_template=None,
-            on_folder=on_folder, on_finished=on_finished)
-
-    def _start_planned(self, label: str, step_label: str, plan_fn, args, *, quiet: bool,
-                       admit_unknown: bool, ask_for_setup: bool,
-                       ask_source_amplitude: Optional[SourceAmplitudeAsker],
-                       ask_import_template: Optional[ImportTemplateAsker],
-                       on_folder, on_finished) -> int:
+        templates = self._resolve_library_changes(request, askers.library_change)
+        if templates is None:
+            self._finish({"on_finished": on_finished}, IngestOutcome(state=JobState.CANCELLED, declined=True))
+            return None
         self._runs += 1
         run = self._runs
         planned: Dict[str, Any] = {"plan": None, "failures": []}
+        # One snapshot of the project for the worker, taken here.
+        inputs = self._pool.prepare_scan_inputs()
+        label, step_label = _PLANNING_LABELS[request.kind]
+        replaced = tuple(template.name for template in templates.replacements)
+        label = label.format(name=", ".join(replaced))
 
         def _on_planned(record) -> None:
             if run != self._active_run:
                 return
             plan = planned["plan"]
             if record.state is JobState.DONE and plan is not None:
-                plan = self._resolve_ambiguous(plan, ask_import_template)
-                amplitudes = None if plan is None else self._ask_source_amplitudes(plan, ask_source_amplitude)
+                plan, amplitudes = self._ask(request, plan, askers)
                 if amplitudes is None:
                     self._active_run = None
                     self._job_id = None
                     self._finish({"on_finished": on_finished},
                                  IngestOutcome(state=JobState.CANCELLED, declined=True))
                     return
-                self._begin(plan, quiet=quiet, admit_unknown=admit_unknown,
-                            ask_for_setup=ask_for_setup, source_amplitudes=amplitudes,
+                self._write_templates(templates)
+                self._begin(request, plan, source_amplitudes=amplitudes,
                             on_folder=on_folder, on_finished=on_finished)
                 return
             self._active_run = None
@@ -455,16 +465,18 @@ class PoolIngestUseCase:
                 log_messages=tuple(f"POOL: Could not plan the ingest: {message}"
                                    for _, message in failures),
                 failures=failures,
-                report_failures=bool(failures) and not quiet,
+                report_failures=bool(failures) and not request.quiet,
             ))
 
-        # Same rule as start(): the run exists before submit, which may finish
-        # the whole run -- planning and folders -- before it returns.
+        # The run exists before submit, which may finish the whole run --
+        # planning and folders -- before it returns.
         self._active_run = run
         job_id = self._runner.submit(
             label,
-            [job_step(step_label, plan_fn, *args)],
-            lane="batch", slot_key=INGEST_SLOT_KEY, max_parallel=1, quiet=quiet,
+            [job_step(step_label, plan_ingest_run, request.kind, request.paths,
+                      inputs["project_path"], inputs["roots"], inputs["sources"],
+                      templates.reading, replaced, tuple(self._pool.pool_directories))],
+            lane="batch", slot_key=INGEST_SLOT_KEY, max_parallel=1, quiet=request.quiet,
             on_step=lambda plan, _index: planned.update(plan=plan),
             on_error=lambda message, _index: planned["failures"].append(
                 (step_label, message.splitlines()[0])),
@@ -473,6 +485,69 @@ class PoolIngestUseCase:
         if self._active_run == run:
             self._job_id = job_id
         return job_id
+
+    def plan_follow_up(self, outcome: IngestOutcome, askers: IngestAskers) -> Optional[IngestRequest]:
+        """
+        What the shell does after it has shown a completed run's outcome: offers
+        the run's edited template to the library, then shows the misfit report,
+        whose "Edit template" ends in the next run (None when nothing is to run).
+        """
+        if not outcome.completed:
+            return None
+        if outcome.offer_to_library is not None and askers.save_to_library is not None:
+            askers.save_to_library(outcome.offer_to_library)
+        if not outcome.report_misfits:
+            return None
+        return plan_misfit_fix(self._session, outcome.misfits, askers)
+
+    def plan_template_edit(self, name: str, sample_path: str, askers: IngestAskers,
+                           misfit_paths: Sequence[str] = ()) -> Optional[IngestRequest]:
+        """The run an edit of the project's copy of `name` on `sample_path` ends in (`_template_edit`)."""
+        return plan_template_edit(self._session, name, sample_path, askers, misfit_paths)
+
+    def _resolve_library_changes(self, request: IngestRequest,
+                                 ask: Optional[LibraryChangeAsker]) -> Optional[_Templates]:
+        """
+        The templates an Add reads with, each library change answered: a
+        template that differs from the project's copy of its name replaces it
+        or leaves it reading, as the user says (kept without `ask`). None when
+        the user cancelled. Nothing is written to the project here.
+        """
+        replacements = {template.name: template for template in request.replacements}
+        reading = []
+        for template in request.import_templates:
+            copy = self._session.resolve_import_template(template.name)
+            if template.name in replacements or copy is None or copy == template:
+                reading.append(replacements.get(template.name, template))
+                continue
+            answer = ask(build_copy_change_summary(self._session, copy, template)) if ask is not None else False
+            if answer is None:
+                return None
+            if answer:
+                replacements[template.name] = template
+                reading.append(template)
+            else:
+                reading.append(copy)
+        return _Templates(tuple(reading), tuple(replacements.values()))
+
+    def _write_templates(self, templates: _Templates) -> None:
+        """The run's first change to the project: the replaced copies, then copies of the templates new to it."""
+        session = self._session
+        for template in templates.replacements:
+            session.replace_import_template(template)
+        for template in templates.reading:
+            session.adopt_import_template(template)
+
+    def _ask(self, request: IngestRequest, plan: IngestPlan,
+             askers: IngestAskers) -> Tuple[Optional[IngestPlan], Optional[Dict[str, str]]]:
+        """The plan with its questions answered, and the Source amplitudes; (None, None) when one was cancelled."""
+        if not request.asks:
+            return plan, {}
+        plan = self._resolve_ambiguous(plan, askers.import_template)
+        if plan is None:
+            return None, None
+        amplitudes = self._ask_source_amplitudes(plan, askers.source_amplitude)
+        return (plan, amplitudes) if amplitudes is not None else (None, None)
 
     @staticmethod
     def _resolve_ambiguous(plan: IngestPlan, ask: Optional[ImportTemplateAsker]) -> Optional[IngestPlan]:
@@ -507,45 +582,16 @@ class PoolIngestUseCase:
             return None
         return resolve_file_amplitudes(plan.imported_files, answers)
 
-    def start(self, plan: IngestPlan, *, quiet: bool = False,
-              admit_unknown: bool = False, ask_for_setup: bool = False,
-              ask_source_amplitude: Optional[SourceAmplitudeAsker] = None,
-              on_folder: Optional[Callable[[FolderReport], None]] = None,
-              on_finished: Optional[Callable[[IngestOutcome], None]] = None) -> Optional[int]:
-        """
-        Reads `plan`'s folders one at a time, folding each into the pool as it
-        lands, and reports the run through `on_folder` / `on_finished`.
-
-        One folder is one step and `max_parallel=1`: folders are read one at a
-        time so the tree fills in progressively and several hundred-megabyte
-        reads are not competing for the same disk. A folder of large files
-        would then be a single jump from 0 to 100 percent, so the step is given
-        a `progress_fn` (`progress_keyword`) it calls as it re-parses each
-        stale file.
-
-        With `ask_source_amplitude` the question is asked first; a cancelled
-        question reports a declined outcome and returns None, with the run that
-        was going on (if any) left alone.
-        """
-        amplitudes = self._ask_source_amplitudes(plan, ask_source_amplitude)
-        if amplitudes is None:
-            self._finish({"on_finished": on_finished},
-                         IngestOutcome(state=JobState.CANCELLED, declined=True))
-            return None
-        return self._begin(plan, quiet=quiet, admit_unknown=admit_unknown,
-                           ask_for_setup=ask_for_setup, source_amplitudes=amplitudes,
-                           on_folder=on_folder, on_finished=on_finished)
-
-    def _begin(self, plan: IngestPlan, *, quiet: bool, admit_unknown: bool,
-               ask_for_setup: bool, source_amplitudes: Dict[str, str],
+    def _begin(self, request: IngestRequest, plan: IngestPlan, *, source_amplitudes: Dict[str, str],
                on_folder, on_finished) -> int:
         self._runs += 1
+        quiet = request.quiet
         state = {
             "run": self._runs,
+            "request": request,
             "plan": plan,
             "quiet": quiet,
-            "admit_unknown": admit_unknown,
-            "ask_for_setup": ask_for_setup,
+            "ask_for_setup": request.ask_for_setup,
             "source_amplitudes": source_amplitudes,
             "directories": list(plan.directories),
             "added_paths": [],
@@ -593,7 +639,7 @@ class PoolIngestUseCase:
         plan: IngestPlan = state["plan"]
         scanned = _without_misfits(scanned, plan.misfits)
 
-        only_files = plan.only_files.get(directory)
+        admission = plan.admissions[directory]
         extra = {}
         here = canonical_path(directory)
         answered = {path: amplitude for path, amplitude in state["source_amplitudes"].items()
@@ -604,12 +650,11 @@ class PoolIngestUseCase:
         if assigned:
             extra["import_templates"] = assigned
         result = self._pool.integrate_scanned_directory(
-            directory, scanned, only_files=only_files, admit_unknown=state["admit_unknown"], **extra
+            directory, scanned, admission=admission, **extra
         )
 
-        wanted = (only_files if only_files is not None
-                  else {canonical_path(run.file_path) for run in scanned.runs})
-        state["added_paths"].extend(wanted)
+        # What a Test setup question may be about: only files that did enter.
+        state["added_paths"].extend(admission.named(result.admitted))
 
         if result.entered:
             self._assign_test_setups(result.entered)
@@ -686,6 +731,7 @@ class PoolIngestUseCase:
             added_paths=added_paths,
             misfits=state["plan"].misfits,
             report_misfits=bool(state["plan"].misfits) and not quiet,
+            offer_to_library=state["request"].offer_to_library,
         ))
 
     # ---- reporting ------------------------------------------------------

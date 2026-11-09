@@ -4,6 +4,17 @@ What changed in Spectra, written for users. Rules for writing it: [docs/agents/r
 
 ## Unreleased
 
+## 0.3.0 - 2026-11-10
+
+- Import Wizard for importing any data from XLSX, TXT and CSV files.
+  ![Import Wizard](docs/site/img/whats_new_0_3_0_import_wizard.png)
+- Track Cursor shows the values of all curves at a given RPM.
+  ![Track Cursor](docs/site/img/whats_new_0_3_0_track_cursor.png)
+- Tacho tracking is more accurate, and a Hampel filter was added.
+- Spectrum averaging modes are named as in Simcenter Testlab.
+- Graph legends can be customised in Legend Settings.
+- Bug fixes.
+
 ## 0.2.3 - 2026-11-03
 
 - Import Wizard with portable template (no finished interface yet): you can build own portable template that reads any file.

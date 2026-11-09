@@ -18,6 +18,7 @@ No Qt, no window and no app_context: every message this produces is returned as
 data, and the thin wrapper in gui/workspace/workflow_run_controller.py owns when
 and how to show it.
 """
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -27,7 +28,9 @@ from core.workflow_graph import Workflow
 from io_modules.result_cache import result_params_from_block
 from orchestration.batch._batch_plan import BatchPlan
 from orchestration.batch._result_set_sink import ResultSetSink
-from orchestration.batch._source_chain import _BlockSavePlan, _required_channel_types, _run_source_chain
+from orchestration.batch._source_chain import (
+    _BlockSavePlan, _MeasurementOutcome, _required_channel_types, _run_source_chain,
+)
 from orchestration.jobs import JobRunner
 from orchestration.tacho_interpolation import build_tacho_interpolation_line
 from selection.tacho import find_tacho_interpolation
@@ -38,6 +41,8 @@ from signal_processing.workflow import spec_for
 #: racing it into the same result-set folders.
 BATCH_SLOT_KEY = "workflow_run"
 
+_log = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class BatchOutcome:
@@ -45,11 +50,14 @@ class BatchOutcome:
     How a run ended: the label it was started under, whether anything was
     written, the messages to log, and the job's terminal state -- `FAILED` when
     the run never reached the queue at all (no draft could be opened).
+    `written_ids` pairs each save block that committed a set with that set's
+    id, so a Batch run waiting to overwrite it knows which set it is (#967).
     """
     label: str
     written: bool
     messages: Tuple[str, ...]
     state: JobState
+    written_ids: Tuple[Tuple[str, str], ...] = ()
 
 
 # ---- running ----------------------------------------------------------------
@@ -106,20 +114,17 @@ def _open_save_plan(plan: BatchPlan, workflow: Workflow, session, *, compression
             overwrite_result_set_id=workflow_block.overwrite_result_set_id, what=workflow_block.sink_what,
         )
         save_plan[workflow_block.block_id] = _BlockSavePlan(
-            block_id=workflow_block.block_id, draft=draft,
-            source_ids=set(workflow_block.source_ids), save=workflow_block.save,
+            block_id=workflow_block.block_id, draft=draft, save=workflow_block.save,
         )
     return sinks, save_plan
 
 
 def supersede_running_batch(job_runner: JobRunner) -> None:
     """
-    Stop whatever batch is running, whether or not this one will replace it.
-
-    Pressing Run always ends the live batch, even when the new run turns out to
-    be refused -- that is what the runner did before the plan and the run were
-    two halves, and a refusal is not the moment to discover that the old batch
-    is still writing.
+    Stop whatever batch is running. Called when a new run is submitted, before
+    it opens a draft (§1.71), and when the user answers Interrupt (`BatchRuns`,
+    §1.266) -- never earlier: a run that is refused, or cancelled in one of its
+    questions, leaves the running batch alone (§1.264).
     """
     job_runner.cancel_slot(BATCH_SLOT_KEY)
 
@@ -145,16 +150,36 @@ def run_batch(plan: BatchPlan, workflow: Workflow, session, job_runner: JobRunne
 
     Only a `runnable` plan may be handed here -- a refused one has already said
     why, in its own messages.
+
+    Whatever raises on the way to `submit`, or in it, still ends the run once:
+    `FAILED`, its drafts thrown away, the error said through `on_message`
+    (§1.238, #912). Only an exception from `on_finished` itself reaches the
+    caller.
     """
     supersede_running_batch(job_runner)
+    report = _ReportOnce(on_finished)
 
     try:
         sinks, save_plan = _open_save_plan(plan, workflow, session, compression=compression)
     except (OSError, ValueError) as error:
         _say(on_message, f"ERROR: {plan.what} skipped -- {error}")
-        _finish(on_finished, plan, False, [], JobState.FAILED)
+        _finish(report, plan, False, [], JobState.FAILED)
         return
 
+    try:
+        _submit_run(plan, workflow, session, job_runner, sinks, save_plan, on_message, report)
+    except Exception as error:
+        if report.reported:  # The outcome went out; what raised is its listener.
+            raise
+        _log.exception("%s failed before it was submitted", plan.what)
+        _say(on_message, _unexpected_line(plan, error))
+        _discard_uncommitted(sinks.values())
+        _finish(report, plan, False, [], JobState.FAILED)
+
+
+def _submit_run(plan: BatchPlan, workflow: Workflow, session, job_runner: JobRunner,
+                sinks: Dict[str, ResultSetSink], save_plan: Dict[str, _BlockSavePlan],
+                on_message: Optional[Callable[[str], None]], report: "_ReportOnce") -> None:
     state = _RunState(sinks=sinks, entries=[step.entry for step in plan.steps],
                       errors=list(plan.errors), session=session,
                       project_path=session.path)
@@ -178,7 +203,7 @@ def run_batch(plan: BatchPlan, workflow: Workflow, session, job_runner: JobRunne
         step_sizes=[max(1, len(step.channel_labels)) for step in plan.steps],
         on_step=lambda payload, index: _on_source_done(state, payload, index),
         on_error=lambda message, index: _on_source_failed(state, message, index),
-        on_done=lambda record: _on_run_done(plan, state, record, on_finished),
+        on_done=lambda record: _on_run_done(plan, state, record, report),
     )
 
 
@@ -208,24 +233,43 @@ def _say(on_message: Optional[Callable[[str], None]], message: str) -> None:
 # ---- job callbacks (the thread that called submit) --------------------------
 
 
-def _on_source_done(state: _RunState, payload, index: int) -> None:
-    manifest_by_block, errors, block_errors, clipped_blocks, invalid_sample_blocks = payload
-    state.errors.extend(f"{message}" for message in errors)
-    for block_id, messages in block_errors.items():
+def _on_source_done(state: _RunState, payload: _MeasurementOutcome, index: int) -> None:
+    state.errors.extend(payload.errors)
+    for block_id, messages in payload.block_errors.items():
         state.block_errors.setdefault(block_id, []).extend(messages)
-    for block_id, entry in manifest_by_block.items():
+    for block_id, entry in payload.manifest_by_block.items():
         sink = state.sinks.get(block_id)
         if sink is not None:
-            sink.add(entry, index, f_stop_clipped=block_id in clipped_blocks,
-                     invalid_samples=block_id in invalid_sample_blocks)
+            sink.add(entry, index, f_stop_clipped=block_id in payload.clipped_blocks,
+                     invalid_samples=block_id in payload.invalid_sample_blocks)
 
 
 def _on_source_failed(state: _RunState, message: str, index: int) -> None:
     state.errors.append(f"{state.entries[index].relpath}: {message}")
 
 
-def _on_run_done(plan: BatchPlan, state: _RunState, record: JobRecord,
-                 on_finished: Optional[Callable[[BatchOutcome], None]]) -> None:
+def _on_run_done(plan: BatchPlan, state: _RunState, record: JobRecord, report: "_ReportOnce") -> None:
+    """
+    Settle the run and report it once. An exception nobody planned for --
+    anything `ResultSetSink.finish` does not catch itself -- still ends the run
+    `FAILED` with its uncommitted drafts thrown away: the job runner would only
+    file it in `record.errors`, and the series waiting for this outcome would
+    wait for ever (§1.238, #912).
+    """
+    try:
+        _settle_run(plan, state, record, report)
+    except Exception as error:
+        if report.reported:  # The outcome went out; what raised is its listener.
+            raise
+        _log.exception("%s failed while it was being finished", plan.what)
+        _discard_uncommitted(state.sinks.values())
+        written_ids = _written_ids(state.sinks)
+        _finish(report, plan, bool(written_ids), [_unexpected_line(plan, error)], JobState.FAILED,
+                written_ids)
+
+
+def _settle_run(plan: BatchPlan, state: _RunState, record: JobRecord,
+                on_finished: Callable[[BatchOutcome], None]) -> None:
     what = plan.what
     messages: List[str] = []
 
@@ -277,11 +321,44 @@ def _on_run_done(plan: BatchPlan, state: _RunState, record: JobRecord,
         sink_written, sink_messages = sink.finish("partial" if failed else "complete")
         messages.extend(sink_messages)
         written = sink_written or written
-    _finish(on_finished, plan, written, messages, record.state)
+    _finish(on_finished, plan, written, messages, record.state, _written_ids(state.sinks))
+
+
+def _written_ids(sinks: Dict[str, ResultSetSink]) -> Tuple[Tuple[str, str], ...]:
+    return tuple((block_id, sink.result_set_id) for block_id, sink in sinks.items()
+                 if sink.result_set_id is not None)
+
+
+def _unexpected_line(plan: BatchPlan, error: Exception) -> str:
+    return f"ERROR: {plan.what} failed unexpectedly -- {type(error).__name__}: {error}"
+
+
+def _discard_uncommitted(sinks) -> None:
+    """Throw away every draft not yet committed; a committed set stays in the project."""
+    for sink in sinks:
+        if sink.result_set_id is not None:
+            continue
+        try:
+            sink.abort()
+        except Exception:
+            _log.exception("could not discard a result-set draft")
+
+
+class _ReportOnce:
+    """The run's `on_finished`, remembering whether its one outcome went out."""
+
+    def __init__(self, on_finished: Optional[Callable[[BatchOutcome], None]]):
+        self._on_finished = on_finished
+        self.reported = False
+
+    def __call__(self, outcome: BatchOutcome) -> None:
+        self.reported = True
+        if self._on_finished is not None:
+            self._on_finished(outcome)
 
 
 def _finish(on_finished, plan: BatchPlan, written: bool, messages: List[str],
-            state: JobState) -> None:
+            state: JobState, written_ids: Tuple[Tuple[str, str], ...] = ()) -> None:
     if on_finished is not None:
         on_finished(BatchOutcome(label=plan.label, written=written,
-                                 messages=tuple(messages), state=state))
+                                 messages=tuple(messages), state=state, written_ids=written_ids))

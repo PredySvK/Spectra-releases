@@ -12,7 +12,7 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Tuple
 
 from core.asset_paths import user_data_dir
 from core.import_template import ImportTemplate
@@ -118,3 +118,21 @@ def read_library_templates(folder: Optional[Path] = None) -> List[ImportTemplate
         except (OSError, ValueError, KeyError, TypeError) as error:
             _log.warning("Import template file '%s' cannot be read: %s", path, error)
     return sorted(templates, key=lambda template: template.name.lower())
+
+
+def read_library_problems(folder: Optional[Path] = None) -> List[Tuple[str, str]]:
+    """
+    The library's files this build cannot use, each as (file name, why) -- a
+    template of an older format must be created again in the wizard. They are
+    not in `read_library_templates`.
+    """
+    folder = Path(folder or resolve_library_folder())
+    if not folder.is_dir():
+        return []
+    problems = []
+    for path in sorted(folder.glob("*.json")):
+        try:
+            read_template_file(path)
+        except ValueError as error:
+            problems.append((path.name, str(error)))
+    return problems

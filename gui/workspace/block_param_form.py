@@ -2,203 +2,103 @@
 # FILE: gui/workspace/block_param_form.py
 # =====================================================================
 """
-A form that renders one block's parameters straight from its
-`core/dsp_configs.py` dataclass.
+Draws one block's Properties form from a `view_models.workflow.BlockForm`.
 
-Lives in gui/ because it is a Qt widget. It is deliberately generic -- it walks
-`dataclasses.fields(config_cls)` and picks a widget per field type -- rather than
-a hand-tuned form per config class: there are three config classes today and
-phase 7D adds five more blocks, so one generator that scales beats three copies
-that drift from the ribbon.
-
-Read-only mode is what phase 7C's viewer uses (a saved node's params are frozen,
-§1.6 decision 1). The same widget, editable, is what the later "+ Add step" /
-per-node settings step and the phase-8 canvas gear dialog will reuse -- hence
-`values()` exists now even though nothing calls it yet.
+Which rows the form has, what each offers and how its entries become params are
+decided in `view_models/workflow` without Qt (#898); this widget only draws the
+rows and hands back what is in them (`entries`).
 
 All internal documentation strings and variable labels are standardly written
 in English.
 """
-import dataclasses
-import typing
-from typing import Any, Dict, Iterable, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QLineEdit, QSpinBox, QWidget,
 )
 
-from view_models.analysis_kinds import resolve_dsp_choices_of_config
+from view_models.workflow import (
+    WIDGET_CHECK, WIDGET_CHOICE, WIDGET_DECIMAL, WIDGET_INTEGER, BlockForm, BlockFormField,
+)
 
 # Wide enough for any FFT size / step the DSP configs carry, without
-# pretending to know a real range -- that belongs to the ribbon widgets, which
-# stay the authoritative editor. This form is a mirror, not a validator.
+# pretending to know a real range -- the params rule refuses what is out of
+# place. This form is a mirror, not a validator.
 _INT_LIMIT = 10_000_000
 _FLOAT_LIMIT = 1.0e9
 
 
-def _pretty(name: str) -> str:
-    return name.replace("_", " ").title()
-
-
-def _field_default(f: dataclasses.Field) -> Any:
-    if f.default is not dataclasses.MISSING:
-        return f.default
-    if f.default_factory is not dataclasses.MISSING:  # type: ignore[misc]
-        return f.default_factory()  # type: ignore[misc]
-    return None
-
-
-def _field_type(f: dataclasses.Field) -> Any:
-    """The field's declared type. `core/dsp_configs.py` has no
-    `from __future__ import annotations`, so this is a real type object, not a
-    string -- but guard anyway so a future switch does not crash the form."""
-    t = f.type
-    if isinstance(t, str):
-        return {"int": int, "float": float, "bool": bool, "str": str, "list": list}.get(t, str)
-    return t
-
-
-def _optional_inner(ftype: Any) -> Any:
-    """`X` for an `Optional[X]` field, otherwise None."""
-    if typing.get_origin(ftype) is typing.Union:
-        args = typing.get_args(ftype)
-        inner = [arg for arg in args if arg is not type(None)]
-        if len(args) == 2 and len(inner) == 1:
-            return inner[0]
-    return None
-
-
-def _choices_for(config_cls: Any, name: str) -> tuple:
-    """The register's (label, value) list for a field with a closed set of values,
-    the same the analysis tab's ribbon offers (#759); empty for a free field."""
-    register = resolve_dsp_choices_of_config(config_cls)
-    if register is None:
-        return ()
-    try:
-        return register.parameter(name).choices
-    except ValueError:
-        return ()
-
-
-def _make_combo(choices: tuple, value: Any) -> QComboBox:
-    w = QComboBox()
-    for label, data in choices:
-        w.addItem(label, data)
-    idx = w.findData(value)
-    if idx < 0:  # a value saved outside the list stays visible instead of being replaced
-        w.addItem(str(value), value)
-        idx = w.count() - 1
-    w.setCurrentIndex(idx)
-    return w
-
-
-def _make_widget(f: dataclasses.Field, value: Any, choices: tuple = ()) -> QWidget:
-    ftype = _field_type(f)
-
-    if choices:
-        return _make_combo(choices, value)
-    if ftype is bool:
-        w = QCheckBox()
-        w.setChecked(bool(value))
+def _make_widget(row: BlockFormField) -> QWidget:
+    if row.widget == WIDGET_CHOICE:
+        w = QComboBox()
+        for label, data in row.choices:
+            w.addItem(label, data)
+        w.setCurrentIndex(max(w.findData(row.value), 0))
         return w
-    if ftype is int:
+    if row.widget == WIDGET_CHECK:
+        w = QCheckBox()
+        w.setChecked(bool(row.value))
+        return w
+    if row.widget == WIDGET_INTEGER:
         w = QSpinBox()
         w.setRange(-_INT_LIMIT, _INT_LIMIT)
         try:
-            w.setValue(int(value))
+            w.setValue(int(row.value))
         except (TypeError, ValueError):
             pass
         return w
-    if ftype is float:
+    if row.widget == WIDGET_DECIMAL:
         w = QDoubleSpinBox()
         w.setDecimals(4)
         w.setRange(-_FLOAT_LIMIT, _FLOAT_LIMIT)
         try:
-            w.setValue(float(value))
+            w.setValue(float(row.value))
         except (TypeError, ValueError):
             pass
         return w
-    if ftype is list:
-        w = QLineEdit(", ".join(str(item) for item in (value or [])))
-        return w
-    return QLineEdit("" if value is None else str(value))
+    return QLineEdit(str(row.value))
 
 
-def _read_widget(f: dataclasses.Field, widget: QWidget) -> Any:
-    ftype = _field_type(f)
+def _entry(widget: QWidget) -> Any:
     if isinstance(widget, QComboBox):
         return widget.currentData()
     if isinstance(widget, QCheckBox):
         return widget.isChecked()
-    if isinstance(widget, QSpinBox):
+    if isinstance(widget, (QSpinBox, QDoubleSpinBox)):
         return widget.value()
-    if isinstance(widget, QDoubleSpinBox):
-        return widget.value()
-    text = widget.text().strip() if isinstance(widget, QLineEdit) else ""
-    if ftype is list:
-        items = [part.strip() for part in text.split(",") if part.strip()]
-        out = []
-        for item in items:
-            try:
-                out.append(float(item))
-            except ValueError:
-                out.append(item)
-        return out
-    inner = _optional_inner(ftype)
-    if inner is not None:
-        # Empty means None, not "": Overall Level's f_stop=None is Full
-        # Bandwidth, and "" would reach the DSP as a band edge.
-        if not text:
-            return None
-        try:
-            return inner(text)
-        except (TypeError, ValueError):
-            # Kept as typed: Apply refuses it (`resolve_block_params_refusal`).
-            return text
-    return text
+    return widget.text()
 
 
 class BlockParamForm(QWidget):
-    """
-    `set_config(config_cls, params, read_only=...)` builds one row per dataclass
-    field; `values()` reads them back into a params dict. Missing keys in
-    `params` fall back to the dataclass default -- the same value the ribbon
-    would show. Fields named in `settings_params` get no row and are not in
-    `values()`: the Settings window owns them (`BlockSpec.settings_params`,
-    ADR §1.211).
-    """
+    """`show_form(form, read_only=...)` draws one row per `BlockForm` field;
+    `entries()` hands back what the rows hold, for
+    `resolve_block_form_params`."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._form = QFormLayout(self)
         self._form.setContentsMargins(0, 0, 0, 0)
-        self._widgets: Dict[str, Tuple[dataclasses.Field, QWidget]] = {}
-        self._config_cls: Any = None
+        self._widgets: Dict[str, Tuple[BlockFormField, QWidget]] = {}
+        self._block_form: Optional[BlockForm] = None
 
     def clear(self) -> None:
         while self._form.rowCount():
             self._form.removeRow(0)
         self._widgets = {}
-        self._config_cls = None
+        self._block_form = None
 
-    def set_config(self, config_cls: Any, params: Any, *, read_only: bool = False,
-                   settings_params: Iterable[str] = ()) -> None:
+    def show_form(self, form: BlockForm, *, read_only: bool = False) -> None:
         self.clear()
-        self._config_cls = config_cls
-        params = dict(params or {})
-        settings_params = set(settings_params)
-        for f in dataclasses.fields(config_cls):
-            if f.name in settings_params:
-                continue
-            value = params.get(f.name, _field_default(f))
-            widget = _make_widget(f, value, _choices_for(config_cls, f.name))
+        self._block_form = form
+        for row in form.fields:
+            widget = _make_widget(row)
             widget.setEnabled(not read_only)
-            self._form.addRow(_pretty(f.name), widget)
-            self._widgets[f.name] = (f, widget)
+            self._form.addRow(row.label, widget)
+            self._widgets[row.name] = (row, widget)
 
-    def values(self) -> Dict[str, Any]:
-        return {name: _read_widget(f, widget) for name, (f, widget) in self._widgets.items()}
+    def entries(self) -> Dict[str, Any]:
+        return {name: _entry(widget) for name, (_, widget) in self._widgets.items()}
 
     @property
-    def config_cls(self) -> Any:
-        return self._config_cls
+    def block_form(self) -> Optional[BlockForm]:
+        return self._block_form

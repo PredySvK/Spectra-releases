@@ -18,7 +18,6 @@ from gui.ribbon.ribbon_widgets import RibbonGroup, build_tab_layout, make_refres
 from gui.ribbon.save_section import ComputeResultSetButton
 from view_models.analysis_kinds import ANALYSIS_OVERALL_LEVEL
 
-_DEFAULTS = OverallLevelConfig()
 _BAND_SPIN_WIDTH = 64  # whole Hz, no arrows: fits "200000" with room
 
 
@@ -29,9 +28,7 @@ class TabAccOverallLevel(RibbonDspTab):
     _analysis_kind = ANALYSIS_OVERALL_LEVEL
 
     def _on_display_setting_changed(self, _val: str = ""):
-        if hasattr(self, "combo_amplitude_mode"):
-            self._set_val("oal_amplitude", self.combo_amplitude_mode.currentText())
-        self.sig_display_settings_changed.emit()
+        self._emit_display_settings_changed()
 
     def init_ui(self):
         layout = QHBoxLayout()
@@ -49,11 +46,8 @@ class TabAccOverallLevel(RibbonDspTab):
         layout.addWidget(vertical_separator())
 
         # -- Spectrum --
-        self.combo_fft_size = self._build_choice_combo("fft_size", "oal_fft_size")
-        self.combo_fft_size.currentTextChanged.connect(lambda v: self._set_val("oal_fft_size", v))
-
-        self.combo_window_type = self._build_choice_combo("window_type", "oal_window")
-        self.combo_window_type.currentTextChanged.connect(lambda v: self._set_val("oal_window", v))
+        self.combo_fft_size = self._build_field_combo("fft_size")
+        self.combo_window_type = self._build_field_combo("window_type")
 
         spectrum_group = RibbonGroup("Spectrum", tooltip="Block size and window of the underlying FFT")
         spectrum_group.add_fields([
@@ -67,7 +61,7 @@ class TabAccOverallLevel(RibbonDspTab):
         layout.addWidget(vertical_separator())
 
         # -- View --
-        self.combo_amplitude_mode = self._build_choice_combo("amplitude_mode", "oal_amplitude")
+        self.combo_amplitude_mode = self._build_field_combo("amplitude_mode")
         self.combo_amplitude_mode.currentTextChanged.connect(self._on_display_setting_changed)
 
         view_group = RibbonGroup("View", tooltip="Display amplitude mode")
@@ -82,22 +76,20 @@ class TabAccOverallLevel(RibbonDspTab):
         self.spin_f_min = QDoubleSpinBox()
         self.spin_f_min.setDecimals(0)
         self.spin_f_min.setRange(0.0, 100000.0)
-        self.spin_f_min.setValue(self._get_val("oal_f_min", _DEFAULTS.f_start, float))
+        # F min is saved by its handler, after F max's minimum follows it.
+        self._bind_field("f_start", self.spin_f_min, save_on_change=False)
 
         self.spin_f_max = QDoubleSpinBox()
         self.spin_f_max.setDecimals(0)
         self.spin_f_max.setRange(1.0, 200000.0)
-        self.spin_f_max.setValue(self._get_val("oal_f_max", 1000.0, float))
-        self.spin_f_max.setMinimum(self.spin_f_min.value() + 1.0)
+        self._bind_field("f_stop", self.spin_f_max)
 
         self.cb_full_bandwidth = QCheckBox("Full Bandwidth")
-        saved_full_bandwidth = str(self._get_val("oal_full_bandwidth", "true")).lower() == "true"
-        self.cb_full_bandwidth.setChecked(saved_full_bandwidth)
-        self.spin_f_max.setEnabled(not saved_full_bandwidth)
+        self._bind_field("full_bandwidth", self.cb_full_bandwidth)
+        self._sync_dependent_widgets()
 
         self.spin_f_min.valueChanged.connect(self._on_f_min_changed)
-        self.cb_full_bandwidth.toggled.connect(self._on_full_bandwidth_toggled)
-        self.spin_f_max.valueChanged.connect(lambda v: self._set_val("oal_f_max", v))
+        self.cb_full_bandwidth.toggled.connect(self._sync_dependent_widgets)
 
         band_group = RibbonGroup("Band", tooltip="Frequency band the Overall Level energy is integrated over")
         # Full Bandwidth on top: it is the switch that greys F max out.
@@ -121,9 +113,7 @@ class TabAccOverallLevel(RibbonDspTab):
 
         # -- Options --
         self.cb_remove_dc = QCheckBox("Remove DC Offset")
-        saved_dc = str(self._get_val("oal_remove_dc", _DEFAULTS.remove_dc)).lower() == "true"
-        self.cb_remove_dc.setChecked(saved_dc)
-        self.cb_remove_dc.toggled.connect(lambda v: self._set_val("oal_remove_dc", v))
+        self._bind_field("remove_dc", self.cb_remove_dc)
 
         options_group = RibbonGroup("Options")
         options_group.add_column(self.cb_remove_dc)
@@ -134,13 +124,19 @@ class TabAccOverallLevel(RibbonDspTab):
 
         self._push_dsp_config()
 
+    def _sync_dependent_widgets(self, _checked: bool = False):
+        self.spin_f_max.setMinimum(self.spin_f_min.value() + 1.0)
+        self.spin_f_max.setEnabled(not self.cb_full_bandwidth.isChecked())
+
     def _on_f_min_changed(self, value: float):
         self.spin_f_max.setMinimum(value + 1.0)
-        self._set_val("oal_f_min", value)
+        self._save_field("f_start", value)
 
-    def _on_full_bandwidth_toggled(self, checked: bool):
-        self.spin_f_max.setEnabled(not checked)
-        self._set_val("oal_full_bandwidth", checked)
+    def reset_to_defaults(self) -> None:
+        # Lowered first: F max's minimum still follows the old F min, and would
+        # clamp the default F max (1000 Hz) when the old F min was above it.
+        self.spin_f_max.setMinimum(1.0)
+        super().reset_to_defaults()
 
     def get_dsp_config(self) -> OverallLevelConfig:
         """Translates UI selections into the DTO for the DSP layer."""

@@ -16,11 +16,12 @@ Every way a batch run gets started from the window (ARCHITECTURE_DECISIONS
   * the Workflow tab's Run button -- a hand-authored graph, run over the
     selection its input node names.
 
-They are one handler because they end in the same runner and share the same
-two preliminaries -- `ensure_pool_registered` and `resolve_overwrites`. While
-they were two modules the shared half lived in the workflow one and the batch
-one reached back into it, which is the lazy import `run_batch_workflow` needed
-to dodge the cycle; joined up, there is nothing left to dodge.
+Both only gather their input and then go through one sequence:
+coarse refusal with no disk -> save the project -> register folders off-thread
+-> the complete plan of every run of the series -> one Overwrite question ->
+the Wait / Interrupt / Cancel question, only while a Batch run computes or
+waits (§1.266) -> submit or wait. Nothing before that stops a running Batch
+run: a refused run and Cancel on any of the questions all leave it be.
 
 One action core for all four tabs. Planning (validation, channel scope,
 SaveSpec, selection build, label derivation) is done as pure data via
@@ -38,9 +39,9 @@ OrderBatchSaveController is gone -- order tracking was the last path still on
 it, and the parity it had to keep is pinned by
 tests/test_order_tracking_runner_parity.py.
 
-Three things stay plain functions rather than methods, because they take one
-or two things and never the frame (spec #148): `ask_overwrite_or_save_new`,
-`resolve_overwrites` and `run_workflow`, the headless / test entry point.
+`ask_overwrite_or_save_new` stays a plain function rather than a method,
+because it takes one or two things and never the frame (spec #148). A run
+without a window goes through `orchestration/batch` directly.
 
 Lives in gui/: it drives Qt dialogs and ProjectSession, so it cannot sit any
 lower. Built once by the composition root (`gui/main_window.py`) with its
@@ -53,16 +54,16 @@ in English.
 from dataclasses import replace
 from typing import Callable, Optional
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QMessageBox
 
-from core.measurement_selection import MeasurementSelection
-from core.workflow_graph import Workflow
 from orchestration.batch import (
     CALCULATE_AND_SAVE_WHAT,
     CalculateAndSaveRequest,
     DataPoolInput,
-    default_result_set_label,
-    find_overwrite_candidates_by_workflow,
+    WorkflowChainBatch,
+    apply_overwrites,
+    resolve_overwrite_candidates,
     plan_calculate_and_save,
     plan_workflow_chains,
     resolve_calculate_and_save_refusal,
@@ -70,13 +71,12 @@ from orchestration.batch import (
     resolve_selection_scope,
 )
 from orchestration.data_pool import REGISTRATION_SLOT_KEY, run_pool_registration
-from signal_processing.workflow import sole_terminal_block
 from view_models.batch import DATA_POOL_TYPE_OPTIONS
 
 WHAT = CALCULATE_AND_SAVE_WHAT
 
 
-# ---- the per-node duplicate prompt, shared by both entry points -------
+# ---- the duplicate prompt, shared by both entry points ----------------
 
 def ask_overwrite_or_save_new(parent, existing_labels) -> QMessageBox.StandardButton:
     """
@@ -85,8 +85,8 @@ def ask_overwrite_or_save_new(parent, existing_labels) -> QMessageBox.StandardBu
     folders.
 
     One label -> the wording the ribbon fast path has always shown (a test pins
-    it, because that path still runs through here). Several -> a bulleted list,
-    for a hand-authored graph with more than one save node.
+    it). Several -> a bulleted list, for a graph with more than one save node
+    or a series of runs.
 
     Yes = overwrite the existing set(s) in place. No = save as new,
     separately-labelled set(s). Cancel = do nothing.
@@ -118,63 +118,73 @@ def ask_overwrite_or_save_new(parent, existing_labels) -> QMessageBox.StandardBu
     return box.exec()
 
 
-def resolve_overwrites(parent, session, workflow: Workflow | tuple[Workflow, ...]) -> Optional[dict]:
+def ask_wait_or_interrupt(parent) -> QMessageBox.StandardButton:
     """
-    For every node marked to save, decide whether it replaces an existing result
-    set in place. Returns `{block_id: existing result set id}` for the nodes to
-    overwrite (an empty dict when nothing matches, or the user chose to save new
-    copies), or None when the user cancelled.
-
-    One prompt covers all the matches -- a five-save graph should not spawn five
-    dialogs in a row.
+    Asks what a new Batch run does about the ones computing or waiting (ADR
+    §1.266). Yes = Wait: start after all of them. No = Interrupt: stop the
+    running one, drop the waiting ones and start this one. Cancel = do nothing.
     """
-    workflows = (workflow,) if isinstance(workflow, Workflow) else workflow
-    by_workflow = resolve_overwrites_by_workflow(parent, session, workflows)
-    if by_workflow is None:
-        return None
-    merged: dict = {}
-    for overwrites in by_workflow:
-        merged.update(overwrites)
-    return merged
+    return _ask_wait(
+        parent,
+        "Wait: start this one after everything that runs or waits.\n"
+        "Interrupt: stop the running one, drop the waiting ones and start only this one.",
+        "Interrupt and Start New",
+    )
 
 
-def resolve_overwrites_by_workflow(parent, session,
-                                   workflows: tuple[Workflow, ...]) -> Optional[tuple[dict, ...]]:
+def ask_wait_or_interrupt_before(parent, action_label: str) -> QMessageBox.StandardButton:
     """
-    `resolve_overwrites` with one `{block_id: existing result set id}` per
-    workflow, in order -- for graphs that share block ids, as Compute Result
-    Set's one graph per Selection do. Still one prompt for all of them.
+    Asks what New, Open, Save As or closing the window does about the Batch
+    runs computing or waiting (#968). Yes = Wait: do it once they have all
+    finished. No = Interrupt: stop them and do it now. Cancel = do nothing,
+    they go on. `action_label` is what waits, as an imperative ("close Spectra").
     """
-    found = find_overwrite_candidates_by_workflow(session, workflows)
-    labels = [ref.label for duplicates in found for ref in duplicates.values()]
-    if not labels:
-        return tuple({} for _ in found)
-
-    choice = ask_overwrite_or_save_new(parent, labels)
-    if choice == QMessageBox.StandardButton.Cancel:
-        return None
-    if choice == QMessageBox.StandardButton.Yes:
-        return tuple({block_id: ref.id for block_id, ref in duplicates.items()} for duplicates in found)
-    return tuple({} for _ in found)
+    return _ask_wait(
+        parent,
+        f"Wait: {action_label} once everything that runs or waits has finished.\n"
+        f"Interrupt: stop the running one (what it computes is not saved), drop the "
+        f"waiting ones and {action_label} now.",
+        "Interrupt",
+    )
 
 
-# ---- the headless / test entry point ----------------------------------
+def _ask_wait(parent, choices: str, interrupt_text: str) -> QMessageBox.StandardButton:
+    """The one Wait / Interrupt / Cancel box; Wait is the default."""
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Icon.Question)
+    box.setWindowTitle("A computation is running")
+    box.setText(f"A computation is running or waiting.\n\n{choices}")
+    box.setStandardButtons(
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel
+    )
+    box.button(QMessageBox.StandardButton.Yes).setText("Wait")
+    box.button(QMessageBox.StandardButton.No).setText(interrupt_text)
+    box.setDefaultButton(QMessageBox.StandardButton.Yes)
+    return box.exec()
 
-def run_workflow(workflow_runner, workflow: Workflow, selection: MeasurementSelection,
-                 label: str = None) -> None:
+
+def confirm_leaving_batch_runs(batch_runs, parent, action_label: str, retry: Callable[[], None]) -> bool:
     """
-    Run a graph over a selection with no window involved -- it takes the runner
-    itself, not a frame that happens to hold one.
+    The Wait / Interrupt / Cancel question New, Open, Save As and closing the
+    window ask before their own questions, only while a Batch run computes or
+    waits (#968). Work the user did not start (scans, caches, quiet jobs) is
+    never asked about.
+
+    True: go on now (nothing computes, or Interrupt stopped it all). False:
+    stop here -- Cancel, or Wait, which calls `retry` once the line has
+    finished. `retry` runs from a fresh event-loop turn, not from inside the
+    last run's finish.
     """
-    if not label and workflow.blocks:
-        try:
-            label = default_result_set_label(workflow, selection)
-        except ValueError:
-            # A branching / multi-terminal graph has no single terminal to name
-            # the run after -- the per-node sinks (7B) derive their own labels.
-            label = None
-    label = label or workflow.name or selection.name or "workflow"
-    workflow_runner.start(workflow, selection, label)
+    if batch_runs is None or not batch_runs.busy:
+        return True
+    answer = ask_wait_or_interrupt_before(parent, action_label)
+    if answer == QMessageBox.StandardButton.Yes:
+        batch_runs.run_when_idle(action_label, lambda: QTimer.singleShot(0, retry))
+        return False
+    if answer == QMessageBox.StandardButton.No:
+        batch_runs.interrupt()
+        return True
+    return False
 
 
 class BatchRunHandler:
@@ -206,56 +216,54 @@ class BatchRunHandler:
 
         self.calculate_and_save(
             save_section=tab.save_section,
-            block_type="order_tracking", config=config,
-            start=self._runner_start(section=tab.save_section),
-            request=request,
+            block_type="order_tracking", config=config, request=request,
         )
 
     def calculate_and_save_spectrum_results(self, request: CalculateAndSaveRequest) -> None:
         tab = self.ribbon.tab_acc_spectrum
         self.calculate_and_save(
             save_section=tab.save_section,
-            block_type="spectrum", config=tab.get_dsp_config(),
-            start=self._runner_start(section=tab.save_section),
-            request=request,
+            block_type="spectrum", config=tab.get_dsp_config(), request=request,
         )
 
     def calculate_and_save_spectrogram_results(self, request: CalculateAndSaveRequest) -> None:
         tab = self.ribbon.tab_acc_spectrogram
         self.calculate_and_save(
             save_section=tab.save_section,
-            block_type="spectrogram", config=tab.get_dsp_config(),
-            start=self._runner_start(section=tab.save_section),
-            request=request,
+            block_type="spectrogram", config=tab.get_dsp_config(), request=request,
         )
 
     def calculate_and_save_overall_level_results(self, request: CalculateAndSaveRequest) -> None:
         tab = self.ribbon.tab_acc_overall_level
         self.calculate_and_save(
             save_section=tab.save_section,
-            block_type="overall_level", config=tab.get_dsp_config(),
-            start=self._runner_start(section=tab.save_section),
-            request=request,
+            block_type="overall_level", config=tab.get_dsp_config(), request=request,
         )
 
-    def _track_status(self, section, labels: tuple[str, ...]) -> None:
+    def _track_status(self, section, labels: tuple[str, ...], *,
+                      waiting: bool = False) -> tuple[Callable[[], None], Callable[[str, bool], None]]:
         """
-        Drive one ribbon button's status line for the runs about to be submitted.
+        Drive one ribbon button's status line for a Batch run about to be
+        submitted or put to wait: "Waiting: '<label>'..." while it waits,
+        "Computing '<label>'..." from `started` on, and the end once `finished`
+        has heard every run. Returns `(started, finished)` for the bridge.
 
-        A one-shot connection: `run_finished` is a single shared callback list
-        on the one bridge, so without disconnecting, a run started from
-        another tab would later overwrite this tab's line. Armed before
-        `bridge.start_runs()` because an early refusal (bad graph, nothing
-        resolved) emits `run_finished` synchronously from inside it. With
-        several result sets the line names the next one still computing and
-        clears once the last has finished.
+        `finished` hears only this series' own runs: the runs
+        ahead of a waiting one, or an interrupted one ending late, may carry
+        the same label, and must not end this line. A dropped waiting series
+        is heard too, so its line does not stay on "Waiting". With several
+        result sets the line names the next one still computing and clears
+        once the last has finished.
         """
-        bridge = self.workflow_run_bridge
         pending = list(labels)
         failed = []
-        section.set_status(f"Computing '{pending[0]}'...")
+        if waiting:
+            section.set_status(f"Waiting: '{pending[0]}'...")
 
-        def _finished(done_label: str, ok: bool) -> None:
+        def started() -> None:
+            section.set_status(f"Computing '{pending[0]}'...")
+
+        def finished(done_label: str, ok: bool) -> None:
             if done_label not in pending:
                 return
             pending.remove(done_label)
@@ -263,53 +271,70 @@ class BatchRunHandler:
                 failed.append(done_label)
             if pending:
                 section.set_status(f"Computing '{pending[0]}'...")
-                return
-            bridge.run_finished.disconnect(_finished)
-            if not failed:
+            elif not failed:
                 section.set_status("")
             elif len(failed) == 1:
                 section.set_status(f"'{failed[0]}': nothing saved -- see System Log.")
             else:
                 section.set_status(f"{len(failed)} result sets: nothing saved -- see System Log.")
 
-        bridge.run_finished.connect(_finished)
+        return started, finished
 
-    def _runner_start(self, what: str = WHAT, section=None) -> Callable:
+    def _start_planned(self, chains: tuple[WorkflowChainBatch, ...], *, cancelled: str,
+                       section=None) -> None:
+        """
+        The common end of both entry points, once every run of the series has
+        its complete plan: one Overwrite question over all the runs' duplicates
+        (none for a refused run) -- saved ones, and ones a running or waiting
+        Batch run will write, marked "(computing)" / "(waiting)" (#967) --
+        then, only while a Batch run computes or waits and this one has
+        something to run, Wait / Interrupt / Cancel, then the submit or the wait. Cancel logs `cancelled` (or that the
+        running ones were left alone) and changes nothing (§1.264, §1.266).
+        """
+        context = self.app_context
         bridge = self.workflow_run_bridge
+        candidates = resolve_overwrite_candidates(context.project_session, chains,
+                                                  upcoming=bridge.upcoming_result_sets)
+        labels = [candidate.prompt_label for found in candidates for candidate in found.values()]
+        if labels:
+            choice = ask_overwrite_or_save_new(self.parent_widget, labels)
+            if choice == QMessageBox.StandardButton.Cancel:
+                context.log(cancelled)
+                return
+            if choice == QMessageBox.StandardButton.Yes:
+                chains = apply_overwrites(chains, candidates)
 
-        def start(runs):
-            """`runs`: one (workflow, selection, label, overwrite_result_set_id) per result set."""
-            # The fast path builds a single-save two-node graph, so its one
-            # terminal is the one save node the duplicate dialog could have
-            # matched.
-            submitted = tuple(
-                (workflow, selection, label,
-                 {sole_terminal_block(workflow).block_id: overwrite_result_set_id}
-                 if overwrite_result_set_id else None)
-                for workflow, selection, label, overwrite_result_set_id in runs
-            )
-            if section is not None and hasattr(section, "set_status"):
-                self._track_status(section, tuple(label for _, _, label, _ in submitted))
-            bridge.start_runs(submitted, what=what)
-        return start
+        wait = False
+        if bridge.busy and any(chain.batch.runnable for chain in chains):
+            choice = ask_wait_or_interrupt(self.parent_widget)
+            if choice == QMessageBox.StandardButton.Cancel:
+                context.log("SYSTEM: New Batch run cancelled -- the running one goes on.")
+                return
+            wait = choice == QMessageBox.StandardButton.Yes
+
+        started = finished = None
+        if section is not None and hasattr(section, "set_status"):
+            started, finished = self._track_status(
+                section, tuple(chain.batch.label for chain in chains), waiting=wait)
+        bridge.start_chains(chains, wait=wait, on_started=started, on_finished=finished)
 
     # ---- what all four "Calculate & Save Data" tabs do -----------------
 
     def calculate_and_save(self, *, save_section, block_type, config,
-                           start: Callable, request: CalculateAndSaveRequest) -> None:
+                           request: CalculateAndSaveRequest) -> None:
         context = self.app_context
         session = context.project_session
 
         loaded_runs = list(context.pool.loaded_runs)
 
-        def refuse(messages):
+        def log_lines(messages):
             for message in messages:
                 context.log(message)
 
         # Refuse what needs no source lookup before asking to save the project.
         refusal = resolve_calculate_and_save_refusal(loaded_runs)
         if refusal:
-            refuse(refusal)
+            log_lines(refusal)
             return
 
         def registered(sources_by_path):
@@ -327,24 +352,16 @@ class BatchRunHandler:
 
             for plan in plans:
                 if not plan.runnable:
-                    refuse(plan.messages)
-            runnable = tuple(plan for plan in plans if plan.runnable)
-            if not runnable:
+                    log_lines(plan.messages)
+            chains = self.workflow_run_bridge.build_result_set_batches(plans)
+            if not chains:
                 return
+            for chain in chains:
+                log_lines(chain.batch.messages)
 
-            overwrites = resolve_overwrites_by_workflow(
-                self.parent_widget, session, tuple(plan.workflow for plan in runnable))
-            if overwrites is None:
-                context.log(
-                    f"SYSTEM: {WHAT} cancelled -- a result set with these settings already exists."
-                )
-                return
-
-            start(tuple(
-                (plan.workflow, plan.selection, plan.label,
-                 found.get(sole_terminal_block(plan.workflow).block_id))
-                for plan, found in zip(runnable, overwrites)
-            ))
+            self._start_planned(
+                chains, section=save_section,
+                cancelled=f"SYSTEM: {WHAT} cancelled -- a result set with these settings already exists.")
 
         self.ensure_pool_registered(WHAT, registered)
 
@@ -489,17 +506,7 @@ class BatchRunHandler:
             if refused:
                 QMessageBox.warning(parent, "Skipped chains", "\n\n".join(
                     "\n".join(chain.batch.messages) for chain in refused))
-            runnable = tuple(chain for chain in batches if chain.batch.runnable)
-            if not runnable:
-                return
-            overwrites = resolve_overwrites(parent, session, tuple(chain.workflow for chain in runnable))
-            if overwrites is None:
-                context.log(
-                    "SYSTEM: Run Workflow cancelled -- a matching result set already exists."
-                )
-                return
+            self._start_planned(
+                batches, cancelled="SYSTEM: Run Workflow cancelled -- a matching result set already exists.")
 
-            self.workflow_run_bridge.start_chains(runnable, overwrite_by_block=overwrites or None)
-
-        self.workflow_run_bridge.supersede()
         self.ensure_pool_registered("Run Workflow", registered)

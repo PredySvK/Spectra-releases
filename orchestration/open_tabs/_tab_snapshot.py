@@ -6,6 +6,7 @@ import dataclasses
 from typing import Dict, List, Optional
 
 from core.evaluation import EvaluationConfig
+from core.legend_config import LegendConfig
 from session.data_pool import DeadLink
 from session.open_tabs import TabSpec, TraceSpec
 
@@ -23,6 +24,7 @@ def build_tab_spec(
     filter_selections: Dict[str, dict],
     evaluation_config: EvaluationConfig,
     custom_label: Optional[str] = None,
+    legend_config: Optional[LegendConfig] = None,
 ) -> Optional[TabSpec]:
     """The ``TabSpec`` a dock is saved as, or None when there is nothing worth saving.
 
@@ -58,4 +60,5 @@ def build_tab_spec(
         loaded_result_set_ids=sorted(result_set_ids),
         evaluation_config=evaluation_config,
         custom_label=custom_label,
+        legend_config=legend_config,
     )

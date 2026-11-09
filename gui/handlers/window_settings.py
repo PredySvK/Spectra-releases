@@ -24,7 +24,7 @@ from typing import Callable, Optional
 from PySide6.QtWidgets import QMessageBox, QWidget
 
 from app_context import STARTUP_DIRECTORY_KEY
-from core.settings import SETTING_DEFINITIONS
+from core.settings import SETTING_DEFINITIONS, TOOL_SWITCH_KEYS
 from gui.dialogs.dialog_state import is_dialog_geometry_key
 from gui.workspace.workspace_layout import layout_settings_keys
 
@@ -148,9 +148,11 @@ class WindowSettingsHandler:
         return (
             (frozenset(key for key in SETTING_DEFINITIONS if key.startswith("perf_")),
              self._react_to_graph_performance),
-            (frozenset(key for key in SETTING_DEFINITIONS if key.startswith("global_unit_") or key.startswith("prefix_") or key.startswith("decimals_")),
+            (frozenset(key for key in SETTING_DEFINITIONS if key.startswith(("global_unit_", "prefix_", "decimals_", "db_reference_"))),
              self._react_to_units),
             (frozenset({"highlight_other_opacity"}), lambda _changed: self.workspace.apply_highlight_opacity()),
+            (frozenset({"track_table_opacity"}), lambda _changed: self.workspace.apply_track_table_opacity()),
+            (TOOL_SWITCH_KEYS, lambda changed: self.workspace.apply_tool_switches(changed)),
             (_RESTART_KEYS, self._react_to_restart_settings),
         )
 

@@ -11,12 +11,6 @@ it and the node is just an intermediate the graph feeds downstream. Until now a
 `SaveSpec` could only be set from code -- this is the widget that puts it in the
 user's hands.
 
-Scope is deliberately half of the full `SaveSpec` (plan 2026-09-02): channel
-identity / channel type and a name, nothing more. The measurement facet
-(`metadata_values` / `ranges`) stays code-only until §1.1's FilterPanel grows
-range/date facets -- but a spec already carrying one from code is preserved
-through an edit here rather than silently dropped.
-
 Its own file, not more lines in workflow_view.py, for the same reason
 `BlockParamForm` is: phase 8's canvas reuses it in a block's settings dialog.
 The channel-type vocabulary is `SAVE_CHANNEL_TYPE_OPTIONS` from
@@ -74,7 +68,6 @@ class SaveSpecEditor(QGroupBox):
     def __init__(self, parent: Optional[QWidget] = None, settings=None):
         super().__init__("Save result set", parent)
         self._settings = settings
-        self._original: Optional[SaveSpec] = None
         # A channel-type set the combo cannot name (imported, or from a newer
         # build). Carried verbatim so a rename here does not silently widen the
         # save filter to every channel (audit 02 finding 2.5).
@@ -151,7 +144,6 @@ class SaveSpecEditor(QGroupBox):
     def set_spec(self, save: Optional[SaveSpec], *,
                  channel_groups: Dict[str, List[Optional[str]]],
                  read_only: bool = False) -> None:
-        self._original = save
         self._channel_groups = channel_groups or {}
         self._read_only = read_only
 
@@ -180,9 +172,6 @@ class SaveSpecEditor(QGroupBox):
         identities = () if all_channels else tuple(
             sorted(self._selected_identities, key=_identity_sort_key)
         )
-        # The measurement facet is not editable here yet -- carry forward
-        # whatever an earlier code path put on the spec.
-        base = self._original
         type_label = self.combo_type.currentText()
         channel_types = (self._carried_types if type_label == _ANY_TYPE and self._carried_types
                          else _channel_types_for(type_label))
@@ -191,8 +180,6 @@ class SaveSpecEditor(QGroupBox):
             all_channels=all_channels,
             channel_identities=identities,
             channel_types=channel_types,
-            metadata_values=dict(base.metadata_values) if base else {},
-            ranges=dict(base.ranges) if base else {},
         )
 
     def _sync_label_note(self, *_) -> None:

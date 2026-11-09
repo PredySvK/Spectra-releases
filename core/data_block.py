@@ -44,14 +44,12 @@ from core.models import (
 from core.dsp_configs import (
     VALID_AMPLITUDE_MODES,
     VALID_SPECTRUM_FORMATS,
+    allows_format,
     normalize_dsp_choice,
 )
 from core.scaling_table import scale_canonical_to_amplitude
-from core.units import (
-    format_order_unit,
-    format_spectral_unit,
-    strip_amplitude_suffix,
-)
+from core.unit_label import build_unit_label
+from core.units import format_order_unit
 
 
 def _readonly(values) -> np.ndarray:
@@ -93,8 +91,11 @@ class SourceRef:
     file_name: str = ""
     channel_index: int = -1
     channel_name: str = ""
-    # The source channel's own facts, so a curve can be dropped again with
-    # its file gone from the Data Pool (#627).
+    # The source channel's own facts, stamped by the read and inherited by
+    # every result. A graph-to-graph drag takes the channel block kind from
+    # here into its drop descriptor; every other channel fact a drop uses
+    # comes from the Data Pool, which refuses a file it does not hold
+    #.
     channel_block_kind: Optional[str] = None
     channel_func_type: int = FUNC_TYPE_TIME_RESPONSE
     source_amplitude: str = ""
@@ -153,7 +154,7 @@ class SpectralProcessing:
     enbw_hz: Optional[float] = None
     fft_size: Optional[int] = None
     averaging_type: Optional[str] = None
-    exponential_alpha: Optional[float] = None
+    exponential_parameter: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -192,22 +193,23 @@ def display_meta_from(source: SourceRef, channel_type: str,
     return meta
 
 
-def read_display_meta(meta: Mapping[str, Any], channel_name: str,
-                      unit: str) -> Tuple[MeasurementRunIndex, ChannelMetadata]:
+def read_display_meta(meta: Mapping[str, Any],
+                      channel_name: str) -> Tuple[MeasurementRunIndex, ChannelMetadata]:
     """
-    The run and channel a curve's display meta names -- the inverse of
-    display_meta_from, so its keys are written and read in this one file.
+    The run and channel a curve's display meta names, as far as a drop needs
+    them -- the inverse of display_meta_from, so its keys are written and read
+    in this one file.
 
-    Name and unit come from the caller: the meta holds the curve's display
-    ones, and a re-drop needs the channel's own (#377).
+    Only the address (file, channel index and name) and the block kind come
+    back: the drop finds the rest in the Data Pool. The name comes
+    from the caller: the meta holds the curve's display one, and a re-drop
+    needs the channel's own (#377).
     """
     run = MeasurementRunIndex(str(meta.get("file_name", "")), str(meta.get("file_path", "")))
     channel = ChannelMetadata(int(meta.get("channel_index", 0)), str(channel_name),
-                              str(meta.get("channel_type", CHANNEL_TYPE_GENERAL_DYNAMIC)), str(unit))
+                              CHANNEL_TYPE_GENERAL_DYNAMIC, "")
     channel.block_kind = meta.get("channel_block_kind")
     channel.func_type = meta.get("channel_func_type", FUNC_TYPE_TIME_RESPONSE)
-    if meta.get("source_amplitude"):
-        channel.source_amplitude = meta["source_amplitude"]
     return run, channel
 
 
@@ -266,14 +268,19 @@ class NVHDataBlock:
             return False
         if self.processing is None:
             return False
-        fmt = (self.processing.spectrum_format or "").lower().strip()
-        if fmt == "canonical":
+        # The stored Format decides; the Unit label is never read back for it (#892).
+        return (self.processing.spectrum_format or "").lower().strip() == "canonical"
+
+    def can_show(self, spectrum_format: str) -> bool:
+        """
+        Whether this block has a `spectrum_format` view. A canonical spectrum
+        averaged by Linear average shows only Linear: a mean amplitude is not
+        the mean power, nor a density (§1.283). Every other block shows every
+        format.
+        """
+        if not self.is_canonical:
             return True
-        if fmt not in ("linear", "power", "psd", "esd"):
-            unit = self.value_unit.strip()
-            if unit.endswith("^2") or unit.endswith("²") or ")^2" in unit:
-                return True
-        return False
+        return allows_format(self.processing.averaging_type, spectrum_format)
 
     def to_display_values(
         self,
@@ -283,13 +290,17 @@ class NVHDataBlock:
         """
         Safe programmatic access to linear/scaled values and display unit.
 
-        For spectral blocks (carrying canonical bin energy P_canon in g^2 -- an invariant of
-        KIND_SPECTRUM/KIND_SPECTROGRAM, not a branch), computes the requested Format x
-        Amplitude view on-the-fly via core.scaling_table and generates the display unit.
+        For a canonical spectral block (bin energy P_canon in g^2, see `is_canonical`),
+        computes the requested Format x Amplitude view on-the-fly via core.scaling_table
+        and generates the display unit. A pre-scaled spectral block (an Imported result,
+        already in its display unit) returns its own values and unit for every view --
+        the block decides, so no caller has to ask `is_canonical` first (#943).
         For order cut and Overall Level blocks, scales Peak as sqrt(2) * y_rms and formats the unit.
         For other blocks, returns (values, value_unit).
         """
         if self.kind in (KIND_SPECTRUM, KIND_SPECTROGRAM):
+            if not self.is_canonical:
+                return np.asarray(self.values), self.value_unit
             amplitude_mode = normalize_dsp_choice(amplitude_mode, VALID_AMPLITUDE_MODES, "amplitude_mode")
             spectrum_format = normalize_dsp_choice(spectrum_format, VALID_SPECTRUM_FORMATS, "spectrum_format")
 
@@ -308,13 +319,15 @@ class NVHDataBlock:
 
             fft_size = self.processing.fft_size if (self.processing and self.processing.fft_size) else (2 * (n_freqs - 1))
 
+            display_unit = build_unit_label(self.value_unit, spectrum_format, amplitude_mode)
+            if not self.can_show(spectrum_format):
+                # NaN, not a number: no plot, cursor or Evaluation may read one (§1.283).
+                return np.full(np.shape(self.values), np.nan), display_unit
+
             scaled = scale_canonical_to_amplitude(
                 self.values, spectrum_format=spectrum_format, amplitude_mode=amplitude_mode,
                 acf=acf, ecf_linear=ecf_linear, df=df, fft_size=fft_size,
             )
-
-            base_unit = strip_amplitude_suffix(self.value_unit)
-            display_unit = format_spectral_unit(base_unit, spectrum_format, amplitude_mode)
             return scaled, display_unit
 
         if spec_for(self.kind).scales_with_rms_peak:
@@ -440,20 +453,20 @@ class NVHDataBlock:
         )
 
     @classmethod
-    def spectrogram(cls, *, name: str, values, frequencies, z_values, z_unit: str,
-                    z_quantity: str, value_unit: str, processing: SpectralProcessing,
+    def spectrogram(cls, *, name: str, values, frequencies, tracking_values, tracking_unit: str,
+                    tracking_quantity: str, value_unit: str, processing: SpectralProcessing,
                     channel_type: str = CHANNEL_TYPE_GENERAL_DYNAMIC,
                     acquisition: Optional[Acquisition] = None,
                     source: Optional[SourceRef] = None,
                     provenance: Optional[Provenance] = None,
                     metadata: Optional[Mapping[str, Any]] = None) -> "NVHDataBlock":
-        """`values` is (frequency, z) -- one spectrum column per rpm step or time slice."""
+        """`values` is (frequency, tracking) -- one spectrum column per rpm step or time slice."""
         return cls(
             name=name, kind=KIND_SPECTROGRAM,
             axes=(
                 Axis(values=frequencies, unit="Hz", quantity="frequency", label="Frequency"),
-                Axis(values=z_values, unit=z_unit, quantity=z_quantity,
-                     label="Speed" if z_quantity == "rpm" else "Time"),
+                Axis(values=tracking_values, unit=tracking_unit, quantity=tracking_quantity,
+                     label="Speed" if tracking_quantity == "rpm" else "Time"),
             ),
             values=values, value_unit=value_unit, value_quantity="amplitude",
             channel_type=channel_type, processing=processing,

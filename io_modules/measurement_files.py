@@ -2,35 +2,135 @@
 Measurement files on disk: which ones count, how they are identified, and
 which reader opens them.
 
+Every fact about one reader -- its suffixes, how its header is recognised,
+whether it reads a simulation, what its amplitude is taken to be -- lives in
+its `ReaderDescription` in `READER_DESCRIPTIONS`; the dispatch and every
+question about a file ask that description, so a new reader is one entry here
+and a case in the reader contract test.
+
 The identity helpers (`canonical_path`, `file_stamp`, `folder_fingerprint`) are
 here rather than beside the cache that consumes them, because half the callers
 never scan anything -- they only need to key a path the same way everything
 else does.
 """
 
+import dataclasses
 import functools
 import hashlib
 import glob
+import importlib
 import logging
 import os
-from typing import Dict, List, Optional, Protocol, Union
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple, Union
 
 from core.data_block import NVHDataBlock, RawChannel
+from core.import_template import DATA_KIND_TIME_SIGNAL
 from core.models import MeasurementRunIndex
 from core.source_amplitude import SOURCE_AMPLITUDE_PEAK, SOURCE_AMPLITUDE_RMS
-from io_modules.reader_unv import AccReaderUnv
 
+
+def _lazy(module: str, name: str) -> Callable:
+    """
+    A call of `module.name` that imports the module only when called, so the
+    registry costs no reader import and a monkeypatched name is still seen.
+    """
+    def call(*args):
+        return getattr(importlib.import_module(module), name)(*args)
+    call.__qualname__ = f"{module}.{name}"
+    return call
+
+
+@dataclass(frozen=True)
+class ReaderDescription:
+    """
+    Everything the program knows about one reader without opening a file.
+
+    `name` is the reader's class name, the key an Add groups its Source
+    amplitude question by. `recognise` reads a file's header to tell whether
+    the reader owns it; None means the suffix alone decides. A reader with
+    `imported_result` set hands back a finished block of its kind (§1.189),
+    any other a waveform's parts. A reader whose `asks_source_amplitude` is set reads an Imported result whose amplitude the
+    user states once per Add (§1.157); `default_source_amplitude` is what it is
+    taken to be until the project says otherwise (blank: RMS).
+    """
+    name: str
+    suffixes: Tuple[str, ...]
+    open_reader: Callable[[str], "MeasurementReader"]
+    recognise: Optional[Callable[[str], bool]] = None
+    simulated: bool = False
+    imported_result: bool = False
+    asks_source_amplitude: bool = False
+    default_source_amplitude: str = ""
+    label: str = ""
+    discard_caches: Optional[Callable[[], None]] = None
+
+
+# One entry per reader, in the order SUPPORTED_EXTENSIONS lists them. ANSYS
+# and MASTA export Peak (MASTA's plain "Amplitude" is Peak, beside its "RMS
+# Amplitude" and "Peak-to-Peak Amplitude", §1.220), processed measurements are
+# RMS; that default is also the answer for a project written before the
+# question existed. `label` is the Pairing tab's word for the reader.
+READER_DESCRIPTIONS: Tuple[ReaderDescription, ...] = (
+    ReaderDescription(
+        name="AccReaderUnv", suffixes=(".unv", ".uff"),
+        open_reader=_lazy("io_modules.reader_unv", "AccReaderUnv")),
+    ReaderDescription(
+        name="AccReaderAsc", suffixes=(".asc",),
+        open_reader=_lazy("io_modules.reader_asc", "AccReaderAsc"),
+        discard_caches=_lazy("io_modules.reader_asc", "discard_asc_caches")),
+    ReaderDescription(
+        name="AccReaderLdsf", suffixes=(".ldsf",),
+        open_reader=_lazy("io_modules.reader_ldsf", "AccReaderLdsf")),
+    ReaderDescription(
+        name="AccReaderHdf", suffixes=(".hdf",),
+        open_reader=_lazy("io_modules.reader_hdf", "AccReaderHdf")),
+    ReaderDescription(
+        name="AccReaderMasta", suffixes=(".xlsx",),
+        open_reader=_lazy("io_modules.reader_masta", "AccReaderMasta"),
+        recognise=_lazy("io_modules.reader_masta", "is_masta_file"),
+        simulated=True, imported_result=True, asks_source_amplitude=True,
+        default_source_amplitude=SOURCE_AMPLITUDE_PEAK, label="MASTA",
+        discard_caches=_lazy("io_modules.reader_masta", "discard_masta_caches")),
+    ReaderDescription(
+        name="AccReaderProcessedMeasurement", suffixes=(".txt",),
+        open_reader=_lazy("io_modules.reader_processed_measurement", "AccReaderProcessedMeasurement"),
+        recognise=_lazy("io_modules.reader_processed_measurement", "is_processed_measurement_file"),
+        imported_result=True, asks_source_amplitude=True,
+        default_source_amplitude=SOURCE_AMPLITUDE_RMS, label="Processed measurement"),
+    ReaderDescription(
+        name="AccReaderAnsys", suffixes=(".csv",),
+        open_reader=_lazy("io_modules.reader_ansys", "AccReaderAnsys"),
+        recognise=_lazy("io_modules.reader_ansys", "is_ansys_file"),
+        simulated=True, imported_result=True, asks_source_amplitude=True,
+        default_source_amplitude=SOURCE_AMPLITUDE_PEAK, label="ANSYS"),
+)
+
+
+# What every file read by an Import template shares; the rest comes from the
+# project's copy of the template (`_describe_template_reader`). Add never asks
+# its Source amplitude: the template states it (§1.221).
+_TEMPLATE_READER = ReaderDescription(
+    name="AccReaderImportTemplate", suffixes=(),
+    open_reader=_lazy("io_modules.import_template", "AccReaderImportTemplate"),
+    discard_caches=_lazy("io_modules.import_template", "discard_import_template_caches"))
+
+
+_DESCRIPTIONS_BY_SUFFIX: Dict[str, ReaderDescription] = {
+    suffix: description for description in READER_DESCRIPTIONS for suffix in description.suffixes
+}
 
 # Single source of truth for which measurement files the workspace recognizes.
 # Both the directory scan and the startup cache validation read this, so the two
 # can never drift apart and disagree about what belongs in a workspace.
-SUPPORTED_EXTENSIONS = ("*.unv", "*.uff", "*.asc", "*.ldsf", "*.hdf", "*.xlsx", "*.txt", "*.csv")
+SUPPORTED_EXTENSIONS = tuple(f"*{suffix}" for suffix in _DESCRIPTIONS_BY_SUFFIX)
 
-_MEASUREMENT_SUFFIXES = frozenset(ext.replace("*", "").lower() for ext in SUPPORTED_EXTENSIONS)
+_MEASUREMENT_SUFFIXES = frozenset(_DESCRIPTIONS_BY_SUFFIX)
 
 # Suffixes too generic to trust: the metadata Excel, a README or notes share
 # them, so such a file is a measurement only if its header says so (§1.134).
-_RECOGNISED_BY_HEADER = frozenset({".xlsx", ".txt", ".csv"})
+_RECOGNISED_BY_HEADER = frozenset(
+    suffix for suffix, description in _DESCRIPTIONS_BY_SUFFIX.items() if description.recognise is not None)
 
 _log = logging.getLogger(__name__)
 
@@ -40,10 +140,14 @@ def has_measurement_suffix(name: str) -> bool:
     return os.path.splitext(name)[1].lower() in _MEASUREMENT_SUFFIXES
 
 
-def is_measurement_file(path: str) -> bool:
+def is_measurement_file(path: str, templates: Optional[Tuple[Any, ...]] = None) -> bool:
     """
     True if the file is one the workspace treats as a measurement: by suffix,
     or for a generic suffix by a reader recognising its header.
+
+    `templates` are the Import templates that may recognise it; None means the
+    installed ones (the open project's copies). A plan for an Add passes the
+    templates it adds with, which the project takes only once the run reads.
     """
     if not has_measurement_suffix(path):
         return False
@@ -52,77 +156,52 @@ def is_measurement_file(path: str) -> bool:
     stamp = file_stamp(path)
     if stamp is None:
         return False
-    from io_modules.import_template import resolve_installed_signature
-    recognised = _is_recognised(canonical_path(path), stamp["mtime_ns"], stamp["size"],
-                                resolve_installed_signature())
+    if templates is None:
+        from io_modules.import_template import resolve_installed_signature
+        recognised = _is_recognised(path, stamp["mtime_ns"], stamp["size"], resolve_installed_signature())
+    else:
+        recognised = _is_recognised(path, stamp["mtime_ns"], stamp["size"], None, tuple(templates))
     if not recognised:
         _log.debug("Not a measurement, no reader recognises its header: %s", path)
     return recognised
 
 
 @functools.lru_cache(maxsize=1024)
-def _is_recognised(path: str, _mtime_ns: int, _size: int, _templates: str) -> bool:
+def _is_recognised(path: str, _mtime_ns: int, _size: int, _signature: Optional[str],
+                   templates: Optional[Tuple[Any, ...]] = None) -> bool:
     """
-    Keyed by stamp and by the installed Import templates, so a folder fingerprint
-    re-reads a workbook only when it or the templates changed.
+    Keyed by stamp and by the Import templates (the installed ones by their
+    signature, a given set by itself), so a folder fingerprint re-reads a
+    workbook only when it or the templates changed.
     """
     from io_modules.import_template import resolve_installed_templates, read_template_match
-    if any(read_template_match(path, template) for template in resolve_installed_templates().values()):
+    if templates is None:
+        templates = tuple(resolve_installed_templates().values())
+    if any(read_template_match(path, template) for template in templates):
         return True
-    from io_modules.reader_ansys import is_ansys_file
-    from io_modules.reader_masta import is_masta_file
-    from io_modules.reader_processed_measurement import is_processed_measurement_file
-    suffix = os.path.splitext(path)[1].lower()
-    if suffix == ".txt":
-        return is_processed_measurement_file(path)
-    if suffix == ".csv":
-        return is_ansys_file(path)
-    return is_masta_file(path)
+    return _DESCRIPTIONS_BY_SUFFIX[os.path.splitext(path)[1].lower()].recognise(path)
 
 
-# Which reader owns which extension. Kept next to SUPPORTED_EXTENSIONS because the
-# two are one decision: a suffix listed there but missing here is a file the
-# browser offers, the scan accepts and no parser understands.
-_READERS_BY_SUFFIX = {
-    ".unv": "AccReaderUnv",
-    ".uff": "AccReaderUnv",
-    ".asc": "AccReaderAsc",
-    ".ldsf": "AccReaderLdsf",
-    ".hdf": "AccReaderHdf",
-    ".xlsx": "AccReaderMasta",
-    ".txt": "AccReaderProcessedMeasurement",
-    ".csv": "AccReaderAnsys",
-}
+def _describe_template_reader(import_template: str, file_path: str) -> ReaderDescription:
+    """The template reader as the project's copy of `import_template` describes it."""
+    from io_modules.import_template import resolve_installed_template
+    template = resolve_installed_template(import_template)
+    if template is None:
+        raise ValueError(f"Unknown Import template '{import_template}' assigned to {file_path}.")
+    return dataclasses.replace(
+        _TEMPLATE_READER,
+        open_reader=lambda path: _TEMPLATE_READER.open_reader(path, template),
+        simulated=template.simulated,
+        imported_result=template.data_kind != DATA_KIND_TIME_SIGNAL,
+        default_source_amplitude=template.source_amplitude,
+    )
 
 
-# Readers of simulation results; every other reader reads a measurement.
-_SIMULATED_READERS = {"AccReaderMasta", "AccReaderAnsys"}
-
-
-# What an Imported result's amplitude is taken to be until the project says
-# otherwise: ANSYS and MASTA export Peak (MASTA's plain "Amplitude" is Peak,
-# beside its "RMS Amplitude" and "Peak-to-Peak Amplitude", §1.220), processed
-# measurements are RMS. Also the answer for a project written before the
-# question existed.
-_DEFAULT_SOURCE_AMPLITUDE = {
-    "AccReaderMasta": SOURCE_AMPLITUDE_PEAK,
-    "AccReaderProcessedMeasurement": SOURCE_AMPLITUDE_RMS,
-    "AccReaderAnsys": SOURCE_AMPLITUDE_PEAK,
-}
-
-
-# Reader name by a fixed Import template name; empty because every template is
-# read by AccReaderImportTemplate from the project's copy (the registry).
-_READERS_BY_TEMPLATE: Dict[str, str] = {}
-
-_TEMPLATE_READER = "AccReaderImportTemplate"
-
-
-def resolve_reader_name(file_path: str, import_template: str = "") -> Optional[str]:
+def resolve_reader_description(file_path: str, import_template: str = "") -> Optional[ReaderDescription]:
     """
-    The name of the reader that opens this file, or None when none does. The one
-    choice every opener goes through (scan, channel read, Imported-result and
-    Simulated/Measured questions).
+    The description of the reader that opens this file, or None when none does.
+    The one choice every opener goes through (scan, channel read, Imported-result
+    and Simulated/Measured questions).
 
     `import_template` is what the file's Data Pool source assigns; it decides
     when set; a name the project holds no copy of raises ValueError (opening a
@@ -130,44 +209,37 @@ def resolve_reader_name(file_path: str, import_template: str = "") -> Optional[s
     Blank (no assignment) leaves the decision to the suffix. No disk access.
     """
     if import_template:
-        if import_template in _READERS_BY_TEMPLATE:
-            return _READERS_BY_TEMPLATE[import_template]
-        from io_modules.import_template import resolve_installed_template
-        if resolve_installed_template(import_template) is None:
-            raise ValueError(f"Unknown Import template '{import_template}' assigned to {file_path}.")
-        return _TEMPLATE_READER
-    return _READERS_BY_SUFFIX.get(os.path.splitext(file_path)[1].lower())
+        return _describe_template_reader(import_template, file_path)
+    return _DESCRIPTIONS_BY_SUFFIX.get(os.path.splitext(file_path)[1].lower())
 
 
-def _classify_reader_name(file_path: str, import_template: str) -> Optional[str]:
-    """The reader name, or None when none opens the file -- including an assignment nobody holds."""
+def resolve_named_reader_description(reader_name: str) -> Optional[ReaderDescription]:
+    """The description of the fixed reader called `reader_name`, or None."""
+    return next((description for description in READER_DESCRIPTIONS if description.name == reader_name), None)
+
+
+def _classify(file_path: str, import_template: str) -> Optional[ReaderDescription]:
+    """The reader's description, or None when none opens the file -- including an assignment nobody holds."""
     try:
-        return resolve_reader_name(file_path, import_template)
+        return resolve_reader_description(file_path, import_template)
     except ValueError:
         return None
 
 
 def resolve_imported_result_reader(file_path: str, import_template: str = "") -> Optional[str]:
     """
-    The name of the Imported-result reader that opens this file, or None for a
-    time signal (`.unv`, `.uff`, `.asc`, `.ldsf`, `.hdf`). No disk access.
+    The name of the reader whose Imported result an Add asks the Source
+    amplitude of, or None for a time signal or a file read by an Import
+    template. No disk access.
     """
-    reader_name = _classify_reader_name(file_path, import_template)
-    return reader_name if reader_name in _DEFAULT_SOURCE_AMPLITUDE else None
-
-
-def resolve_default_source_amplitude(reader_name: str) -> str:
-    """The Source amplitude an Imported-result reader is assumed to deliver; RMS for any other."""
-    return _DEFAULT_SOURCE_AMPLITUDE.get(reader_name, SOURCE_AMPLITUDE_RMS)
+    description = _classify(file_path, import_template)
+    return description.name if description is not None and description.asks_source_amplitude else None
 
 
 def is_simulated_result_file(file_path: str, import_template: str = "") -> bool:
     """True when the reader that opens this file reads a simulation (#511)."""
-    reader_name = _classify_reader_name(file_path, import_template)
-    if reader_name == _TEMPLATE_READER:
-        from io_modules.import_template import resolve_installed_template
-        return resolve_installed_template(import_template).simulated
-    return reader_name in _SIMULATED_READERS
+    description = _classify(file_path, import_template)
+    return description is not None and description.simulated
 
 
 class MeasurementReader(Protocol):
@@ -182,17 +254,15 @@ class MeasurementReader(Protocol):
     """
     file_path: str
 
-    def scan_file_structure(self) -> MeasurementRunIndex: ...
-
-    def load_channels_on_demand(self, run_index: MeasurementRunIndex) -> None: ...
+    def read_run_index(self) -> MeasurementRunIndex: ...
 
     def read_single_channel_data(self, dataset_index: int) -> Union[RawChannel, NVHDataBlock]: ...
 
 
 def open_measurement_reader(file_path: str, import_template: str = "") -> MeasurementReader:
     """
-    The reader for a measurement file, chosen by `resolve_reader_name`: the
-    assigned Import template, else the extension.
+    The reader for a measurement file, chosen by `resolve_reader_description`:
+    the assigned Import template, else the extension.
 
     Single dispatch point: the scan worker and DataAccessor both used to spell
     out `if ext == ".asc" ... else UNV`, so adding a third format meant editing
@@ -201,49 +271,21 @@ def open_measurement_reader(file_path: str, import_template: str = "") -> Measur
     somewhere inside the SDRC-58 block parse rather than saying the format is
     not supported.
     """
-    reader_name = resolve_reader_name(file_path, import_template)
-    if reader_name is None:
+    description = resolve_reader_description(file_path, import_template)
+    if description is None:
         suffix = os.path.splitext(file_path)[1].lower()
         raise ValueError(
             f"Unsupported measurement format '{suffix or file_path}'. "
-            f"Supported: {', '.join(sorted(_READERS_BY_SUFFIX))}."
+            f"Supported: {', '.join(sorted(_DESCRIPTIONS_BY_SUFFIX))}."
         )
-
-    if reader_name == "AccReaderAsc":
-        from io_modules.reader_asc import AccReaderAsc
-        return AccReaderAsc(file_path)
-    if reader_name == "AccReaderLdsf":
-        from io_modules.reader_ldsf import AccReaderLdsf
-        return AccReaderLdsf(file_path)
-    if reader_name == "AccReaderHdf":
-        from io_modules.reader_hdf import AccReaderHdf
-        return AccReaderHdf(file_path)
-    if reader_name == "AccReaderMasta":
-        from io_modules.reader_masta import AccReaderMasta
-        return AccReaderMasta(file_path)
-    if reader_name == "AccReaderAnsys":
-        from io_modules.reader_ansys import AccReaderAnsys
-        return AccReaderAnsys(file_path)
-    if reader_name == "AccReaderProcessedMeasurement":
-        from io_modules.reader_processed_measurement import AccReaderProcessedMeasurement
-        return AccReaderProcessedMeasurement(file_path)
-    if reader_name == _TEMPLATE_READER:
-        from io_modules.import_template import AccReaderImportTemplate, resolve_installed_template
-        return AccReaderImportTemplate(file_path, resolve_installed_template(import_template))
-    if reader_name == "AccReaderUnv":
-        return AccReaderUnv(file_path)
-    raise ValueError(f"No reader named '{reader_name}' for {file_path}.")
+    return description.open_reader(file_path)
 
 
 def discard_reader_caches() -> None:
     """Forget what the readers keep of a parsed file between reads."""
-    from io_modules.reader_asc import discard_asc_caches
-    discard_asc_caches()
-    from io_modules.reader_masta import discard_masta_caches
-    discard_masta_caches()
-    from io_modules.import_template import discard_import_template_caches
-    discard_import_template_caches()
-
+    for description in READER_DESCRIPTIONS + (_TEMPLATE_READER,):
+        if description.discard_caches is not None:
+            description.discard_caches()
 
 def canonical_path(file_path: str) -> str:
     """
@@ -311,12 +353,12 @@ def file_stamp(file_path: str) -> Optional[dict]:
         return None
     return {"mtime_ns": stat_result.st_mtime_ns, "size": stat_result.st_size}
 
-def discover_measurement_files(directory_path: str) -> List[str]:
+def discover_measurement_files(directory_path: str, templates: Optional[Tuple[Any, ...]] = None) -> List[str]:
     """
     Lists every supported measurement file in a directory, case-insensitively.
 
     Here rather than in scan_cache because the project indexer needs the same
-    answer without scanning anything.
+    answer without scanning anything. `templates` as for `is_measurement_file`.
 
     The directory is glob-escaped because only the extension is meant to be a
     pattern. A perfectly ordinary folder name like "Run [2024]" was otherwise
@@ -329,7 +371,7 @@ def discover_measurement_files(directory_path: str) -> List[str]:
     for ext in SUPPORTED_EXTENSIONS:
         discovered_files.extend(glob.glob(os.path.join(escaped_directory, ext)))
         discovered_files.extend(glob.glob(os.path.join(escaped_directory, ext.upper())))
-    return sorted(path for path in set(discovered_files) if is_measurement_file(path))
+    return sorted(path for path in set(discovered_files) if is_measurement_file(path, templates))
 
 
 def discover_measurement_folders(root_path: str) -> List[str]:

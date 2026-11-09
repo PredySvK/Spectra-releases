@@ -14,8 +14,8 @@ from typing import Iterable, Optional, Tuple
 
 from core.import_template import ImportTemplate
 from io_modules.import_template import read_builtin_templates
-from view_models.import_template._preview import WizardPreview
-from view_models.import_template._wizard import ImportTemplateWizard, resolve_library_save_problem
+from view_models.import_template._sample_preview import SamplePreview
+from view_models.import_template._wizard import TemplateWizard, resolve_library_save_problem
 
 ENDING_LIBRARY = "library"
 ENDING_MISFIT = "misfit"
@@ -69,7 +69,7 @@ class WizardEnding:
             return dataclasses.replace(template, name=f"{template.name} (copy)")
         return template
 
-    def resolve_problem(self, action: str, wizard: ImportTemplateWizard, preview: WizardPreview) -> str:
+    def resolve_problem(self, action: str, wizard: TemplateWizard, preview: SamplePreview) -> str:
         """Why `action` cannot be used with the template as it stands, blank when it can."""
         if action not in self.resolve_actions():
             return f"This wizard does not offer '{action}'."
@@ -87,7 +87,7 @@ class WizardEnding:
         """How a wizard that ended in `action` saved: `SAVED_OVERWRITE` wrote nowhere, `SAVED_NEW` is in the library."""
         return SAVED_OVERWRITE if action == ACTION_OVERWRITE else SAVED_NEW
 
-    def _resolve_overwrite_problem(self, wizard: ImportTemplateWizard, preview: WizardPreview) -> str:
+    def _resolve_overwrite_problem(self, wizard: TemplateWizard, preview: SamplePreview) -> str:
         if wizard.template.name.strip() != wizard.original_name.strip():
             return (f"Overwrite keeps the name '{wizard.original_name}'; "
                     "under another name, save it as a new template.")

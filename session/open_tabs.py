@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple, Union
 
 from core.evaluation import EvaluationConfig
+from core.legend_config import LegendConfig
 from core.models import ChannelMetadata, MeasurementRunIndex
 from session.data_pool import DeadLink, ResolvedTrace, build_source_lookup, resolve_trace
 
@@ -28,7 +29,7 @@ from session.data_pool import DeadLink, ResolvedTrace, build_source_lookup, reso
 @dataclass
 class TraceSpec:
     """
-    One curve's identity + recipe -- enough for ``dispatch_compute`` (S4) to
+    One curve's identity + recipe -- enough for ``BaseCurveCompute.start`` (S4) to
     recompute it, not enough to draw it. ``source_id`` is the resolver key
     (S3: ``canonical_path(file_path)``), not a path to read directly --
     same rule ``canonical_path`` itself carries.
@@ -69,14 +70,14 @@ class TraceSpec:
 class TabSpec:
     """
     One open dock's recipe. ``build_shell(spec)`` (S4) turns this into an
-    empty dock with the right title; ``dispatch_compute(spec)`` turns it into
+    empty dock with the right title; ``BaseCurveCompute.start`` turns it into
     a computed one, on the same background path a fresh drop already uses.
 
     ``analysis_kind`` matches the dock's own ``analysis_kind`` ("time" |
     "spectrum" | "orders" | "overall_level" | "spectrogram"). A
     ``SpectrogramDock`` has no traces -- ``traces`` holds just
     its one vibration channel. No separate tacho ``TraceSpec``: S6 restores a
-    spectrogram through the same ``build_shell``+``dispatch_compute`` pair a
+    spectrogram through the same ``build_shell``+``BaseCurveCompute.start`` pair a
     live open uses, and ``run_live_compute`` already auto-links a tacho onto a
     freshly built dock (no tacho bound yet) the same way regardless
     of whether the dock is new or restored -- recording which tacho channel
@@ -100,7 +101,7 @@ class TabSpec:
     # keyed by profile id, not dock id: the recipe and its local filter travel
     # together on the same TabSpec, and a project saved before `dock_id`
     # persisted still carries its local filter this way
-    # (plans/2026-09-05_filtre-maska-nad-kazdym-grafom.md T5). Global
+    # (the filter-mask plan T5). Global
     # selections and profile identities persist separately, under
     # gui.handlers.filter_routing.FILTER_STATE_KEY.
     filter_selections: Dict[str, Dict[str, Any]] = field(default_factory=dict)
@@ -117,6 +118,9 @@ class TabSpec:
     # Single values are not persisted; they are recomputed on demand.
     evaluation_config: EvaluationConfig = field(default_factory=EvaluationConfig)
     custom_label: Optional[str] = None
+    # This graph's Legend Settings (plot §1.296): None -- no saved choice, a
+    # spectrogram -- means the Default the app keeps for every new graph.
+    legend_config: Optional[LegendConfig] = None
 
     def __post_init__(self) -> None:
         if isinstance(self.evaluation_config, dict):
@@ -133,6 +137,7 @@ class TabSpec:
             "loaded_result_set_ids": list(self.loaded_result_set_ids),
             "evaluation_config": self.evaluation_config.to_dict(),
             "custom_label": self.custom_label,
+            "legend_config": self.legend_config.to_dict() if self.legend_config is not None else None,
         }
 
     @classmethod
@@ -146,6 +151,8 @@ class TabSpec:
             # Normalised once, by __post_init__.
             evaluation_config=data.get("evaluation_config"),
             custom_label=data.get("custom_label"),
+            legend_config=(LegendConfig.from_dict(data["legend_config"])
+                           if isinstance(data.get("legend_config"), Mapping) else None),
         )
 
 
@@ -180,7 +187,7 @@ class RestorePlan:
 
 
 def _default_evaluation() -> EvaluationConfig:
-    return EvaluationConfig(evaluation_name="max", params={}, respect_trace_filter=True)
+    return EvaluationConfig()
 
 
 def _evaluation_config_for(raw: Mapping[str, Any], spec: TabSpec) -> Tuple[EvaluationConfig, Optional[str]]:
@@ -199,12 +206,12 @@ def _evaluation_config_for(raw: Mapping[str, Any], spec: TabSpec) -> Tuple[Evalu
     from signal_processing.evaluation.registry import EVALUATIONS
 
     if cfg.evaluation_name not in EVALUATIONS:
-        return EvaluationConfig(
-            evaluation_name="max",
-            params={},
-            respect_trace_filter=cfg.respect_trace_filter,
-            metadata_columns=cfg.metadata_columns,
-        ), f"Unknown evaluation type '{cfg.evaluation_name}' in tab state, resetting to default."
+        # Kept, not replaced by Max: saving must not drop it unnoticed; the
+        # Evaluation card says this version cannot run it (§1.259 point 3).
+        return cfg, (
+            f"Unknown evaluation type '{cfg.evaluation_name}' in tab state; "
+            "the Evaluation card cannot run it in this version."
+        )
 
     return cfg, None
 

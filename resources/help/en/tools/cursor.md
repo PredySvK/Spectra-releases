@@ -49,6 +49,10 @@ The crosshair lines track the mouse continuously and disappear when the mouse le
 
 All curves and the legend return to normal when the mouse leaves the graph, moves away from every curve, a mouse button is pressed, the graph is redrawn, or Highlight is switched off.
 
+## Track cursor
+
+The **Track** box in the **Cursors** group switches a second tool, the [Track cursor](topic:tools/track_cursor): a vertical line reading every curve at one X.
+
 ## Pin
 
 **Pin** (button in the **Cursors** group, or **P** while a graph has focus) freezes the Cursor Box where it is: it stops following the mouse, but its content keeps updating from the hover. Drag the box itself to move it; dragging anywhere else on the graph still pans or drags a curve to another graph. Unpinning hides the box until the mouse moves again.
@@ -57,6 +61,8 @@ All curves and the legend return to normal when the mouse leaves the graph, move
 
 Click **Cursor Settings…** in the **Cursors** group to choose what the box shows. Tick a field to show it; its **Priority** (arrows or a typed number) is its line, 1 on top. The **Values** section has X, Y, Z, Curve name and RMS / Peak; the metadata sections offer the fields with **Active Status** ticked in [Metadata and Filter Settings](topic:import/metadata), with the curve's own values (for example Direction, File name or an Excel field).
 
-One list serves curve graphs and spectrograms; a field that does not apply (Z on a curve graph, metadata on a spectrogram) is skipped. The choice is saved for **every project** and survives a restart. A metadata field the open project does not have is simply left out of the box.
+One list serves curve graphs and spectrograms; a field that does not apply (Z on a curve graph, metadata on a spectrogram) is skipped. Until you choose, the box shows Channel, X, Y and Z: Channel, X and Y on a curve graph, X, Y and Z on a spectrogram. The choice is saved for **every project** and survives a restart. A metadata field the open project does not have is simply left out of the box.
 
-In the bottom-left corner, **Other curves opacity (Highlight)** sets how visible the curves other than the highlighted one stay while Highlight is on: 0 % is invisible, 100 % is no dimming (default 25 %). Drag the slider or type the value; it is saved like the field list.
+In the bottom-left corner, **Other curves opacity** sets how visible the curves other than the highlighted one stay while Highlight is on: 0 % is invisible, 100 % is no dimming (default 25 %). Drag the slider or type the value; it is saved like the field list. Track cursor Settings shows the same slider in the same place, with **Table background opacity** to its right; it is one setting, so changing it in either window changes both, and with **Auto apply** on the graphs re-dim as you move it.
+
+**Restore Defaults** puts the whole window back to its defaults: the default fields in their order and the opacity at 25 %. Nothing is saved until **OK**; **Cancel** keeps your current settings. Track cursor Settings has the same button for the Track table's columns (default Channel and Y) and both its sliders (25 % and 90 %).

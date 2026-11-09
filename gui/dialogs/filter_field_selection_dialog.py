@@ -55,25 +55,25 @@ Text).
 All internal documentation strings and variable labels are standardly written
 in English.
 """
+from dataclasses import replace
 from typing import Any, Callable, Collection, Dict, List, Optional, Set, Tuple
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QGridLayout,
-    QHBoxLayout, QLabel, QScrollArea, QSizePolicy, QSpinBox, QToolButton,
-    QVBoxLayout, QWidget,
+    QComboBox, QDialog, QDialogButtonBox, QGridLayout,
+    QHBoxLayout, QLabel, QScrollArea, QSizePolicy, QVBoxLayout,
 )
 
 from core.filter_card_config import (
     WIDGET_CHECKBOX_LIST, WIDGET_MULTI_SELECT,
-    WIDGET_RANGE, WIDGETS, FilterCardConfig, add_column, default_widget_for_kind,
-    kind_is_ranged, move_column, remove_column, with_column_count, with_column_default,
-    with_column_order, with_column_widget,
+    WIDGET_RANGE, WIDGETS, FilterCardConfig, default_widget_for_kind,
+    kind_is_ranged, renumbered, with_column_count, with_column_widget,
 )
 from selection.source_facets import FieldCardinality
 
+from gui.dialogs.auto_apply import make_auto_apply_check
 from gui.dialogs.dialog_state import fit_width_to_scroll_content, remember_dialog_geometry
-from gui.dialogs.priority_grid import PriorityGrid
+from gui.dialogs.priority_grid import PriorityGrid, PriorityGridSection
 from selection.field_offer import OfferedField, build_field_offer
 from selection.trace_filter import CardCardinalities, build_column_for_key
 
@@ -107,23 +107,17 @@ _Entry = Tuple[str, str, FieldCardinality]
 
 _NO_CARDINALITY = FieldCardinality(distinct_count=0, reason=None)
 
-# The column headers over every section's grid (§1.37). "Default" and "Shown as"
-# used to be a per-row label; pulling them up here lines the rows up and frees
-# the width.
-_EXTRA_HEADERS: Tuple[str, ...] = ("Shown as", "Default")
+# The column header this dialog adds over every section's grid (§1.37), left of the
+# grid's own "Default". "Shown as" used to be a per-row label; pulling it up here
+# lines the rows up and frees the width.
+_EXTRA_HEADERS: Tuple[str, ...] = ("Shown as",)
+_DEFAULT_TOOLTIP = "Put this column on every new graph's card, on top of Channel."
 
 _AUTO_APPLY_SETTINGS_KEY = "filter_field_selection/auto_apply"
 _AUTO_APPLY_TOOLTIP = (
     "Apply every change to the focused graph as you make it, so you can see the "
     "mask move. Cancel puts the card back the way it was."
 )
-
-
-def _read_auto_apply(settings) -> bool:
-    """The remembered Auto apply state (§1.37), defaulting on."""
-    if settings is None:
-        return True
-    return settings.value(_AUTO_APPLY_SETTINGS_KEY, True, type=bool)
 
 
 class FilterFieldSelectionDialog(QDialog):
@@ -143,19 +137,12 @@ class FilterFieldSelectionDialog(QDialog):
         # Columns this card may never carry, so they get no row at all -- the
         # Selection editor's grid has no result columns (#460, ADR §1.131).
         self._excluded_columns = frozenset(excluded_columns)
-        self._checkboxes: Dict[str, QCheckBox] = {}
-        self._order_spins: Dict[str, QSpinBox] = {}
-        self._up_buttons: Dict[str, QToolButton] = {}
-        self._down_buttons: Dict[str, QToolButton] = {}
         self._widget_combos: Dict[str, QComboBox] = {}
-        self._default_checks: Dict[str, QCheckBox] = {}
-        self._sections: List[PriorityGrid] = []
 
         # The working card every edit rebuilds (ticket #49) -- the active
         # profile's stored card, or an empty one for a profile that has never
-        # been configured. `_on_card_keys` is which checkboxes start ticked.
+        # been configured.
         self._card = card if card is not None else FilterCardConfig()
-        self._on_card_keys = {column.key for column in self._card.columns}
 
         # The counts and "cannot narrow" verdicts, resolved by the caller from
         # the same universe the facets are; None counts nothing.
@@ -167,7 +154,7 @@ class FilterFieldSelectionDialog(QDialog):
         self._excel_field_keys: Set[str] = set()
         self._greyed_reasons: Dict[str, str] = {}
         self._build_ui(schema)
-        self._sync_rows()
+        self._sync_widget_combos()
         size = fit_width_to_scroll_content(
             self, self.findChild(QScrollArea, "FilterColumnSections"), (800, 520))
         remember_dialog_geometry(self, settings, "filter_field_selection", default_size=size)
@@ -192,8 +179,6 @@ class FilterFieldSelectionDialog(QDialog):
         scroll = QScrollArea()
         scroll.setObjectName("FilterColumnSections")
         scroll.setWidgetResizable(True)
-        columns = QWidget()
-        columns_layout = QHBoxLayout(columns)
 
         schema_cardinalities = self._cardinalities.schema_fields
         builtin_cardinalities = self._cardinalities.builtins
@@ -212,16 +197,24 @@ class FilterFieldSelectionDialog(QDialog):
             if cardinality.reason is not None
         })
 
-        columns_layout.addWidget(self._section(
-            "Identity", self._entries(offer.identity, builtin_cardinalities)))
-        columns_layout.addWidget(self._section(
-            "Raw metadata", self._entries(offer.raw, schema_cardinalities)))
-        columns_layout.addWidget(self._section(
-            "Excel metadata", self._entries(offer.excel, schema_cardinalities)))
-        columns_layout.addWidget(self._section(
-            "Calculated metadata", self._entries(offer.calculated, builtin_cardinalities)))
+        # Ticks, Priority and the Default column are the shared grid's (shell §1.301); every
+        # change of them rebuilds the working card (`_on_grid_changed`).
+        ordered = self._card.ordered_columns
+        self.grid = PriorityGrid(
+            [
+                self._section("Identity", self._entries(offer.identity, builtin_cardinalities)),
+                self._section("Raw metadata", self._entries(offer.raw, schema_cardinalities)),
+                self._section("Excel metadata", self._entries(offer.excel, schema_cardinalities)),
+                self._section("Calculated metadata", self._entries(offer.calculated, builtin_cardinalities)),
+            ],
+            [column.key for column in ordered],
+            defaults=[column.key for column in ordered if column.default],
+            default_tooltip=_DEFAULT_TOOLTIP,
+            extra_headers=_EXTRA_HEADERS, add_extra_cells=self._add_extra_cells,
+        )
+        self.grid.changed.connect(self._on_grid_changed)
 
-        scroll.setWidget(columns)
+        scroll.setWidget(self.grid)
         layout.addWidget(scroll)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -231,11 +224,12 @@ class FilterFieldSelectionDialog(QDialog):
         # leaving a gap between them and the Auto apply checkbox.
         buttons.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
-        self._auto_apply_check = QCheckBox("Auto apply")
+        # Turning it on mid-dialog catches the dock up to whatever is already
+        # edited; turning it off leaves the last preview in place -- Cancel still
+        # reverts, OK still keeps.
+        self._auto_apply_check = make_auto_apply_check(
+            self._settings, _AUTO_APPLY_SETTINGS_KEY, _AUTO_APPLY_TOOLTIP, self._notify_live)
         self._auto_apply_check.setObjectName("FilterAutoApply")
-        self._auto_apply_check.setToolTip(_AUTO_APPLY_TOOLTIP)
-        self._auto_apply_check.setChecked(_read_auto_apply(self._settings))
-        self._auto_apply_check.toggled.connect(self._on_auto_apply_toggled)
 
         button_row = QHBoxLayout()
         button_row.addStretch()
@@ -250,22 +244,10 @@ class FilterFieldSelectionDialog(QDialog):
                  cardinalities: Dict[str, FieldCardinality]) -> List[_Entry]:
         return [(key, label, cardinalities.get(key, _NO_CARDINALITY)) for key, label in fields]
 
-    def _section(self, title: str, entries: List[_Entry]) -> PriorityGrid:
-        section = PriorityGrid(
-            title,
-            [(key, f"{label} ({cardinality.distinct_count})", cardinality.reason)
-             for key, label, cardinality in entries],
-            checked_keys=self._on_card_keys,
-            on_toggled=self._on_checkbox_toggled, on_nudge=self._nudge,
-            on_order_typed=self._on_order_typed,
-            extra_headers=_EXTRA_HEADERS, add_extra_cells=self._add_extra_cells,
-        )
-        self._checkboxes.update(section.checkboxes)
-        self._order_spins.update(section.order_spins)
-        self._up_buttons.update(section.up_buttons)
-        self._down_buttons.update(section.down_buttons)
-        self._sections.append(section)
-        return section
+    @staticmethod
+    def _section(title: str, entries: List[_Entry]) -> PriorityGridSection:
+        return title, [(key, f"{label} ({cardinality.distinct_count})", cardinality.reason)
+                       for key, label, cardinality in entries]
 
     def _add_extra_cells(self, grid: QGridLayout, row: int, key: str) -> None:
         combo = QComboBox()
@@ -276,41 +258,27 @@ class FilterFieldSelectionDialog(QDialog):
         self._widget_combos[key] = combo
         grid.addWidget(combo, row, 2)
 
-        default_check = QCheckBox()
-        default_check.setToolTip(
-            "Put this column on every new graph's card, on top of Channel."
-        )
-        default_check.toggled.connect(lambda checked, k=key: self._on_default_toggled(k, checked))
-        self._default_checks[key] = default_check
-        grid.addWidget(default_check, row, 3, alignment=Qt.AlignmentFlag.AlignCenter)
-
     # -- editing the working card (ticket #49) --------------------------
 
-    def _on_checkbox_toggled(self, key: str, checked: bool) -> None:
-        column_key = key
-        if checked and not self._card.has_column(column_key):
-            self._card = add_column(self._card, build_column_for_key(column_key, self._schema))
-        elif not checked and self._card.has_column(column_key):
-            self._card = remove_column(self._card, column_key)
-        self._sync_rows()
+    def _on_grid_changed(self) -> None:
+        """Rebuild the working card from the grid: its ticked keys in Priority order (a column
+        already on the card keeps its widget, a newly ticked one is built from the schema),
+        renumbered dense, Default flags from the grid's Default column."""
+        by_key = {column.key: column for column in self._card.columns}
+        columns = [by_key.get(key) or build_column_for_key(key, self._schema) for key in self.grid.fields]
+        self._card = replace(self._card, columns=renumbered(columns))
+        self._sync_default_flags()
+        self._sync_widget_combos()
         self._notify_live()
 
-    def _nudge(self, key: str, delta: int) -> None:
-        column_key = key
-        if self._card.has_column(column_key):
-            self._card = move_column(self._card, column_key, delta)
-            self._sync_rows()
-            self._notify_live()
-
-    def _on_order_typed(self, key: str) -> None:
-        column_key = key
-        if self._card.has_column(column_key):
-            self._card = with_column_order(self._card, column_key, self._order_spins[key].value())
-            self._sync_rows()
-            self._notify_live()
+    def _sync_default_flags(self) -> None:
+        defaults = set(self.grid.defaults or ())
+        self._card = replace(self._card, columns=tuple(
+            column if column.default == (column.key in defaults) else replace(column, default=column.key in defaults)
+            for column in self._card.columns))
 
     def _on_widget_changed(self, key: str) -> None:
-        # No _sync_rows() here, unlike every other edit handler: the widget
+        # No _sync_widget_combos() here, unlike a grid edit: the widget
         # choice does not renumber, and re-driving the combo we just read
         # would recurse.
         column_key = key
@@ -320,56 +288,25 @@ class FilterFieldSelectionDialog(QDialog):
             )
             self._notify_live()
 
-    def _on_default_toggled(self, key: str, checked: bool) -> None:
-        # No _sync_rows(): the Default flag does not renumber or reorder, and
-        # re-driving the checkbox we just read would recurse. A column has to be
-        # on the card before it can be pinned onto fresh graphs -- ticking
-        # Default alone does not add it.
-        column_key = key
-        if self._card.has_column(column_key):
-            self._card = with_column_default(self._card, column_key, checked)
-
     def _on_column_count_changed(self) -> None:
         self._card = with_column_count(self._card, self._column_count_combo.currentData())
         self._notify_live()
-
-    def _on_auto_apply_toggled(self, checked: bool) -> None:
-        if self._settings is not None:
-            self._settings.setValue(_AUTO_APPLY_SETTINGS_KEY, checked)
-        # Turning it on mid-dialog catches the dock up to whatever is already
-        # edited; turning it off leaves the last preview in place -- Cancel still
-        # reverts, OK still keeps.
-        if checked:
-            self._notify_live()
 
     def _notify_live(self) -> None:
         if self._on_live_change is not None and self._auto_apply_check.isChecked():
             self._on_live_change(self._card)
 
-    def _sync_rows(self) -> None:
-        """Redraw every row's order / arrow / widget state from the working
-        card -- an edit anywhere renumbers the whole card, so all rows follow."""
-        for key, checkbox in self._checkboxes.items():
-            column_key = key
-            on_card = self._card.has_column(column_key)
-            column = self._card.column(column_key) if on_card else None
-
-            default_check = self._default_checks[key]
-            default_check.setEnabled(on_card)
-            blocked = default_check.blockSignals(True)
-            default_check.setChecked(bool(on_card and column.default))
-            default_check.blockSignals(blocked)
-
-            for section in self._sections:
-                if key in section.checkboxes:
-                    section.set_row_order(key, column.order if on_card else None)
-
+    def _sync_widget_combos(self) -> None:
+        """Redraw every row's "Shown as" picker from the working card (ticks, Priority and
+        Default are the grid's)."""
+        for key, combo in self._widget_combos.items():
+            on_card = self._card.has_column(key)
+            column = self._card.column(key) if on_card else None
             # A ranged field's widget is not the user's to pick (§1.34): the
             # predicate family follows the field's Type, so the combo is dead
             # and says where the one gate is instead.
             kind = self._schema.get(key, {}).get("kind")
             ranged = kind_is_ranged(kind)
-            combo = self._widget_combos[key]
             combo.setEnabled(on_card and not ranged)
             combo.setToolTip(_RANGED_WIDGET_TOOLTIP if ranged else _WIDGET_TOOLTIP)
             blocked = combo.blockSignals(True)
@@ -382,6 +319,8 @@ class FilterFieldSelectionDialog(QDialog):
 
     def result_card(self) -> FilterCardConfig:
         """The finished configuration -- what Configure Filters stores on the
-        project (ticket #49). Unchanged from the card handed in when nothing
-        was edited, so the caller can skip a no-op save."""
+        project (ticket #49). Equal to the card handed in when nothing
+        was edited, so the caller can skip a no-op save. The grid's Default
+        column is read here: a Default toggle changes no preview, so it emits nothing."""
+        self._sync_default_flags()
         return self._card

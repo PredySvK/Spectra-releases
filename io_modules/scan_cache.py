@@ -376,8 +376,7 @@ def _parse_measurement_file(file_path: str, import_template: str = "") -> Measur
     """
     reader = open_measurement_reader(file_path, import_template)
 
-    run_index = reader.scan_file_structure()
-    reader.load_channels_on_demand(run_index)
+    run_index = reader.read_run_index()
     return run_index
 
 

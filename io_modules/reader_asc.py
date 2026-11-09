@@ -92,10 +92,11 @@ class AccReaderAsc:
         self._delimiter = None
         self._num_pts = 0
 
-    def scan_file_structure(self) -> MeasurementRunIndex:
-        """Registers the file envelope inside the workspace."""
-        file_name = os.path.basename(self.file_path)
-        return MeasurementRunIndex(file_name, self.file_path)
+    def read_run_index(self) -> MeasurementRunIndex:
+        """The file's channels and Lost parts, read from its header (MeasurementReader)."""
+        run_index = MeasurementRunIndex(os.path.basename(self.file_path), self.file_path)
+        self._read_channels(run_index)
+        return run_index
 
     _HEADER_FIELDS = (
         "_header_lines_count", "_start", "_delta", "_channel_names",
@@ -182,13 +183,10 @@ class AccReaderAsc:
         else:
             self._has_explicit_time = False
 
-    def load_channels_on_demand(self, run_index: MeasurementRunIndex):
+    def _read_channels(self, run_index: MeasurementRunIndex) -> None:
         """
         Populates ChannelMetadata entities dynamically based on discovered columns in ASC file.
         """
-        if run_index.available_channels:
-            return
-
         self._parse_header_and_structure()
 
         # Skip the 0-th column if it's reserved purely for the Time axis

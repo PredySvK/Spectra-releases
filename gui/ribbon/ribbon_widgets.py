@@ -130,7 +130,7 @@ class RefreshSplitButton(QToolButton):
 
     The arrow opens a menu with the one new action this button adds: recompute
     only the last N curves (by the order they were added to the graph), N
-    picked with the spinbox beside "Go" (ideas/session_persistence/PLAN.md S8).
+    picked with the spinbox beside "Go" (the session persistence plan S8).
     """
 
     refresh_last_n_requested = Signal(int)

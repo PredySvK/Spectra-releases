@@ -4,10 +4,13 @@
 """
 Where in a record an analysis block is cut, and the speed trace that decides it.
 
-Two things live here. `clean_rpm_profile` turns a raw tacho into a usable speed
-trace, and `generate_tracking_triggers` turns that trace into the sample indices
-a spectrum is computed at -- every N seconds (time mode) or every N rpm on the
-way up or down a sweep (rpm mode).
+`clean_rpm_profile` is Tacho cleaning: it turns a raw tacho, on its own rate,
+into a usable speed trace. `build_tracking_plan` takes that trace on the
+channel's time axis (after Tacho interpolation, ADR §1.306) and places the
+sample indices a spectrum is computed at -- every N seconds (time mode) or
+every N rpm on the way up or down a sweep (rpm mode). The trigger search behind
+it is private: it trusts the plan's checked mode and direction, ordered limits
+and positive step.
 
 `TrackingPlan` bundles the two so a caller that runs many vibration channels
 against **one** tacho pays for them once. Both depend only on the tacho, the
@@ -17,47 +20,80 @@ of a "Calculate & Save Data" batch (BUGS.md K2).
 """
 
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 import numpy as np
-from scipy.ndimage import uniform_filter1d
+from scipy.ndimage import median_filter, uniform_filter1d
 
-from core.dsp_configs import VALID_SWEEP_DIRECTIONS, VALID_TRACKING_MODES, TrackingSweep, normalize_dsp_choice
+from core.dsp_configs import VALID_SWEEP_DIRECTIONS, VALID_TRACKING_MODES, TrackingSweep
+from core.tacho_cleaning import DEFAULT_TACHO_CLEANING, TachoCleaning
+
+# The Hampel filter's neighbourhood: the sample and five on each side. A median
+# of 11 holds while up to 5 of them are bad, so a dropout of 5 samples is still
+# judged against good neighbours.
+HAMPEL_WINDOW_SAMPLES = 11
+# Floor for the noise sigma, relative to the trace's largest |rpm|. A noise-free
+# trace (a synthetic ramp, a tacho held from pulse to pulse) has a MAD of 0; a
+# zero threshold would flag float rounding, this floor still flags a real spike.
+_HAMPEL_SIGMA_FLOOR = 1e-9
+# MAD -> standard deviation for Gaussian noise.
+_MAD_TO_SIGMA = 1.4826
+
+
+def _hampel_spikes(rpm: np.ndarray, threshold_sigma: float) -> np.ndarray:
+    """
+    The samples the Hampel filter flags in a finite `rpm` trace: those further
+    than `threshold_sigma` noise sigmas from the median of their neighbourhood.
+
+    Sigma is one robust estimate for the whole trace (MAD of the deviations),
+    not one per window: a MAD of 11 samples is itself too noisy to judge by.
+    It replaced a test on the step between neighbours, which at 25.6 kHz read
+    ordinary tacho noise as spikes on 96 % of the samples and left the speed
+    ~11 rpm low (#837).
+    """
+    neighbourhood = median_filter(rpm, size=HAMPEL_WINDOW_SAMPLES, mode='nearest')
+    deviation = np.abs(rpm - neighbourhood)
+    sigma = max(_MAD_TO_SIGMA * float(np.median(deviation)),
+                _HAMPEL_SIGMA_FLOOR * float(np.max(np.abs(rpm))))
+    return deviation > threshold_sigma * sigma
 
 
 def clean_rpm_profile(
-        raw_rpm: np.ndarray, fs: float,
-        max_gradient_rpm_s: float = 200000.0, smoothing_window_s: float = 0.05
+        raw_rpm: np.ndarray, fs: float, cleaning: TachoCleaning = DEFAULT_TACHO_CLEANING,
 ) -> np.ndarray:
+    """
+    Tacho cleaning of a raw tacho at its own rate `fs`: NaN/inf bridged, spikes
+    replaced by the Hampel filter at `cleaning.tacho_hampel_sigma`, then a
+    moving average of `cleaning.tacho_smoothing_ms`. A non-finite sample counts
+    as a spike; with the Hampel filter off it is still filled, and with a 0 ms
+    window too the result is the raw tacho otherwise.
+    """
     n_samples = len(raw_rpm)
     finite = np.isfinite(raw_rpm)
     if n_samples and not np.any(finite):
         raise ValueError("Tacho channel contains no finite samples (all NaN/inf).")
     if n_samples < 2: return raw_rpm.copy()
 
-    dt = 1.0 / fs
     cleaned_rpm = raw_rpm.copy()
 
-    with np.errstate(invalid='ignore'):
-        gradients = np.abs(np.diff(cleaned_rpm) / dt)
-    spike_flags = np.zeros(n_samples, dtype=bool)
-    spike_flags[1:] = gradients > max_gradient_rpm_s
-    spike_flags[:-1] = spike_flags[:-1] | spike_flags[1:]
-    # A NaN gradient never compares greater than anything, so a NaN sample
-    # would slip past the test above and the smoother would smear it over a
-    # whole window -- leaving no usable speed range at all (#304).
-    spike_flags |= ~finite
+    # A NaN or inf would poison the neighbourhood median, so the filter judges a
+    # trace with them bridged; they are spikes in their own right (#304: a NaN
+    # the smoother saw smeared over a whole window, leaving no usable speed range).
+    finite_indices = np.where(finite)[0]
+    bridged = cleaned_rpm if finite.all() else np.interp(
+        np.arange(n_samples), finite_indices, cleaned_rpm[finite_indices])
+    spike_flags = ~finite
+    if cleaning.tacho_hampel_filter:
+        spike_flags |= _hampel_spikes(bridged, cleaning.tacho_hampel_sigma)
 
+    # Never every sample: the threshold is a multiple of the median deviation, so
+    # at most about half of a trace lies beyond it, and a NaN-only trace was refused.
     if np.any(spike_flags):
         valid_indices = np.where(~spike_flags)[0]
         invalid_indices = np.where(spike_flags)[0]
-        if len(valid_indices) == 0:
-            # Everything is spiky: keep the finite samples, fill only the gaps.
-            valid_indices = np.where(finite)[0]
-            invalid_indices = np.where(~finite)[0]
         cleaned_rpm[invalid_indices] = np.interp(invalid_indices, valid_indices, cleaned_rpm[valid_indices])
 
-    window_len = int(round(smoothing_window_s * fs))
+    window_len = int(round(cleaning.tacho_smoothing_ms / 1000.0 * fs))
     if window_len > 1:
         window_len = min(window_len, n_samples)
         # uniform_filter1d runs the boxcar as a sliding sum in O(n); np.convolve
@@ -183,65 +219,46 @@ def _endpoint_reaches(rpm_profile: np.ndarray, targets: np.ndarray,
     return (current <= targets + tol) & (previous >= targets - tol) & (previous > current)
 
 
-def generate_tracking_triggers(
-        time_vector: np.ndarray, rpm_profile: np.ndarray, fs: float, tracking_mode: str = "rpm",
-        start_limit: float = 0.0, stop_limit: float = 100000.0, increment: float = 100.0,
-        direction: str = "up"
-) -> Tuple[List[float], List[float], List[str]]:
+def _compute_time_triggers(
+        time_vector: np.ndarray, t_start: float, t_stop: float, step: float
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    (sample index, time) of a block every `step` seconds from `t_start` to
+    `t_stop`. The caller gives an ordered range (t_start <= t_stop) and a
+    positive step; a target with no sample at or before `t_stop` is dropped.
+    """
+    empty = np.empty(0, dtype=np.int64), np.empty(0, dtype=np.float64)
+    if time_vector.size == 0:
+        return empty
+
+    targets = np.arange(t_start, t_stop + 1e-12, step)
+    # A Tracking range that starts before the record (#807) would put every
+    # target ahead of the first sample on that one sample.
+    targets = targets[targets >= time_vector[0]]
+    if targets.size == 0:
+        return empty
+
+    # One searchsorted places every trigger at once. The previous version
+    # walked all n_samples in Python to find a few hundred of them: at
+    # 25.6 kHz over a 75 s record that is three million iterations, while the
+    # RPM branch below was already vectorised.
+    indices = np.searchsorted(time_vector, targets, side="left")
+    indices = indices[indices < time_vector.size]
+    indices = indices[time_vector[indices] <= t_stop]
+    return indices, time_vector[indices]
+
+
+def _compute_rpm_triggers(
+        rpm_profile: np.ndarray, rpm_min: float, rpm_max: float, step: float, direction: str
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    (fractional sample index, target rpm) of one block per multiple of `step`
+    between `rpm_min` and `rpm_max`, where `rpm_profile` first reaches it in
+    `direction` ("up" or "down"). The caller gives a positive step and a
+    checked direction; rpm_min above rpm_max is an empty grid.
+    """
+    empty = np.empty(0, dtype=np.float64), np.empty(0, dtype=np.float64)
     n_samples = len(rpm_profile)
-    if n_samples == 0: return [], [], []
-
-    # "Up", "bogus" and "" used to land in a fallback branch silently; an unknown tracking_mode fell to rpm -- audit 02 F7-A / 7.7.
-    tracking_mode = normalize_dsp_choice(tracking_mode, VALID_TRACKING_MODES, "tracking_mode")
-    direction = normalize_dsp_choice(direction, VALID_SWEEP_DIRECTIONS, "direction")
-
-    dt = 1.0 / fs
-
-    if tracking_mode == "time":
-        t_start, t_stop = min(start_limit, stop_limit), max(start_limit, stop_limit)
-        if increment <= 0.0:
-            return [], [], []
-
-        targets = np.arange(t_start, t_stop + 1e-12, abs(increment))
-        # A Tracking range that starts before the record (#807) would put every
-        # target ahead of the first sample on that one sample.
-        targets = targets[targets >= time_vector[0]]
-        if targets.size == 0:
-            return [], [], []
-
-        # One searchsorted places every trigger at once. The previous version
-        # walked all n_samples in Python to find a few hundred of them: at
-        # 25.6 kHz over a 75 s record that is three million iterations, while the
-        # RPM branch below was already vectorised.
-        indices = np.searchsorted(time_vector, targets, side="left")
-
-        keep = indices < n_samples
-        indices = indices[keep]
-        if indices.size:
-            keep = time_vector[indices] <= t_stop
-            indices = indices[keep]
-
-        if indices.size and n_samples > 1:
-            # Reject a target whose sample is moving against the requested sweep
-            # direction. The old loop instead held the target back and then fired
-            # a burst of catch-up triggers once the slope agreed again, which put
-            # several analysis blocks on almost the same instant.
-            slope = np.gradient(rpm_profile, dt)[indices]
-            agrees = slope >= -0.1 if direction == "up" else slope <= 0.1
-            indices = indices[agrees]
-
-        return (indices.tolist(),
-                time_vector[indices].tolist(),
-                ["time"] * indices.size)
-
-    # --- RPM tracking: one pass over the profile, not one per target ---------
-    # Guarded the same way the time branch above is: np.arange with a zero step
-    # raises ZeroDivisionError from inside numpy, which reaches the user as a
-    # stack trace instead of the caller's "no tracking triggers" message.
-    if increment <= 0.0:
-        return [], [], []
-
-    rpm_min, rpm_max = min(start_limit, stop_limit), max(start_limit, stop_limit)
 
     # The grid is anchored to whole multiples of the step, not to whatever the
     # slowest sample of THIS particular recording happened to be. Two runs of
@@ -251,15 +268,14 @@ def generate_tracking_triggers(
     # read against each other. The epsilon keeps a limit that already sits on a
     # multiple (0 rpm after the standstill clamp, say) from being pushed up a
     # whole step by float noise.
-    step = abs(increment)
     first_target = np.ceil(rpm_min / step - 1e-9) * step
     targets = np.arange(first_target, rpm_max + 1e-5, step)
     if targets.size == 0 or n_samples < 2:
-        return [], [], []
+        return empty
 
     target_index, sample_index = _interior_crossings(rpm_profile, targets, direction)
 
-    tol = max(abs(increment) * 1e-4, 1e-6)
+    tol = max(step * 1e-4, 1e-6)
     last_sample = n_samples - 1
     endpoint = _endpoint_reaches(rpm_profile, targets, direction, tol)
     if endpoint.any():
@@ -278,7 +294,7 @@ def generate_tracking_triggers(
             target_index, sample_index = target_index[order], sample_index[order]
 
     if target_index.size == 0:
-        return [], [], []
+        return empty
 
     # One block per target: the first time the speed reaches it (#745). The
     # crossings are sorted by target and then by sample, so each target's
@@ -290,11 +306,7 @@ def generate_tracking_triggers(
     target_index, sample_index = target_index[first_of_each], sample_index[first_of_each]
 
     trigger_values = targets[target_index]
-    trigger_indices = _interpolated_crossing_indices(rpm_profile, sample_index, trigger_values)
-
-    return (trigger_indices.tolist(),
-            trigger_values.tolist(),
-            ["sweep"] * trigger_values.size)
+    return _interpolated_crossing_indices(rpm_profile, sample_index, trigger_values), trigger_values
 
 
 @dataclass(frozen=True, eq=False)
@@ -324,7 +336,7 @@ class TrackingPlan:
     fs: float
     n_samples: int
     step: float
-    direction: str
+    direction: Optional[str]    # None in time mode, which has no direction
     cleaned_rpm: np.ndarray
     trigger_indices: np.ndarray
     axis_values: np.ndarray
@@ -348,12 +360,15 @@ class TrackingPlan:
 
 
 def build_tracking_plan(
-        tacho_data: Optional[np.ndarray], n_samples: int, fs: float,
+        speed_rpm: Optional[np.ndarray], n_samples: int, fs: float,
         sweep: TrackingSweep, start_time: float = 0.0,
 ) -> TrackingPlan:
     """
-    Clean the tacho, place the triggers, and sort them into the order the
-    result axis needs -- once, for however many channels share this tacho.
+    Place the triggers on `speed_rpm` and sort them into the order the result
+    axis needs -- once, for however many channels share this tacho.
+    `speed_rpm` is the tacho after Tacho cleaning (`clean_rpm_profile`) and
+    Tacho interpolation, one finite value per sample of the channel; None
+    (no tacho) runs the plan in time mode.
 
     Time mode carries a zero rpm profile and sorts by sample index; rpm mode
     sorts by speed, so a run-down reads left to right like a run-up. Rpm mode
@@ -364,8 +379,9 @@ def build_tracking_plan(
     from it, so it reads like the time signal of a recording that does not
     start at 0 s (#739); rpm mode does not use it.
 
-    `sweep` is taken as `resolve_tracking_sweep` gave it: its mode and
-    direction are checked, not normalised, and its Tacho cleaning is used as is
+    `sweep` is taken as `resolve_tracking_sweep` gave it: its mode and, in
+    rpm mode, its direction are checked, not normalised (a time sweep has
+    none, ADR §1.302), and its Tacho cleaning is used as is
    . The plan keeps this very sweep, even when a missing tacho
     runs it in time mode.
 
@@ -382,16 +398,18 @@ def build_tracking_plan(
     every step, so the grid is not on multiples of the step. Rpm
     mode ignores them.
 
-    `sweep.tacho_cleaning` is what rpm mode cleans the tacho with (`clean_rpm_profile`,
-    ADR §1.211). Time mode ignores it.
+    `sweep.tacho_cleaning` is what `speed_rpm` was cleaned with (ADR §1.211,
+    §1.306): it keeps a plan apart from another cleaning's, the plan does not
+    clean again.
     """
     _require_choice(sweep.mode, VALID_TRACKING_MODES, "tracking_mode")
-    _require_choice(sweep.direction, VALID_SWEEP_DIRECTIONS, "direction")
+    if sweep.mode == "rpm":
+        _require_choice(sweep.direction, VALID_SWEEP_DIRECTIONS, "direction")
     step, direction = sweep.step, sweep.direction
     rpm_min, rpm_max = sweep.rpm_min, sweep.rpm_max
     time_start, time_end = sweep.time_start, sweep.time_end
-    # generate_tracking_triggers swaps inverted limits, which would put a block
-    # above the maximum; the ribbon refuses this as typed, a workflow block not.
+    # An inverted range is a typing mistake to report, not an empty result;
+    # the ribbon refuses it as typed, a workflow block not.
     if rpm_min is not None and rpm_max is not None and float(rpm_min) >= float(rpm_max):
         raise ValueError(
             f"Tracking range minimum ({float(rpm_min):g} rpm) must be below its "
@@ -405,7 +423,7 @@ def build_tracking_plan(
 
     time_vector = start_time + np.arange(n_samples) / fs
 
-    if sweep.mode == "time" or tacho_data is None:
+    if sweep.mode == "time" or speed_rpm is None:
         mode = "time"
         cleaned_rpm = np.zeros(n_samples, dtype=np.float64)
         start_limit = float(time_vector[0]) if n_samples else 0.0
@@ -418,8 +436,7 @@ def build_tracking_plan(
             stop_limit = float(time_end)
     else:
         mode = "rpm"
-        cleaned_rpm = clean_rpm_profile(
-            tacho_data, fs, smoothing_window_s=sweep.tacho_cleaning.tacho_smoothing_ms / 1000.0)
+        cleaned_rpm = np.array(speed_rpm, dtype=np.float64)
         # A motor run in reverse logs negative rpm all the way down to the
         # run's top speed (-35 000 in the Step2/Sweep2 exports, #456), while
         # order frequencies only follow the magnitude. Flip such a run rather
@@ -428,7 +445,7 @@ def build_tracking_plan(
         if -float(np.min(cleaned_rpm)) > float(np.max(cleaned_rpm)):
             cleaned_rpm = -cleaned_rpm
         # A real tacho reads noise around zero at standstill -- the measured
-        # Setup1-Sweep1-1 data dips to -406 rpm -- and the smoothing above
+        # Setup1-Sweep1-1 data dips to -406 rpm -- and Tacho cleaning
         # spreads that rather than removing it. Negative speeds would put the
         # frequency band below DC, where nothing can be measured, so the sweep
         # starts at zero.
@@ -458,16 +475,15 @@ def build_tracking_plan(
             at_rest = np.flatnonzero(cleaned_rpm[peak:] <= floor_rpm)
             first, last = peak, (peak + int(at_rest[0]) + 1 if at_rest.size else n_samples)
 
-    if mode == "time" and start_limit > stop_limit:
-        # A time range wholly before or after the record: generate_tracking_triggers
-        # would swap the limits and place a block between them.
+    if step <= 0.0 or start_limit > stop_limit:
+        # No grid: a step the workflow form let through, or a time range
+        # wholly before or after the record.
         indices, values = [], []
+    elif mode == "time":
+        indices, values = _compute_time_triggers(time_vector, start_limit, stop_limit, step)
     else:
-        indices, values, _ = generate_tracking_triggers(
-            time_vector=time_vector[first:last], rpm_profile=cleaned_rpm[first:last], fs=fs,
-            tracking_mode=mode, start_limit=start_limit, stop_limit=stop_limit, increment=step,
-            direction=direction,
-        )
+        indices, values = _compute_rpm_triggers(
+            cleaned_rpm[first:last], start_limit, stop_limit, step, direction)
 
     trigger_indices = np.asarray(indices, dtype=np.float64) + first
     axis_values = np.asarray(values, dtype=np.float64)
@@ -477,7 +493,8 @@ def build_tracking_plan(
         axis_values = axis_values[order]
 
     return TrackingPlan(
-        mode=mode, fs=fs, n_samples=n_samples, step=step, direction=direction,
+        mode=mode, fs=fs, n_samples=n_samples, step=step,
+        direction=direction if mode == "rpm" else None,
         cleaned_rpm=cleaned_rpm,
         trigger_indices=trigger_indices, axis_values=axis_values, start_time=start_time,
         sweep=sweep,

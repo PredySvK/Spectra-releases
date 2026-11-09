@@ -50,6 +50,9 @@ class ResultSetSink:
         # What the committed set is actually called. Differs from the draft's
         # label on an overwrite, where the existing set keeps its own name.
         self.result_label: str = draft.label
+        # The id of the committed set, once `finish` wrote one: a Batch run
+        # waiting to overwrite it is pointed here when its turn comes (#967).
+        self.result_set_id: Optional[str] = None
         self._entries: List[tuple[int, Dict[str, Any]]] = []
         self._auto_index: int = 0
         # Files whose Overall Level F max was clipped to their Nyquist: one
@@ -110,6 +113,7 @@ class ResultSetSink:
             return False, [f"ERROR: {self.what} failed to write: {error}"]
 
         self.result_label = result_set.label
+        self.result_set_id = result_set.id
         channel_count = sum(len(entry.get("channels") or []) for entry in entries)
         verb = "Overwrote" if self.overwrite_result_set_id else "Saved"
         suffix = " -- PARTIAL: some files failed, see log above." if status == "partial" else ""

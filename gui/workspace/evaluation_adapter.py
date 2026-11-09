@@ -7,9 +7,9 @@ view_models.evaluation.curve_identities_for_traces needs -- the dock adapter
 ADR §1.64 point 3 asks for. Reads only a dock's public surface
 (`visible_traces()`), never a private attribute.
 
-Lives in gui/ (it reads a dock and an AppContext, both Qt-adjacent) even
-though it imports no Qt itself; the curve collection it hands off to is pure
-(issue #184 -- see view_models.evaluation for the dock-free half).
+Lives in gui/ because it reads a dock and an AppContext; the curve collection
+it hands off to is pure (issue #184 -- see view_models.evaluation for the
+dock-free half).
 """
 
 from __future__ import annotations
@@ -18,18 +18,14 @@ from typing import Any, List, Optional, Tuple
 
 from core.data_block import NVHDataBlock
 from core.evaluation import CurveIdentity
+from gui.workspace.spectrogram_dock import SpectrogramDock
 from orchestration.trace_filter import build_identity_context
 from view_models.evaluation import curve_identities_for_traces, synthetic_trace_for_block
 
 
 def _spectrogram_block_for_dock(dock: Any) -> Optional[NVHDataBlock]:
-    """`dock.canonical_block()` if the dock exposes one (SpectrogramDock,
-    ADR §1.64 point 3), else None -- duck-typed rather than an isinstance
-    check so this stays free of a gui.workspace.spectrogram_dock import."""
-    getter = getattr(dock, "canonical_block", None)
-    if not callable(getter):
-        return None
-    return getter()
+    """The block of a SpectrogramDock, None for any other dock."""
+    return dock.canonical_block() if isinstance(dock, SpectrogramDock) else None
 
 
 def curves_for_evaluation(

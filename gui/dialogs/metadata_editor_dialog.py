@@ -16,7 +16,7 @@ from gui.dialogs.channel_pairing_tab import ChannelPairingTab
 from io_modules.metadata_schema import build_schema_field_choice, resolve_schema_field_kind
 from io_modules.measurement_files import is_simulated_result_file
 from io_modules.project_store import PAIRING_FILE_NAME
-from orchestration.channel_pairing import resolve_channel_pairing_path, write_project_channel_pairing
+from io_modules.channel_pairing import resolve_channel_pairing_path, write_project_channel_pairing
 from selection.channel_identity import split_channel_base_and_direction
 from selection.field_offer import is_active_field
 from gui.appearance import APP_TOKENS

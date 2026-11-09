@@ -9,26 +9,33 @@ Architecture:
   adds curves (add_curve), owns the result-set lifecycle (request_result_sets,
   land_result_set, abandon_result_sets, unload_result_sets), rebuilds them
   (rebuild_units, rebuild_domain, rebuild_*_display) and reports every change
-  (CurvesReplaced, CurveAppended, CurvesCleared) to the dock that draws them.
+  (CurvesReplaced, CurveAppended, CurvesCleared, BandRmsBandMoved) to the dock that draws them.
   PendingRestore / NOTHING_PENDING: what a graph gets back once its next base curve lands.
 - Display settings: DisplaySettings is the one value a graph or a spectrogram is
   built and rebuilt in (unit prefs, spectrum format / amplitude / dB, colour scale,
   order & Overall Level amplitude); resolve_display_settings reads it from the ribbon
   tabs' configs for a dock's Analysis kind (#833), its own RMS/Peak included (ADR §1.62
   point 22).
-- Plot models (PlotModel, SpectrogramModel, Trace, Pen, ViewSpec, BandRmsCursor, Annotation):
+- Plot models (PlotModel, SpectrogramModel, Trace, Pen, ViewSpec, Annotation):
   the snapshot a dock draws. Mask, HiddenReason and AcceptOutcome describe
   what GraphCurves decided is visible.
 - Graph spectrogram: GraphSpectrogram owns the spectrogram one graph holds --
   GraphCurves' counterpart for a 2D map: it builds the model from a block
   (show_block), rebuilds it in other display settings (rebuild_display) and
   hands every new model to the dock that draws it (#301).
+- Band RMS: resolve_band_rms_span says where the band stands on a spectrum,
+  build_band_rms_readout what the text beside it says; the dock only draws them.
 - Questions the GUI asks about curves it holds: overall_level_band_differs_from_dock,
   traces_kept_after_unload, build_trace_descriptor.
-- Spectrogram image geometry: resolve_image_axis_extent gives the span of one image axis
-  (half a bin past each end, +-0.5 for a single bin); the dock draws the image over it
-  and the Cursor reads the cell under the mouse from it (#665 C28).
-- Presentation styling & legend text: base_display_unit, format_display_unit, resolve_carousel_colour.
+- Drawn spectrogram: build_drawn_spectrogram turns a SpectrogramModel and the global
+  X axis unit into the DrawnSpectrogram -- ascending axes in the displayed unit, the
+  matrix in the same order, image extents, axis labels and the colour (Z) unit. The
+  dock draws it and the Cursor reads the cell under the mouse from the same one (#893).
+  resolve_image_axis_extent gives the span of one image axis (half a bin past each
+  end, +-0.5 for a single bin, #665 C28).
+- Presentation styling & legend text: base_display_unit, format_display_unit, resolve_carousel_colour;
+  legend_reads_curve_metadata and format_curve_metadata_value (a Curve metadata value as text,
+  shared with the Cursor Box).
 - resolve_ordinate_quantity: "rpm" for a speed curve's Y values, so the Display prefix
   puts a Hz ordinate on the Speed row.
 - Rendering mode & curve look: resolve_rendering_mode picks OpenGL or raster
@@ -46,6 +53,11 @@ runs (orchestration/), what project is currently open (session/), which
 curves are relevant (selection/), or signal processing computation (signal_processing/).
 """
 
+from ._band_rms_readout import (
+    BandRmsSpan,
+    build_band_rms_readout,
+    resolve_band_rms_span,
+)
 from ._curve_decimation import (
     CurveDecimation,
     resolve_curve_decimation,
@@ -69,6 +81,7 @@ from ._graph_colours import (
     resolve_rendering_mode,
 )
 from ._graph_curves import (
+    BandRmsBandMoved,
     CurveAppended,
     CurvesChange,
     CurvesCleared,
@@ -77,6 +90,10 @@ from ._graph_curves import (
     NOTHING_PENDING,
     PendingRestore,
     build_trace_descriptor,
+)
+from ._drawn_spectrogram import (
+    DrawnSpectrogram,
+    build_drawn_spectrogram,
 )
 from ._graph_spectrogram import (
     GraphSpectrogram,
@@ -87,10 +104,11 @@ from ._image_extent import (
 from ._legend_settings import (
     base_display_unit,
     format_display_unit,
+    legend_reads_curve_metadata,
+    format_curve_metadata_value,
 )
 from ._plot_model import (
     Annotation,
-    BandRmsCursor,
     Pen,
     PlotModel,
     SpectrogramModel,
@@ -113,6 +131,7 @@ from ._visible_traces import (
 
 __all__ = [
     # Graph curves -- the one owner of a graph's curves
+    "BandRmsBandMoved",
     "CurveAppended",
     "CurvesChange",
     "CurvesCleared",
@@ -126,12 +145,15 @@ __all__ = [
     "resolve_order_curve_identity",
     # Graph spectrogram -- the one owner of a graph's spectrogram
     "GraphSpectrogram",
+    # Band RMS -- where the band stands and what its readout says
+    "BandRmsSpan",
+    "build_band_rms_readout",
+    "resolve_band_rms_span",
     # Display settings -- how a graph shows its curves
     "DisplaySettings",
     "resolve_display_settings",
     # Plot models
     "Annotation",
-    "BandRmsCursor",
     "Pen",
     "PlotModel",
     "SpectrogramModel",
@@ -146,13 +168,17 @@ __all__ = [
     # Questions about held curves
     "overall_level_band_differs_from_dock",
     "traces_kept_after_unload",
-    # Spectrogram image geometry -- the span of one image axis
+    # Drawn spectrogram -- what the image, colour bar and Cursor all read (#893)
+    "DrawnSpectrogram",
+    "build_drawn_spectrogram",
     "resolve_image_axis_extent",
     # Legend & palette
     "base_display_unit",
     "resolve_carousel_colour",
     "HeldPens",
     "format_display_unit",
+    "legend_reads_curve_metadata",
+    "format_curve_metadata_value",
     # The quantity of a curve's Y values (Display prefix row for a Hz ordinate)
     "resolve_ordinate_quantity",
     # Rendering mode & curve look

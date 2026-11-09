@@ -2,91 +2,105 @@
 # FILE: gui/workspace/cursor.py
 # =====================================================================
 """
-The Cursor on GraphDock: hover a curve graph and a frameless Cursor Box shows the
-nearest real sample of the nearest visible curve (CONTEXT.md "Cursor").
+Shared hover gate and Cursor Box for GraphDock and SpectrogramDock
+(CONTEXT.md "Cursor", "Cursor Box", "Highlight").
 
-What is picked and what the box says is decided in view_models.cursor; this mixin
-only reads the mouse and the ViewBoxes into plain numbers, and draws the box. The
-box is a pg.TextItem parented to the ViewBox (pixel coordinates, like the Band RMS
-label), so it never takes part in auto-range and survives a replot. On/off is an
-app-level flag (AppContext.cursor_enabled) shared by every graph.
+What is picked, whether the box is shown or kept in place, where the
+spectrogram crosshair sits and which curve the Highlight emphasises are decided
+in view_models.cursor.CursorState; this module reads the mouse and the
+ViewBoxes into plain numbers, installs the single SignalProxy and viewport
+Leave filter, and applies the resulting CursorView to the widgets. Another
+tool that follows the mouse adds its own step to the same gate
+(`_add_hover_step`) instead of a second SignalProxy.
 
 Runs synchronously on the GUI thread: the hit test only touches a pixel-wide
 window of each curve, mouse moves arrive rate-limited (~60 Hz).
 """
 
-from typing import Dict, Optional
+from typing import Dict, Iterable, List, Mapping, Optional, Protocol, Tuple
 
 import pyqtgraph as pg
-from PySide6.QtCore import QEvent, QPointF, Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication
 
-from core.axis_projections import X_AXIS_NATIVE, resolve_x_axis_display
+from core.axis_projections import AxisScreenRule
 from core.cursor_config import CursorConfig
+from gui.workspace.graph_overlay import GraphOverlay
 from gui.workspace.plot_area import GRAPH_TOKENS
-from orchestration.trace_filter import build_identity_context
+from orchestration.trace_filter import resolve_curve_metadata_sources
 from view_models.cursor import (
-    AxisTransform, build_cursor_box_lines, read_curve_metadata, resolve_box_position,
-    resolve_cursor_point, resolve_spectrogram_pixel,
+    AxisTransform,
+    CursorState,
+    CursorView,
+    read_curve_metadata,
+    resolve_box_position,
 )
+from view_models.plot import Trace
 
 CURSOR_RADIUS_PX = 10
 CURSOR_MOUSE_RATE_HZ = 60
 
+class HoverStep(Protocol):
+    """One more tool's step on the hover gate, run on every mouse move after the Cursor's own."""
 
-def _axis_transform(vb: pg.ViewBox, x_display: float, log_y: bool) -> AxisTransform:
+    def __call__(self, vb: pg.ViewBox, scene_pos: QPointF, *, in_bounds: bool, button_pressed: bool) -> None: ...
+
+
+def _axis_transform(vb: pg.ViewBox, x_rule: AxisScreenRule, y_rule: AxisScreenRule) -> AxisTransform:
     (x0, x1), (y0, y1) = vb.viewRange()
     w, h = vb.width(), vb.height()
     x_span, y_span = (x1 - x0) or 1.0, (y1 - y0) or 1.0
     x_scale, y_scale = w / x_span, -h / y_span
     return AxisTransform(x_scale, -x0 * x_scale, y_scale, -y1 * y_scale,
-                         x_display=x_display, log_y=log_y)
-
-
-class _CursorBox(pg.TextItem):
-    """The Cursor Box; takes the left mouse button (to be dragged) only while pinned."""
-
-    def informViewBoundsChanged(self):
-        # The box is an overlay, never data: every setPos would queue a ViewBox auto-range,
-        # which with Highlight on re-pads the range by the thicker pen and shakes the graph (#579).
-        pass
-
-    def mouseDragEvent(self, ev):
-        if ev.button() != Qt.MouseButton.LeftButton:
-            ev.ignore()
-            return
-        ev.accept()
-        parent = self.parentItem()
-        delta = parent.mapFromScene(ev.scenePos()) - parent.mapFromScene(ev.lastScenePos())
-        self.setPos(self.pos() + delta)
-
-
-def _set_box_draggable(box: pg.TextItem, pinned: bool) -> None:
-    box.setAcceptedMouseButtons(Qt.MouseButton.LeftButton if pinned else Qt.MouseButton.NoButton)
+                         x_rule=x_rule, y_rule=y_rule)
 
 
 class CursorMixin:
-    """Hover Cursor Box, mixed into GraphDock."""
+    """Shared hover gate and Cursor Box, mixed into GraphDock (and via SpectrogramCursorMixin into SpectrogramDock)."""
 
-    # The `C` shortcut asks the app to flip the one global switch; the ribbon
-    # button owns the state (Workspace.toggle_cursor).
-    sig_cursor_toggle_requested = Signal()
-    sig_cursor_pin_requested = Signal()
+    # The `C` and `P` shortcuts emit WorkspaceDock.sig_cursor_toggle_requested /
+    # sig_cursor_pin_requested; the Settings store owns the state
+    # (Workspace.toggle_tool_switch, ADR §1.290). `T` likewise emits
+    # sig_track_cursor_toggle_requested from every dock, a spectrogram too,
+    # though only a curve graph draws the Track cursor.
 
-    def _init_cursor(self) -> None:
-        """Called at the end of GraphDock.init_ui, once plot_widget exists."""
+    def _init_cursor(self, *, with_crosshair: bool = False) -> None:
+        """Called at the end of init_ui, once plot_widget exists."""
+        self._cursor_state = CursorState()
+        self._hover_steps: List[HoverStep] = []
         vb = self.plot_widget.plotItem.vb
-        self._cursor_box = _CursorBox(anchor=(0, 0), color=GRAPH_TOKENS.cursor_box_line, fill=pg.mkBrush(*GRAPH_TOKENS.cursor_box_fill))
-        self._cursor_box.setParentItem(vb)
-        _set_box_draggable(self._cursor_box, False)
-        self._cursor_box.setZValue(1000)
-        self._cursor_box.hide()
-        self._last_cursor_point = None
+        # Takes the left mouse button (to be dragged) only while pinned.
+        self._cursor_box = GraphOverlay(
+            vb,
+            z_value=1000,
+            anchor=(0, 0),
+            color=GRAPH_TOKENS.cursor_box_line,
+            fill=pg.mkBrush(*GRAPH_TOKENS.cursor_box_fill),
+        )
+
+        if with_crosshair:
+            pen = pg.mkPen(color=GRAPH_TOKENS.cursor_box_line, width=1, style=Qt.PenStyle.DashLine)
+            self._crosshair_v = pg.InfiniteLine(angle=90, movable=False, pen=pen)
+            self._crosshair_h = pg.InfiniteLine(angle=0, movable=False, pen=pen)
+            self._crosshair_v.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            self._crosshair_h.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            self._crosshair_v.setZValue(999)
+            self._crosshair_h.setZValue(999)
+            self.plot_widget.addItem(self._crosshair_v)
+            self.plot_widget.addItem(self._crosshair_h)
+            self._crosshair_v.hide()
+            self._crosshair_h.hide()
+        else:
+            self._crosshair_v = None
+            self._crosshair_h = None
+
         self._cursor_proxy = pg.SignalProxy(
-            self.plot_widget.scene().sigMouseMoved, rateLimit=CURSOR_MOUSE_RATE_HZ,
-            slot=lambda args: self.update_cursor_at(args[0]))
-        self.plot_widget.viewport().installEventFilter(self)
+            self.plot_widget.scene().sigMouseMoved,
+            rateLimit=CURSOR_MOUSE_RATE_HZ,
+            slot=lambda args: self.update_cursor_at(args[0]),
+        )
+        self._install_hover_viewport_filter()
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self.plot_widget.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         shortcut = QShortcut(QKeySequence("C"), self)
@@ -95,156 +109,79 @@ class CursorMixin:
         pin_shortcut = QShortcut(QKeySequence("P"), self)
         pin_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         pin_shortcut.activated.connect(self.sig_cursor_pin_requested)
+        track_shortcut = QShortcut(QKeySequence("T"), self)
+        track_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        track_shortcut.activated.connect(self.sig_track_cursor_toggle_requested)
 
-    def cursor_box_visible(self) -> bool:
-        return self._cursor_box.isVisible()
+    def _add_hover_step(self, step: HoverStep) -> None:
+        """Run ``step`` on every mouse move of this gate, after the Cursor's own."""
+        self._hover_steps.append(step)
 
-    def hide_cursor_box(self) -> None:
-        self._cursor_box.hide()
+    def _install_hover_viewport_filter(self) -> None:
+        viewport = self.plot_widget.viewport()
+        viewport.setMouseTracking(True)
+        viewport.installEventFilter(self)
 
-    def eventFilter(self, obj, event):
-        if (event.type() == QEvent.Type.Leave and obj is self.plot_widget.viewport()
-                and not getattr(self.app_context, "cursor_pinned", False)):
-            self.hide_cursor_box()
-        return super().eventFilter(obj, event)
+    def _cursor_enabled(self) -> bool:
+        return bool(getattr(self.app_context, "cursor_enabled", False))
 
-    def _cursor_transforms(self, log_y: bool) -> Dict[str, AxisTransform]:
-        x_display = self._x_axis.scale
-        transforms = {"primary": _axis_transform(self.plot_widget.plotItem.vb, x_display, log_y)}
-        secondary = self.secondary_axis.view_box
-        if secondary is not None:
-            transforms["secondary"] = _axis_transform(secondary, x_display, log_y)
-        return transforms
+    def _cursor_pinned(self) -> bool:
+        return bool(getattr(self.app_context, "cursor_pinned", False))
 
-    def update_cursor_at(self, scene_pos: QPointF) -> None:
-        """Show, move or hide the Cursor Box for a mouse at ``scene_pos``."""
-        try:
-            vb = self.plot_widget.plotItem.vb
-            if vb is None:
-                return
-            bounding_rect = vb.sceneBoundingRect()
-        except RuntimeError:
-            return
-        ctx = self.app_context
-        pinned = bool(getattr(ctx, "cursor_pinned", False))
-        _set_box_draggable(self._cursor_box, pinned)
-        if not getattr(ctx, "cursor_enabled", False) or self.curves.model is None:
-            self.hide_cursor_box()
-            return
-        if (QApplication.mouseButtons() != Qt.MouseButton.NoButton
-                or not bounding_rect.contains(scene_pos)):
-            if not pinned:
-                self.hide_cursor_box()
-            return
-        mouse = vb.mapFromScene(scene_pos)
-        mouse_px = (mouse.x(), mouse.y())
-        # ponytail: log X axis is not handled (pixel X would be wrong); only log Y is.
-        log_y = bool(self.plot_widget.plotItem.ctrl.logYCheck.isChecked())
-        point = resolve_cursor_point(
-            self.visible_traces(), self._cursor_transforms(log_y), mouse_px, CURSOR_RADIUS_PX)
-        if point is None:
-            if not pinned:
-                self.hide_cursor_box()
-            return
-        config = getattr(ctx, "cursor_config", None) or CursorConfig()
-        identity_context = build_identity_context(ctx.project_session)
-        metadata = read_curve_metadata(
-            point.trace, config.fields, ctx.pool.schema().master, identity_context.sources_by_path,
-            identity_context.result_set_labels)
-        self._last_cursor_point = point
-        lines = build_cursor_box_lines(
-            point, config, x_unit=self._x_axis.unit, x_quantity=self.curves.model.x_domain,
-            two_axes=self.secondary_axis.is_active, metadata=metadata, prefs=self._unit_preferences())
-        if not lines:
-            if not pinned:
-                self.hide_cursor_box()
-            return
-        self._cursor_box.setText("\n".join(f"{label}: {text}" for label, text in lines))
-        if not (pinned and self._cursor_box.isVisible()):
-            rect = self._cursor_box.boundingRect()
-            x, y = resolve_box_position((rect.width(), rect.height()), mouse_px, (0, 0, vb.width(), vb.height()))
-            self._cursor_box.setPos(x, y)
-        self._cursor_box.show()
+    def _highlight_enabled(self) -> bool:
+        return bool(getattr(self.app_context, "highlight_enabled", False))
 
-    def _refresh_cursor_box(self) -> None:
-        if self._last_cursor_point is None or not self.cursor_box_visible():
-            return
-        ctx = self.app_context
-        config = getattr(ctx, "cursor_config", None) or CursorConfig()
-        identity_context = build_identity_context(ctx.project_session)
-        metadata = read_curve_metadata(
-            self._last_cursor_point.trace, config.fields, ctx.pool.schema().master,
-            identity_context.sources_by_path, identity_context.result_set_labels)
-        lines = build_cursor_box_lines(
-            self._last_cursor_point, config, x_unit=self._x_axis.unit,
-            x_quantity=self.curves.model.x_domain,
-            two_axes=self.secondary_axis.is_active, metadata=metadata,
-            prefs=self._unit_preferences())
-        if lines:
-            self._cursor_box.setText("\n".join(f"{label}: {text}" for label, text in lines))
-
-
-class SpectrogramCursorMixin:
-    """Hover crosshair and Cursor Box, mixed into SpectrogramDock."""
-
-    # The `C` shortcut asks the app to flip the one global switch; the ribbon
-    # button owns the state (Workspace.toggle_cursor).
-    sig_cursor_toggle_requested = Signal()
-    sig_cursor_pin_requested = Signal()
-
-    def _init_cursor(self) -> None:
-        """Called at the end of SpectrogramDock.init_ui."""
-        vb = self.plot_widget.plotItem.vb
-        self._cursor_box = _CursorBox(anchor=(0, 0), color=GRAPH_TOKENS.cursor_box_line, fill=pg.mkBrush(*GRAPH_TOKENS.cursor_box_fill))
-        self._cursor_box.setParentItem(vb)
-        _set_box_draggable(self._cursor_box, False)
-        self._cursor_box.setZValue(1000)
-        self._cursor_box.hide()
-
-        pen = pg.mkPen(color=GRAPH_TOKENS.cursor_box_line, width=1, style=Qt.PenStyle.DashLine)
-        self._crosshair_v = pg.InfiniteLine(angle=90, movable=False, pen=pen)
-        self._crosshair_h = pg.InfiniteLine(angle=0, movable=False, pen=pen)
-        self._crosshair_v.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
-        self._crosshair_h.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
-        self._crosshair_v.setZValue(999)
-        self._crosshair_h.setZValue(999)
-        self.plot_widget.addItem(self._crosshair_v)
-        self.plot_widget.addItem(self._crosshair_h)
-        self._crosshair_v.hide()
-        self._crosshair_h.hide()
-
-        self._cursor_proxy = pg.SignalProxy(
-            self.plot_widget.scene().sigMouseMoved, rateLimit=CURSOR_MOUSE_RATE_HZ,
-            slot=lambda args: self.update_cursor_at(args[0]))
-        self.plot_widget.viewport().installEventFilter(self)
-        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
-        self.plot_widget.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
-        shortcut = QShortcut(QKeySequence("C"), self)
-        shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-        shortcut.activated.connect(self.sig_cursor_toggle_requested)
-        pin_shortcut = QShortcut(QKeySequence("P"), self)
-        pin_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-        pin_shortcut.activated.connect(self.sig_cursor_pin_requested)
+    def _cursor_config(self) -> CursorConfig:
+        return getattr(self.app_context, "cursor_config", None) or CursorConfig()
 
     def cursor_box_visible(self) -> bool:
         return self._cursor_box.isVisible()
 
     def crosshair_visible(self) -> bool:
-        return self._crosshair_v.isVisible() and self._crosshair_h.isVisible()
+        return (
+            self._crosshair_v is not None
+            and self._crosshair_v.isVisible()
+            and self._crosshair_h.isVisible()
+        )
 
     def hide_cursor_box(self) -> None:
-        self._cursor_box.hide()
-        self._crosshair_v.hide()
-        self._crosshair_h.hide()
+        self._apply_cursor_view(self._cursor_state.hide())
+
+    def _clear_cursor(self) -> None:
+        self._apply_cursor_view(self._cursor_state.clear())
 
     def eventFilter(self, obj, event):
-        if (event.type() == QEvent.Type.Leave and obj is self.plot_widget.viewport()
-                and not getattr(self.app_context, "cursor_pinned", False)):
-            self.hide_cursor_box()
+        if event.type() == QEvent.Type.Leave and obj is self.plot_widget.viewport():
+            self._apply_cursor_view(self._cursor_state.leave(
+                cursor_enabled=self._cursor_enabled(),
+                pinned=self._cursor_pinned(),
+            ))
         return super().eventFilter(obj, event)
 
+    def _cursor_transforms(self) -> Dict[str, AxisTransform]:
+        x_rule, y_rule = self.x_screen_rule(), self.y_screen_rule()
+        transforms = {"primary": _axis_transform(self.plot_widget.plotItem.vb, x_rule, y_rule)}
+        secondary = self.secondary_axis.view_box
+        if secondary is not None:
+            # A secondary curve follows the primary axis into log X and log Y
+            # (§1.276), so the Cursor reads both with the same rules.
+            transforms["secondary"] = _axis_transform(secondary, x_rule, y_rule)
+        return transforms
+
+    def _read_trace_metadata(
+        self, trace: Trace, fields: Iterable[str],
+    ) -> Mapping[str, Tuple[str, str]]:
+        sources = resolve_curve_metadata_sources(
+            getattr(self.app_context, "project_session", None), getattr(self.app_context, "pool", None))
+        if sources is None:
+            return {}
+        schema, identity_context = sources
+        return read_curve_metadata(
+            trace, fields, schema, identity_context.sources_by_path, identity_context.result_set_labels,
+        )
+
     def update_cursor_at(self, scene_pos: QPointF) -> None:
-        """Show, move or hide the Cursor Box and crosshair for a mouse at ``scene_pos``."""
+        """Show, move or hide the Cursor Box (and Highlight / crosshair) for a mouse at ``scene_pos``."""
         try:
             vb = self.plot_widget.plotItem.vb
             if vb is None:
@@ -252,72 +189,139 @@ class SpectrogramCursorMixin:
             bounding_rect = vb.sceneBoundingRect()
         except RuntimeError:
             return
-        ctx = self.app_context
-        model = self.spectrogram.model
-        pinned = bool(getattr(ctx, "cursor_pinned", False))
-        _set_box_draggable(self._cursor_box, pinned)
-        if not getattr(ctx, "cursor_enabled", False) or model is None:
-            self.hide_cursor_box()
-            return
-        if (QApplication.mouseButtons() != Qt.MouseButton.NoButton
-                or not bounding_rect.contains(scene_pos)):
-            if not pinned:
-                self.hide_cursor_box()
-            return
+        in_bounds = bounding_rect.contains(scene_pos)
+        button_pressed = QApplication.mouseButtons() != Qt.MouseButton.NoButton
+        mouse_px: Optional[Tuple[float, float]] = None
+        if in_bounds:
+            mouse = vb.mapFromScene(scene_pos)
+            mouse_px = (mouse.x(), mouse.y())
+        view = self._hover_cursor_state(vb, scene_pos, mouse_px, button_pressed=button_pressed)
+        self._apply_cursor_view(view, mouse_px=mouse_px)
+        for step in self._hover_steps:
+            step(vb, scene_pos, in_bounds=in_bounds, button_pressed=button_pressed)
 
-        mouse_px = (vb.mapFromScene(scene_pos).x(), vb.mapFromScene(scene_pos).y())
-        mouse_view = vb.mapSceneToView(scene_pos)
-        x_view = float(mouse_view.x())
-        y_view = float(mouse_view.y())
-
-        x_axis_unit = ctx.unit_preferences().x_axis_unit if ctx and hasattr(ctx, "unit_preferences") else X_AXIS_NATIVE
-        frequency_axis = resolve_x_axis_display("frequency", x_axis_unit)
-        bottom_axis = resolve_x_axis_display(model.z_quantity, x_axis_unit)
-        x_unit = bottom_axis.unit if bottom_axis.scale != 1.0 else model.z_unit
-        y_unit = frequency_axis.unit
-
-        point = resolve_spectrogram_pixel(
-            model,
-            x=x_view,
-            y=y_view,
-            x_scale=bottom_axis.scale,
-            y_scale=frequency_axis.scale,
-            x_unit=x_unit,
-            y_unit=y_unit,
+    def _hover_cursor_state(
+        self,
+        vb: pg.ViewBox,
+        scene_pos: QPointF,
+        mouse_px: Optional[Tuple[float, float]],
+        *,
+        button_pressed: bool,
+    ) -> CursorView:
+        model = self.curves.model
+        cursor_enabled = self._cursor_enabled()
+        pinned = self._cursor_pinned()
+        highlight_enabled = self._highlight_enabled()
+        if model is None:
+            return self._cursor_state.hover_graph(
+                (), {}, None,
+                cursor_enabled=cursor_enabled,
+                pinned=pinned,
+                highlight_enabled=highlight_enabled,
+                button_pressed=button_pressed,
+            )
+        transforms: Dict[str, AxisTransform] = {}
+        if mouse_px is not None and not button_pressed and (cursor_enabled or highlight_enabled):
+            transforms = self._cursor_transforms()
+        return self._cursor_state.hover_graph(
+            self.visible_traces(),
+            transforms,
+            mouse_px,
+            radius_px=CURSOR_RADIUS_PX,
+            cursor_enabled=cursor_enabled,
+            pinned=pinned,
+            highlight_enabled=highlight_enabled,
+            button_pressed=button_pressed,
+            config=self._cursor_config(),
+            x_unit=self._x_axis.unit,
+            x_quantity=model.x_domain,
+            two_axes=self.secondary_axis.is_active,
+            prefs=self._unit_preferences(),
+            metadata_reader=self._read_trace_metadata,
         )
-        if point is None:
-            if not pinned:
-                self.hide_cursor_box()
-            return
 
-        self._crosshair_v.setPos(x_view)
-        self._crosshair_h.setPos(y_view)
-        self._crosshair_v.show()
-        self._crosshair_h.show()
+    def refresh_cursor_box(self) -> None:
+        self._apply_cursor_view(self._refresh_cursor_state())
 
-        config = getattr(ctx, "cursor_config", None) or CursorConfig()
-        self._last_cursor_point = point
-        lines = build_cursor_box_lines(
-            point, config,
-            prefs=ctx.unit_preferences() if ctx and hasattr(ctx, "unit_preferences") else None)
-        if not lines:
-            if not pinned:
-                self._cursor_box.hide()
-            return
-        self._cursor_box.setText("\n".join(f"{label}: {text}" for label, text in lines))
-        if not (pinned and self._cursor_box.isVisible()):
-            rect = self._cursor_box.boundingRect()
-            bx, by = resolve_box_position((rect.width(), rect.height()), mouse_px, (0, 0, vb.width(), vb.height()))
-            self._cursor_box.setPos(bx, by)
-        self._cursor_box.show()
+    def _refresh_cursor_state(self) -> CursorView:
+        model = self.curves.model
+        if model is None:
+            return self._cursor_state.hide()
+        return self._cursor_state.refresh_graph(
+            self.visible_traces(),
+            x_display=self._x_axis.scale,
+            cursor_enabled=self._cursor_enabled(),
+            config=self._cursor_config(),
+            x_unit=self._x_axis.unit,
+            x_quantity=model.x_domain,
+            two_axes=self.secondary_axis.is_active,
+            prefs=self._unit_preferences(),
+            metadata_reader=self._read_trace_metadata,
+        )
 
-    def _refresh_cursor_box(self) -> None:
-        if self._last_cursor_point is None or not self.cursor_box_visible():
-            return
-        ctx = self.app_context
-        config = getattr(ctx, "cursor_config", None) or CursorConfig()
-        lines = build_cursor_box_lines(
-            self._last_cursor_point, config,
-            prefs=ctx.unit_preferences() if ctx and hasattr(ctx, "unit_preferences") else None)
-        if lines:
-            self._cursor_box.setText("\n".join(f"{label}: {text}" for label, text in lines))
+    def _apply_cursor_view(
+        self,
+        view: CursorView,
+        mouse_px: Optional[Tuple[float, float]] = None,
+    ) -> None:
+        self._cursor_box.set_draggable(self._cursor_pinned())
+        if self._crosshair_v is not None:
+            if view.crosshair is not None:
+                self._crosshair_v.setPos(view.crosshair[0])
+                self._crosshair_h.setPos(view.crosshair[1])
+                self._crosshair_v.show()
+                self._crosshair_h.show()
+            else:
+                self._crosshair_v.hide()
+                self._crosshair_h.hide()
+        if view.box_visible:
+            self._cursor_box.setText("\n".join(f"{label}: {text}" for label, text in view.lines))
+            if view.move_box and mouse_px is not None:
+                vb = self.plot_widget.plotItem.vb
+                rect = self._cursor_box.boundingRect()
+                x, y = resolve_box_position(
+                    (rect.width(), rect.height()), mouse_px, (0, 0, vb.width(), vb.height()),
+                )
+                self._cursor_box.setPos(x, y)
+            self._cursor_box.show()
+        else:
+            self._cursor_box.hide()
+        if hasattr(self, "_set_highlighted_trace"):
+            self._set_highlighted_trace(view.highlighted_trace)
+
+
+class SpectrogramCursorMixin(CursorMixin):
+    """Hover crosshair and Cursor Box on SpectrogramDock, sharing CursorMixin's hover gate."""
+
+    def _init_cursor(self) -> None:
+        super()._init_cursor(with_crosshair=True)
+
+    def _hover_cursor_state(
+        self,
+        vb: pg.ViewBox,
+        scene_pos: QPointF,
+        mouse_px: Optional[Tuple[float, float]],
+        *,
+        button_pressed: bool,
+    ) -> CursorView:
+        pos: Optional[Tuple[float, float]] = None
+        if mouse_px is not None and not button_pressed:
+            mouse_view = vb.mapSceneToView(scene_pos)
+            pos = (float(mouse_view.x()), float(mouse_view.y()))
+        return self._cursor_state.hover_spectrogram(
+            self.drawn_spectrogram,
+            pos,
+            cursor_enabled=self._cursor_enabled(),
+            pinned=self._cursor_pinned(),
+            button_pressed=button_pressed,
+            config=self._cursor_config(),
+            prefs=self._unit_preferences(),
+        )
+
+    def _refresh_cursor_state(self) -> CursorView:
+        return self._cursor_state.refresh_spectrogram(
+            self.drawn_spectrogram,
+            cursor_enabled=self._cursor_enabled(),
+            config=self._cursor_config(),
+            prefs=self._unit_preferences(),
+        )

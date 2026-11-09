@@ -34,6 +34,7 @@ from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import QLabel, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget
 
 from gui.handlers.result_content import unload_result_sets_from_dock
+from orchestration.open_tabs import resolve_curve_refusal
 from selection.trace_filter import format_result_kind
 from selection.parameter_sets import build_parameter_sets
 from io_modules.project_store import project_folder
@@ -208,6 +209,13 @@ class ResultPoolPanel(QWidget):
             return
 
         if checked:
+            # A tab with a warning keeps its saved recipe whole.
+            refusal = resolve_curve_refusal(
+                dead_link=dock.dead_link, compute_failed=dock.compute_failed, is_graph=True)
+            if refusal is not None:
+                self.app_context.log(refusal)
+                self._apply_check_states()
+                return
             if self.result_content_handler is not None:
                 self.result_content_handler.load_into_dock(dock, valid_ids)
         else:
@@ -276,7 +284,7 @@ class ResultPoolPanel(QWidget):
         if isinstance(dock, GraphDock):
             model = dock.curves.model
             view = getattr(model, "view", None) if model is not None else None
-            title = getattr(view, "title", None) or getattr(dock, "dock_id", "graph")
+            title = getattr(view, "title", None) or dock.dock_id
             self.header.setText(f"Checked sets load into: {title}")
         else:
             self.header.setText("Focus a graph tab to choose its result sets.")

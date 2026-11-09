@@ -36,8 +36,8 @@ def compute_averaged_spectrum(
     fft_size: int,
     overlap_pct: float = 50.0,
     window_type: str = "hanning",
-    averaging_type: str = "linear",
-    exponential_alpha: float = 0.1,
+    averaging_type: str = "energy",
+    exponential_parameter: float = 0.5,
     **window_kwargs,
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
     """
@@ -63,7 +63,7 @@ def compute_averaged_spectrum(
         avg_power = average_batches(
             unscaled_batches,
             averaging_type=averaging_type,
-            exponential_alpha=exponential_alpha,
+            exponential_parameter=exponential_parameter,
         )
 
     frequencies = np.fft.rfftfreq(fft_size, 1.0 / fs)

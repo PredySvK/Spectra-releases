@@ -49,8 +49,9 @@ from core.jobs import job_step
 from core.project_model import PROJECT_EXTENSION, PROJECT_FORMAT_VERSION, NVHProject
 from gui.project_claim import ProjectClaim, activate_holder
 from gui.dialogs.metadata_editor_dialog import MetadataEditorDialog
+from gui.handlers.batch_run import confirm_leaving_batch_runs
 from io_modules.measurement_files import SUPPORTED_EXTENSIONS, holds_measurement_suffix
-from orchestration.channel_pairing import read_project_channel_pairing
+from io_modules.channel_pairing import read_project_channel_pairing
 from orchestration.data_pool import save_metadata_schema
 from orchestration.project_swap import run_project_swap
 from orchestration.recent_projects import run_recent_project_check
@@ -128,7 +129,7 @@ def ensure_project_saved(app_context, parent_widget) -> bool:
     try:
         return session.ensure_saved(
             lambda: ask_for_project_path(app_context, parent_widget))
-    except (OSError, ValueError) as error:
+    except Exception as error:      # noqa: BLE001 -- raised only before the write (§1.251)
         _report_save_failure(app_context, parent_widget, error)
         return False
 
@@ -141,6 +142,17 @@ def _format_size(size_bytes: int) -> str:
             return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
         size /= 1024
     return f"{size:.1f} GB"
+
+
+def _close_save_as_progress(progress) -> None:
+    if progress is None:
+        return
+    dialog, job_changed, changed = progress
+    if job_changed is not None:
+        job_changed.disconnect(changed)
+    # close() emits canceled; the job is over, so nothing is left to cancel.
+    dialog.canceled.disconnect()
+    dialog.close()
 
 
 def _default_directory(app_context) -> str:
@@ -158,8 +170,11 @@ class ProjectDocumentHandler:
     def __init__(self, app_context, project_ribbon_tab, workspace, explorer_panel,
                  filter_panel, filter_routing, workflow_view,
                  log_panel, data_pool, parent_widget, *, show_welcome, show_workspace,
-                 set_titlebar_text, job_runner, show_x_axis_unit=None):
+                 set_titlebar_text, job_runner, show_x_axis_unit=None, batch_runs=None):
         self.app_context = app_context
+        # The window's Batch runs (`WorkflowRunBridge`): New / Open / Save As
+        # ask Wait / Interrupt / Cancel while one computes or waits (#968).
+        self.batch_runs = batch_runs
         # A caller that only drives part of this (a test frame, a spawned
         # view-only workspace) may carry none of the panels -- every read below
         # tolerates None rather than assuming the whole window is there.
@@ -180,7 +195,9 @@ class ProjectDocumentHandler:
         self.show_x_axis_unit = show_x_axis_unit
         # Reads channel_pairing.xlsx off the GUI thread.
         self.job_runner = job_runner
-        # The Save As copy's progress dialog while it runs (show_copy_progress).
+        # The Save As progress dialogs while they run (show_listing_progress,
+        # show_copy_progress).
+        self._listing_progress = None
         self._copy_progress = None
         # Marks the open project as taken for other Spectra processes (#546).
         self.claim = ProjectClaim()
@@ -241,19 +258,23 @@ class ProjectDocumentHandler:
             window.raise_()
             window.activateWindow()
 
+    def refresh_title(self) -> None:
+        """Brings the window title -- and the frameless bar's copy -- in line with the session."""
+        shell = self.parent_widget.window() if self.parent_widget is not None else None
+        if shell is None:
+            return
+        from core.app_metadata import window_title
+        title = window_title(self.app_context.project_session.display_name)
+        shell.setWindowTitle(title)
+        self.set_titlebar_text(title)
+
     def refresh_project_ui(self) -> None:
         """Brings the window title and the recent list in line with the session."""
         context = self.app_context
         session = context.project_session
         self.claim.hold(getattr(session, "path", None))
 
-        shell = self.parent_widget.window() if self.parent_widget is not None else None
-        if shell is not None:
-            from core.app_metadata import window_title
-            title = window_title(session.display_name)
-            shell.setWindowTitle(title)
-            # The frameless bar shows its own copy of the title.
-            self.set_titlebar_text(title)
+        self.refresh_title()
 
         if self.project_ribbon_tab is not None:
             recent = context.recent_projects()
@@ -286,20 +307,37 @@ class ProjectDocumentHandler:
         file claim. Before this, only Save and Save As did either, so a
         committed result set wrote stale tabs and a first save through
         `ensure_project_saved` left the title and recent list behind (#654).
+        A step after the write that fails reaches the log as a warning; the
+        save stands. Between writes, the step into unsaved
+        redraws the title, so the "*" does not wait for a save (#887).
         """
         context = self.app_context
         session = context.project_session
         if self.workspace is not None:
             session.set_open_tabs_capture(self.workspace.capture_open_tabs_spec)
         session.set_saved_listener(self._after_save)
+        # The step into unsaved redraws only the title.
+        session.set_dirty_listener(self.refresh_title)
+        session.set_save_warning_log(context.log)
 
     def _after_save(self) -> None:
+        """
+        The window's part after a write, each step on its own: a
+        recent list that cannot be written must not keep the Tab cache from
+        its folder or the title from catching up.
+        """
         context = self.app_context
-        context.remember_project(context.project_session.path)
+        steps = [lambda: context.remember_project(context.project_session.path)]
         # What an Untitled project held of its Tab cache has a folder now (#731).
         if self.workspace is not None:
-            self.workspace.tab_cache_files.write_held()
-        self.refresh_project_ui()
+            steps.append(self.workspace.tab_cache_files.write_held)
+        steps.append(self.refresh_project_ui)
+        for step in steps:
+            try:
+                step()
+            except Exception as error:      # noqa: BLE001 -- the save already stands
+                context.log("WARNING: The project was saved, but a step after "
+                            f"the save failed: {error}")
 
     def bind_run_finished(self, workflow_runner) -> None:
         """
@@ -350,6 +388,9 @@ class ProjectDocumentHandler:
 
     def _start_untitled_project(self, data_folder: Optional[str] = None) -> bool:
         """New, or a dropped `data_folder` that joins the new project's Data Pool (#772)."""
+        if not self._confirm_leaving_batch_runs(
+                "start a new project", lambda: self._start_untitled_project(data_folder=data_folder)):
+            return False
         if not self.confirm_discarding_unsaved("starting a new project"):
             return False
         return run_project_swap(self, data_folder=data_folder)
@@ -362,6 +403,9 @@ class ProjectDocumentHandler:
         removed while the project was closed is reported rather than discovered
         later as a missing file.
         """
+        if not self._confirm_leaving_batch_runs(
+                "open another project", lambda: self.open_project(project_path)):
+            return False
         if not self.confirm_discarding_unsaved("opening another project"):
             return False
 
@@ -496,7 +540,7 @@ class ProjectDocumentHandler:
 
         try:
             session.save()
-        except (OSError, ValueError) as error:
+        except Exception as error:      # noqa: BLE001 -- raised only before the write (§1.251)
             _report_save_failure(context, self.parent_widget, error)
             return False
 
@@ -514,10 +558,19 @@ class ProjectDocumentHandler:
         copy still running returns False and reports through the log and the
         window when it ends.
         """
+        if not self._confirm_leaving_batch_runs("save the project as", self.save_project_as):
+            return False
         chosen = ask_for_project_path(self.app_context, self.parent_widget)
         if not chosen:
             return False
         return run_save_as(self, self.app_context.project_session, self.job_runner, chosen)
+
+    def _confirm_leaving_batch_runs(self, action_label: str, retry) -> bool:
+        """
+        Asked before the action's own questions (#968): a project change makes
+        a running Batch run write nothing (#329), so the user decides first.
+        """
+        return confirm_leaving_batch_runs(self.batch_runs, self.parent_widget, action_label, retry)
 
     # ---- the window's side of a Save As (SaveAsSteps) ----------------------
 
@@ -552,12 +605,32 @@ class ProjectDocumentHandler:
             return False
         return None
 
+    def show_listing_progress(self, job_id: int) -> None:
+        """Modal busy indicator while the folders are read; Cancel cancels the job."""
+        self._listing_progress = self._show_save_as_progress(
+            job_id, "Preparing Save As…", count_percent=False)
+
+    def close_listing_progress(self) -> None:
+        progress, self._listing_progress = self._listing_progress, None
+        _close_save_as_progress(progress)
+
     def show_copy_progress(self, job_id: int) -> None:
         """Modal progress over the copy; Cancel cancels the job."""
-        dialog = QProgressDialog("Copying the project folder…", "Cancel", 0, 100, self.parent_widget)
+        self._copy_progress = self._show_save_as_progress(
+            job_id, "Copying the project folder…", count_percent=True)
+
+    def close_copy_progress(self) -> None:
+        progress, self._copy_progress = self._copy_progress, None
+        _close_save_as_progress(progress)
+
+    def _show_save_as_progress(self, job_id: int, text: str, count_percent: bool):
+        # A range of 0..0 makes the dialog a busy indicator.
+        dialog = QProgressDialog(text, "Cancel", 0, 100 if count_percent else 0,
+                                 self.parent_widget)
         dialog.setWindowTitle("Save Project As")
-        # Modal on purpose: the project must not change while its copy is made,
-        # which is the whole lock -- no snapshot needed.
+        # Modal on purpose: the project must not change while its folder is
+        # read or copied, which is the whole lock -- no snapshot needed
+        #.
         dialog.setWindowModality(Qt.WindowModality.WindowModal)
         dialog.setMinimumDuration(0)
         dialog.setAutoClose(False)
@@ -570,23 +643,12 @@ class ProjectDocumentHandler:
             if record is not None:
                 dialog.setValue(record.percent)
 
-        job_changed = getattr(self.job_runner, "job_changed", None)
+        job_changed = getattr(self.job_runner, "job_changed", None) if count_percent else None
         if job_changed is not None:
             job_changed.connect(changed)
         dialog.canceled.connect(lambda: self.job_runner.cancel(job_id))
-        self._copy_progress = (dialog, job_changed, changed)
         dialog.show()
-
-    def close_copy_progress(self) -> None:
-        progress, self._copy_progress = self._copy_progress, None
-        if progress is None:
-            return
-        dialog, job_changed, changed = progress
-        if job_changed is not None:
-            job_changed.disconnect(changed)
-        # close() emits canceled; the job is over, so nothing is left to cancel.
-        dialog.canceled.disconnect()
-        dialog.close()
+        return dialog, job_changed, changed
 
     def report_save_failure(self, error) -> None:
         _report_save_failure(self.app_context, self.parent_widget, error)

@@ -1,5 +1,5 @@
 """
-The Filter panel's selection read as a Data Pool query -- what
+The Filter panel's selection read as a Column rule -- what
 selection.source_facets.visible_pool_channels is asked to narrow by.
 
 The pool and the dock mask read the same FilterSelection and OfferedFacets but
@@ -15,34 +15,20 @@ Pure (no Qt), so the rule is testable without a FilterPanel.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import AbstractSet, Any, Dict, List, Mapping, Tuple
+from typing import AbstractSet, Dict, List, Mapping
 
-from core.models import ChannelIdentity
 from core.project_model import FilterSelection
-from selection.source_facets import channel_identity_sort_key
+from selection.source_facets import ColumnRule, channel_identity_sort_key
 
 from ._trace_filter import EMPTY_FACET_VALUE, OfferedFacets
 
 
-@dataclass(frozen=True)
-class PoolQuery:
+def resolve_pool_query(selection: FilterSelection, offering: OfferedFacets) -> ColumnRule:
     """
-    What the Data Pool narrows by. Every field leaves out what imposes no
-    constraint, so an empty PoolQuery filters nothing. A checked "(Empty)"
-    bucket travels as EMPTY_FACET_VALUE in `metadata_values` and
-    `identity_values`.
-    """
-    metadata_values: Dict[str, List[str]] = field(default_factory=dict)
-    channel_identities: List[ChannelIdentity] = field(default_factory=list)
-    ranges: Dict[str, Tuple[Any, Any]] = field(default_factory=dict)
-    identity_values: Dict[str, List[str]] = field(default_factory=dict)
-
-
-def resolve_pool_query(selection: FilterSelection, offering: OfferedFacets) -> PoolQuery:
-    """
-    The pool query for one card's `selection` against what it currently
-    offers.
+    The Column rule for one card's `selection` against what it currently
+    offers. Every field leaves out what imposes no constraint, so an untouched
+    card gives an open rule. A checked "(Empty)" bucket travels as
+    EMPTY_FACET_VALUE in `column_values`.
 
     Discrete metadata, Identity columns and Channel are reported only as a real
     narrowing (§1.96, §1.107); a moved range only while its widget is on the
@@ -51,15 +37,17 @@ def resolve_pool_query(selection: FilterSelection, offering: OfferedFacets) -> P
     offered_channels = set(offering.channel_identities)
     checked_channels = set(selection.checked_channel_identities) & offered_channels
     narrows_channels = bool(checked_channels) and checked_channels != offered_channels
-    return PoolQuery(
-        metadata_values=_narrowing(offering.metadata_values,
-                                   selection.checked_metadata_values, selection, offering),
-        channel_identities=(sorted(checked_channels, key=channel_identity_sort_key)
-                            if narrows_channels else []),
+    return ColumnRule(
+        column_values={
+            **_narrowing(offering.metadata_values, selection.checked_metadata_values,
+                         selection, offering),
+            **_narrowing(offering.identity_values, selection.checked_identity_values,
+                         selection, offering),
+        },
         ranges={key: bounds for key, bounds in selection.checked_ranges.items()
-                if key in offering.range_fields},
-        identity_values=_narrowing(offering.identity_values,
-                                   selection.checked_identity_values, selection, offering),
+                if bounds and key in offering.range_fields},
+        channel_identities=(sorted(checked_channels, key=channel_identity_sort_key)
+                            if narrows_channels else None),
     )
 
 

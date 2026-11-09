@@ -14,7 +14,7 @@ user-started access to a small file and runs on the GUI thread (§1.137).
 """
 
 from pathlib import Path
-from typing import Callable, List, Mapping, Optional
+from typing import Callable, List, Mapping, Optional, Sequence
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -30,11 +30,12 @@ from PySide6.QtWidgets import (
 )
 
 from core.import_template import ImportTemplate
-from gui.dialogs.import_template_wizard import ImportTemplateWizardDialog
+from gui.dialogs.import_template_wizard import TemplateWizardDialog
 from io_modules.import_template import (
     delete_library_template,
     write_library_template_from_file,
     read_builtin_templates,
+    read_library_problems,
     read_library_templates,
     read_template_file,
     resolve_library_file,
@@ -88,7 +89,8 @@ class ImportTemplateLibraryDialog(QDialog):
         self.import_button = QPushButton("Import…")
         self.delete_button = QPushButton("Delete")
         close = QPushButton("Close")
-        for button in (self.new_button, self.edit_button, self.export_button, self.import_button, self.delete_button):
+        for button in (self.new_button, self.edit_button, self.export_button,
+                       self.import_button, self.delete_button):
             buttons.addWidget(button)
         buttons.addStretch(1)
         buttons.addWidget(close)
@@ -119,6 +121,8 @@ class ImportTemplateLibraryDialog(QDialog):
             self.listing.addItem(item)
         names = [template.name for template in self._templates]
         self.listing.setCurrentRow(names.index(select) if select in names else (0 if names else -1))
+        problems = read_library_problems(self.library_folder)
+        self.status.setText("\n".join(f"Not usable, not listed: {file} -- {why}" for file, why in problems))
         self._update_button_states()
 
     def selected_template(self) -> Optional[ImportTemplate]:
@@ -141,17 +145,16 @@ class ImportTemplateLibraryDialog(QDialog):
 
     # ---- actions (the button slots ask for a file, these do the work) ----------
 
-    def edit_template(self, sample_path: str) -> ImportTemplateWizardDialog:
-        """Opens the wizard on the sample with the selected template loaded (not yet shown)."""
-        return ImportTemplateWizardDialog(
-            self, sample_path, self.job_runner, library_folder=self.library_folder,
+    def edit_template(self, sample_paths: Sequence[str]) -> TemplateWizardDialog:
+        """Opens the wizard on the samples with the selected template loaded (not yet shown)."""
+        return TemplateWizardDialog(
+            self, sample_paths, self.job_runner, library_folder=self.library_folder,
             builtin_names=self._builtin_names, template=self.selected_template())
 
-    def new_template(self, sample_path: str) -> ImportTemplateWizardDialog:
-        """Opens the wizard on the sample with no template loaded (not yet shown)."""
-        return ImportTemplateWizardDialog(
-            self, sample_path, self.job_runner, library_folder=self.library_folder,
-            builtin_names=self._builtin_names)
+    def new_template(self, sample_paths: Sequence[str]) -> TemplateWizardDialog:
+        """Opens the wizard on the samples with no template loaded (not yet shown)."""
+        return TemplateWizardDialog(self, sample_paths, self.job_runner, library_folder=self.library_folder,
+                                  builtin_names=self._builtin_names)
 
     def export_template(self, path) -> str:
         """Writes the selected template to this file; blank when done, else the reason it was not."""
@@ -193,15 +196,15 @@ class ImportTemplateLibraryDialog(QDialog):
             QMessageBox.warning(self, "Import templates", problem)
 
     def _ask_new(self) -> None:
-        sample = self._ask_sample("Sample workbook for the new template")
-        if sample:
-            self._run_wizard(self.new_template(sample))
+        samples = self._ask_samples("Sample files for the new template")
+        if samples:
+            self._run_wizard(self.new_template(samples))
 
-    def _ask_sample(self, title: str) -> str:
-        sample, _ = QFileDialog.getOpenFileName(self, title, "", "Table files (*.xlsx *.txt *.csv)")
-        return sample
+    def _ask_samples(self, title: str) -> List[str]:
+        samples, _ = QFileDialog.getOpenFileNames(self, title, "", "Table files (*.xlsx *.txt *.csv)")
+        return samples
 
-    def _run_wizard(self, dialog: ImportTemplateWizardDialog) -> None:
+    def _run_wizard(self, dialog: TemplateWizardDialog) -> None:
         if dialog.exec() == QDialog.DialogCode.Accepted and dialog.saved_template:
             self.refresh(select=dialog.saved_template.name)
             self.status.setText(f"Saved '{dialog.saved_template.name}' into your library.")
@@ -213,9 +216,9 @@ class ImportTemplateLibraryDialog(QDialog):
         if self.selected_is_project_copy():
             self.edit_project_template(template.name)
             return
-        sample = self._ask_sample("Sample workbook to edit the template on")
-        if sample:
-            self._run_wizard(self.edit_template(sample))
+        samples = self._ask_samples("Sample files to edit the template on")
+        if samples:
+            self._run_wizard(self.edit_template(samples))
 
     def _ask_export(self) -> None:
         template = self.selected_template()

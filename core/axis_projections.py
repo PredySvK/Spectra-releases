@@ -10,12 +10,17 @@ drawn only if a registered projection can get it there (ARCHITECTURE_DECISIONS
 §1.30). Identity (from == to) is always possible and needs no entry. Today's
 only cross entry is order-cut -> frequency: a curve plotted against rpm at a
 fixed order o sits at f = o * rpm / 60, point for point, no interpolation.
+
+The same place says how an axis is shown: XAxisDisplay (label, unit, X axis
+unit scale) and AxisScreenRule, the one native -> screen rule (scale, then
+log10 on a Logarithmic axis, §1.276) with its inverse and the lower edge
+of a Logarithmic X axis.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import numpy as np
 
@@ -134,3 +139,64 @@ def resolve_x_axis_display(quantity: str, x_axis_unit: str = X_AXIS_NATIVE) -> X
     if rescale is None:
         return XAxisDisplay(label, unit)
     return XAxisDisplay(label, *rescale)
+
+
+@dataclass(frozen=True)
+class AxisScreenRule:
+    """Where a native value sits on screen along one axis (§1.276): first
+    multiplied by ``scale`` (the X axis unit, §1.130; 1.0 on a Y axis), then,
+    on a Logarithmic axis, its log10. The one definition every placement on
+    the axis goes through -- curves, bands, ranges, the Cursor, the labels.
+
+    A value with no screen position (X <= 0 on a Logarithmic axis, or a
+    non-finite one) comes out NaN from ``to_screen``; nothing is clipped
+    or reported, the value is simply not drawn.
+    """
+
+    scale: float = 1.0
+    logarithmic: bool = False
+
+    def to_screen(self, native: Any) -> Any:
+        """``native`` (a float or an array) as a screen coordinate; float in, float out."""
+        shown = np.asarray(native, dtype=float) * self.scale
+        if self.logarithmic:
+            with np.errstate(divide="ignore", invalid="ignore"):
+                shown = np.where(shown > 0, np.log10(np.where(shown > 0, shown, 1.0)), np.nan)
+        return float(shown) if shown.ndim == 0 else shown
+
+    def to_native(self, screen: Any) -> Any:
+        """The inverse of ``to_screen``; a screen coordinate beyond any float
+        comes back as 0 or inf rather than raising."""
+        values = np.asarray(screen, dtype=float)
+        if self.logarithmic:
+            with np.errstate(over="ignore", under="ignore"):
+                values = np.power(10.0, values)
+        native = values / self.scale
+        return float(native) if native.ndim == 0 else native
+
+    def has_screen_position(self, native: Any) -> Any:
+        """Whether ``native`` (a float or an array) can be drawn at all; bool in, bool out."""
+        shown = np.asarray(native, dtype=float) * self.scale
+        drawable = np.isfinite(shown) & ((shown > 0) if self.logarithmic else True)
+        return bool(drawable) if drawable.ndim == 0 else drawable
+
+
+def resolve_x_axis_screen_rule(display: XAxisDisplay, logarithmic: bool = False) -> AxisScreenRule:
+    """The screen rule of an X axis shown as ``display`` (its X axis unit
+    scale), on a Logarithmic axis when ``logarithmic``."""
+    return AxisScreenRule(scale=display.scale, logarithmic=logarithmic)
+
+
+def resolve_log_axis_floor(*native_xs: Any) -> Optional[float]:
+    """The lower edge of a Logarithmic X axis (§1.276 point 4): the
+    smallest positive finite X over ``native_xs`` (arrays in the native unit),
+    or None when none of them has one. 0 Hz (the DC bin) and negative rpm
+    (a run-down's reverse rotation) never become the edge."""
+    floor: Optional[float] = None
+    for xs in native_xs:
+        values = np.asarray(xs, dtype=float).ravel()
+        positive = values[np.isfinite(values) & (values > 0)]
+        if positive.size:
+            low = float(positive.min())
+            floor = low if floor is None else min(floor, low)
+    return floor

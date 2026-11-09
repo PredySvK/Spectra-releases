@@ -12,11 +12,12 @@ being mounted (see core.project_model.SourceEntry.excel_metadata /
 file_metadata / channels).
 """
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from core.filter_card_config import IDENTITY_BUILTIN_ORDER, COLUMN_RESULT_SET, RANGE_KINDS
 from core.block_kinds import KIND_ORDER_CUT
+from core.frozen import freeze_identities, freeze_range_map, freeze_str_map
 from core.models import ChannelIdentity
 from core.project_model import CHANNEL_LAYER, NVHProject, ResultSetRef, SourceEntry, is_channel_layer
 from selection.channel_identity import split_channel_base_and_direction
@@ -192,11 +193,6 @@ def _channel_values(source: SourceEntry, key: str) -> List[Any]:
     """Every channel's own value of a channel-layer field, blanks left out."""
     values = (facts.get(key) for facts in source.channels.values())
     return [value for value in values if not _is_blank(value)]
-
-
-def _some_channel_lacks(source: SourceEntry, key: str) -> bool:
-    """Whether `source` lists no channels, or one of them has no value for `key`."""
-    return not source.channels or any(_is_blank(facts.get(key)) for facts in source.channels.values())
 
 
 def _own_channel_value(source: Optional[SourceEntry], key: str, identity: ChannelIdentity,
@@ -407,45 +403,6 @@ def build_channel_facet(sources: Iterable[SourceEntry]) -> List[ChannelIdentity]
         for label in source.channels:
             identities.add(split_channel_base_and_direction(label))
     return sorted(identities, key=channel_identity_sort_key)
-
-
-def apply_metadata_facets(sources: Iterable[SourceEntry], schema: Dict[str, Dict[str, Any]],
-                          selected_values: Dict[str, List[str]], *,
-                          fields: Optional[Iterable[str]] = None) -> List[SourceEntry]:
-    """
-    Sources whose fields match every active facet selection: AND across
-    fields, OR within one field's selected values. A field absent from
-    `selected_values`, or present with no values selected, imposes no
-    constraint -- it is simply not being filtered on yet.
-
-    `fields` names the schema fields to evaluate in place of the Filter panel's
-    offer (categorical_schema_fields): a saved query names its own fields and has
-    already checked their kind, so is_active is not asked.
-    """
-    fields = (categorical_schema_fields(schema) if fields is None
-              else {key: schema[key] for key in fields if key in schema})
-    kept = []
-    for source in sources:
-        matches = True
-        for key, wanted in selected_values.items():
-            if not wanted or key not in fields:
-                continue
-            if is_channel_layer(fields[key]):
-                # A whole file passes when any channel has a selected value, "(Empty)"
-                # when some channel lacks the field; the channels
-                # themselves are judged by apply_column_facets.
-                offered = {str(value) for value in _channel_values(source, key)}
-                if _some_channel_lacks(source, key):
-                    offered.add(EMPTY_FACET_VALUE)
-            else:
-                value = _field_value(source, key, fields[key].get("layer", "excel"))
-                offered = {EMPTY_FACET_VALUE if _is_blank(value) else str(value)}
-            if offered.isdisjoint(wanted):
-                matches = False
-                break
-        if matches:
-            kept.append(source)
-    return kept
 
 
 def build_range_facets(sources: Iterable[SourceEntry],
@@ -663,18 +620,55 @@ def _channel_ranges(schema, ranges):
             if bounds and key in schema and is_channel_layer(schema[key])}
 
 
-def _matching_channel_labels(source, schema, column_values, channels, channel_ranges=None):
-    """Judge stored or reader channels by the same Filter column values.
+@dataclass(frozen=True)
+class ColumnRule:
+    """
+    Which measurements and channels pass, stated per Filter column (CONTEXT.md).
 
-    `channel_ranges` (from _channel_ranges) judges each channel by its own value
-    of a channel-layer ranged field; a channel with no usable value fails, since
-    a range is a positive assertion.
+    `column_values` maps a column key to its accepted values: OR within a
+    column, AND across columns; an absent key imposes nothing, an empty value
+    set rejects every pair. `ranges` maps a ranged field to
+    (lo, hi). `channel_identities` holds exact (base, direction) pairs, which two
+    columns cannot state: None imposes nothing, an empty tuple rejects every pair.
+
+    What an empty pick means belongs to the translation into a rule: the pool
+    leaves such a column out, a Measurement selection keeps it as "nothing".
+    """
+    column_values: Mapping[str, Tuple[str, ...]] = field(default_factory=dict)
+    ranges: Mapping[str, Tuple[Any, Any]] = field(default_factory=dict)
+    channel_identities: Optional[Tuple[ChannelIdentity, ...]] = None
+
+    def __post_init__(self):
+        object.__setattr__(self, "column_values", freeze_str_map(self.column_values))
+        object.__setattr__(self, "ranges", freeze_range_map(self.ranges))
+        if self.channel_identities is not None:
+            object.__setattr__(self, "channel_identities", freeze_identities(self.channel_identities))
+
+    @property
+    def is_open(self) -> bool:
+        """Whether this rule constrains nothing at all."""
+        return not (self.column_values or self.ranges or self.channel_identities is not None)
+
+
+def _matching_channel_labels(source, schema, rule: ColumnRule, channels):
+    """The labels among stored or reader `channels` that pass `rule`, or None
+    when the measurement itself fails it.
+
+    A ranged field drops a measurement with no usable value, an unknown one
+    included. A channel-layer field then judges each channel by its own value,
+    and a channel with no usable value fails, since a range is a positive
+    assertion.
     """
     from core.filter_card_config import (
         COLUMN_CHANNEL, COLUMN_CHANNEL_TYPE, COLUMN_DATA_POOL_LABEL,
         COLUMN_DIRECTION, COLUMN_FILE_NAME,
     )
-    wanted = {key: set(values) for key, values in column_values.items()}
+    if rule.ranges and (source is None or not apply_range_facets(
+            [source], schema, rule.ranges, fields=rule.ranges)):
+        return None
+    wanted = {key: set(values) for key, values in rule.column_values.items()}
+    wanted_identities = None if rule.channel_identities is None else set(rule.channel_identities)
+    channel_ranges = _channel_ranges(schema, rule.ranges)
     source_values = {
         COLUMN_FILE_NAME: getattr(source, "relpath", None),
         COLUMN_DATA_POOL_LABEL: getattr(source, "setup_label", None),
@@ -693,6 +687,8 @@ def _matching_channel_labels(source, schema, column_values, channels, channel_ra
             return None
     labels = set()
     for label, identity, fallback_type, index in channels:
+        if wanted_identities is not None and identity not in wanted_identities:
+            continue
         identity_values = {
             COLUMN_CHANNEL: identity[0], COLUMN_DIRECTION: identity[1],
         }
@@ -713,143 +709,77 @@ def _matching_channel_labels(source, schema, column_values, channels, channel_ra
         if matches:
             matches = all(
                 value_in_range(source, key, config, bounds, identity, index) is True
-                for key, (config, bounds) in (channel_ranges or {}).items())
+                for key, (config, bounds) in channel_ranges.items())
         if matches:
             labels.add(label)
     return labels
 
 
 def apply_column_facets(sources: Iterable[SourceEntry], schema: Mapping[str, Any],
-                        column_values: Mapping[str, Iterable[str]], *,
-                        ranges: Optional[Mapping[str, Tuple[Any, Any]]] = None) -> Dict[str, set]:
-    """Measurement × channel pairs satisfying a column rule.
+                        rule: ColumnRule) -> Dict[str, set]:
+    """Measurement × channel pairs satisfying a Column rule.
 
-    OR within each column, AND across columns. Missing keys impose nothing;
-    empty value sets reject every pair. Schema validity is the caller's concern.
-    This is also the predicate used by visible_pool_channels. A matching
-    measurement with no matching channel retains its key with an empty set.
-
-    `ranges` maps a ranged field to (lo, hi); a channel-layer one is judged per
-    channel here. File-level ranges are apply_range_facets' job.
+    Schema validity is the caller's concern. visible_pool_channels judges a rule
+    the same way, over a reader's channels. A matching measurement with no
+    matching channel retains its key with an empty set.
     """
     result = {}
-    columns = {key: set(values) for key, values in column_values.items()}
-    channel_ranges = _channel_ranges(schema, ranges)
     for source in sources:
         channels = (
             (label, split_channel_base_and_direction(facts.get("name") or label),
              facts.get("type"), facts.get("index"))
             for label, facts in source.channels.items()
         )
-        labels = _matching_channel_labels(source, schema, columns, channels, channel_ranges)
+        labels = _matching_channel_labels(source, schema, rule, channels)
         if labels is not None:
             result[source.id] = labels
     return result
 
 
+def _narrow_rule_to_pool(rule: ColumnRule, schema: Dict[str, Dict[str, Any]]) -> ColumnRule:
+    """`rule` without what cannot narrow the pool: fields the schema no longer
+    offers as a filter, and columns no pool row has a value for."""
+    categorical = categorical_schema_fields(schema)
+    ranged = ranged_schema_fields(schema)
+    return ColumnRule(
+        column_values={key: values for key, values in rule.column_values.items()
+                       if key in POOL_IDENTITY_COLUMNS or key in categorical},
+        ranges={key: bounds for key, bounds in rule.ranges.items() if key in ranged},
+        channel_identities=rule.channel_identities,
+    )
+
+
 def visible_pool_channels(runs, entries_by_path, schema: Dict[str, Dict[str, Any]],
-                          selected_values: Dict[str, List[str]],
-                          selected_identities: Iterable[ChannelIdentity],
-                          selected_ranges: Optional[Dict[str, Tuple[Any, Any]]] = None,
-                          selected_identity_values: Optional[Dict[str, List[str]]] = None, *,
-                          column_values: Optional[Mapping[str, Iterable[str]]] = None
-                          ) -> Optional[Dict[str, set]]:
+                          rule: ColumnRule) -> Optional[Dict[str, set]]:
     """
-    What survives the filter panel's selection in the Data Pool: a map from
-    each visible measurement's path to the labels of its visible channels.
+    What survives `rule` in the Data Pool: a map from each visible measurement's
+    path to the labels of its visible channels.
 
     Returns None when nothing is being filtered on, which the caller reads as
     "show everything" -- worth distinguishing from an empty map, which means
     the filter is on and matched nothing.
 
-    An empty channel selection imposes no constraint here. That is the
-    opposite of what it means in the comparison, where nothing checked means
-    nothing worth plotting; in the pool the same rule would empty the tree the
-    moment the filter was switched on, which reads as the pool having lost the
-    data rather than as a filter waiting to be told what to look for.
-
-    Channel identities are taken from each channel's own name rather than the
-    label it is filed under, because the two differ -- the label carries the
-    reader's set/column prefix ("Set #3: Acc_X") while the project stores the
-    stripped name the facets were built from.
-
-    `selected_ranges` maps a numeric/date field to its (lo, hi) and narrows by
-    apply_range_facets, so a measurement with no value for the field is hidden
-    like one no metadata filter can judge; a channel-layer field also hides
-    each channel outside the range. `selected_identity_values` maps a
-    built-in Identity column (core.filter_card_config COLUMN_*) to the values
-    it lets through, EMPTY_FACET_VALUE standing for "has none":
-    File name and Data Pool label hide whole measurements, Direction and
-    Channel type hide channels. Result set is ignored -- the pool holds
-    measurements, and none of them has a result set to be judged by.
-
-    `column_values` supplies an already normalized column rule,
-    preserving empty constraints. Legacy panel picks keep their existing
-    "empty means no pool narrowing" policy; the shared predicate is identical.
+    Channels are judged as the reader lists them, and their identities are taken
+    from each channel's own name rather than the label it is filed under, because
+    the two differ -- the label carries the reader's set/column prefix
+    ("Set #3: Acc_X") while the project stores the stripped name the facets were
+    built from. A measurement the project never indexed has no stored values, so
+    a ranged field hides it and metadata reads as "(Empty)". A measurement with no
+    visible channel is left out.
     """
-    from core.filter_card_config import (
-        COLUMN_CHANNEL_TYPE, COLUMN_DATA_POOL_LABEL, COLUMN_DIRECTION, COLUMN_FILE_NAME,
-    )
-    active_values = {key: values for key, values in (selected_values or {}).items() if values}
-    wanted_identities = set(selected_identities or [])
-    ranged_fields = ranged_schema_fields(schema)
-    active_ranges = {key: bounds for key, bounds in (selected_ranges or {}).items()
-                     if bounds and key in ranged_fields}
-    wanted_by_column = {
-        key: set(values) for key, values in (selected_identity_values or {}).items()
-        if values and key in (COLUMN_DIRECTION, COLUMN_CHANNEL_TYPE,
-                              COLUMN_FILE_NAME, COLUMN_DATA_POOL_LABEL)
-    }
-    if not (active_values or wanted_identities or active_ranges or wanted_by_column or column_values):
+    rule = _narrow_rule_to_pool(rule, schema)
+    if rule.is_open:
         return None
-
-    kept_ids = None
-    if active_ranges:
-        kept = apply_range_facets(pool_source_entries(runs, entries_by_path), schema, active_ranges)
-        kept_ids = {source.id for source in kept}
-    # The panel decides which fields are active. The column predicate itself
-    # also serves saved rules, whose fields need not be offered by the panel.
-    active_values = {key: values for key, values in active_values.items()
-                     if key in categorical_schema_fields(schema)}
-    columns = {**active_values, **wanted_by_column}
-    if column_values is not None:
-        columns.update({key: set(values) for key, values in column_values.items()})
 
     visible: Dict[str, set] = {}
     for run in runs:
         entry = entries_by_path.get(os.path.normcase(os.path.abspath(run.file_path)))
-        if kept_ids is not None and (entry is None or entry.id not in kept_ids):
-            continue
         channels = (
             (label, split_channel_base_and_direction(meta.name or ""), meta.type, meta.index)
             for label, meta in run.available_channels.items()
         )
-        labels = _matching_channel_labels(entry, schema, columns, channels,
-                                          _channel_ranges(schema, active_ranges))
-        if labels is not None and wanted_identities:
-            labels &= {label for label, meta in run.available_channels.items()
-                       if split_channel_base_and_direction(meta.name or "") in wanted_identities}
-
+        labels = _matching_channel_labels(entry, schema, rule, channels)
         if labels:
             visible[run.file_path] = labels
 
     return visible
-
-
-def apply_channel_facet(sources: Iterable[SourceEntry],
-                        selected_identities: Iterable[ChannelIdentity]) -> Dict[str, List[str]]:
-    """
-    For each source, the channel labels whose (base_name, direction) identity
-    was selected. A source contributing no matching channel is left out of
-    the result entirely.
-    """
-    wanted = set(selected_identities)
-    matches: Dict[str, List[str]] = {}
-    for source in sources:
-        labels = [
-            label for label in source.channels
-            if split_channel_base_and_direction(label) in wanted
-        ]
-        if labels:
-            matches[source.id] = labels
-    return matches

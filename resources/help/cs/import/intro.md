@@ -2,13 +2,14 @@
 
 Program čte měření ze souborů a nikdy je nemění. Složku přidáte tlačítkem **Add Data Directory** na záložce *Project*. Každý podporovaný soubor v ní (a při výběru nadřazené složky i v podsložkách) se objeví v [Data Poolu](topic:data_management/intro): jeden záznam na soubor, jeden kanál na signál.
 
-Do importu vstupují tři věci:
+Do importu vstupují čtyři věci:
 
 | Co | Odkud | Stránka |
 |---|---|---|
 | **Signály** | soubory měření | [Podporované formáty](topic:import/formats) |
 | **Excel metadata** | tabulka vedle dat | [Metadata z Excelu](topic:import/metadata) |
 | **Páry kanálů** | tabulka, kterou píše záložka Pairing | [Párování kanálů](topic:import/channel_pairing) |
+| **Import template** | šablona, kterou průvodce vytvoří pro tabulkové soubory | [Import wizard](topic:import/template_wizard) |
 
 ## Více složek a podsložky
 

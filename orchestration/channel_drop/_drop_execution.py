@@ -8,17 +8,21 @@ from typing import Any, Callable, Iterable, Mapping
 
 from core.channel_drop import RECIPE_KEY, TAB_CACHE_KEY
 from core.channel_types import CHANNEL_TYPE_TACHO
-from view_models.analysis_kinds import ANALYSIS_SPECTRUM, resolve_analysis_kind, resolve_imported_analysis_kind
+from view_models.analysis_kinds import resolve_analysis_kind, resolve_imported_analysis_kind
 from view_models.plot import overall_level_band_differs_from_dock
 
 from orchestration.channel_drop._drop_plan import plan_channel_drop
 from orchestration.channel_drop._drop_target import DropTarget, OrderDropInputs
-from orchestration.channel_drop._dropped_channels import resolve_dropped_channel
+from orchestration.channel_drop._dropped_channels import (
+    DroppedChannel,
+    resolve_dropped_channels,
+    resolve_tacho_per_file,
+)
 from orchestration.channel_drop._pending_drops import PendingDrops
+from orchestration.channel_drop._routing import drop_key
 from orchestration.channel_drop._result_content_drop_config import resolve_result_content_drop_config
 from orchestration.channel_drop._spectrogram_routing import decide_spectrogram_drop
 from orchestration.channel_drop._spectrum_drop_config import resolve_spectrum_drop_config
-from orchestration.channel_drop._tacho_plan import plan_tacho_per_file
 from orchestration.tab_cache import build_tab_cache_hit_line
 
 
@@ -32,6 +36,11 @@ class _Run:
     # Files already refused in this drop: it may run as several tasks, and a
     # file gets one error all the same.
     refused_paths: set = dataclasses.field(default_factory=set)
+
+    def resolve(self, descriptors) -> list[DroppedChannel]:
+        """The pooled channels ``descriptors`` name; the rest refused in the log."""
+        return resolve_dropped_channels(descriptors, self.target.run_lookup, self.target.log,
+                                        refused_paths=self.refused_paths)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -87,10 +96,11 @@ def run_channel_drop(target: DropTarget, descriptors: Iterable[dict], *,
                       and resolve_imported_analysis_kind(desc.get("block_kind")) == facts.analysis_kind]
         elsewhere = [desc for desc in routing.imported if desc not in shown_here]
         if shown_here:
-            _run_simple(run, shown_here, is_spec=False, is_spectrum=False, label=batch_label)
-        if elsewhere:
-            target.open_imported_channels(elsewhere)
-        accepted += len(routing.imported)
+            accepted += _run_read(run, _IMPORTED, shown_here, batch_label)
+        opened = run.resolve(elsewhere)
+        if opened:
+            target.open_imported_channels(opened)
+        accepted += len(opened)
 
     result_content_lane = _RESULT_CONTENT_REFRESH if from_refresh else _RESULT_CONTENT
     for group in plan.result_content_groups:
@@ -102,17 +112,16 @@ def run_channel_drop(target: DropTarget, descriptors: Iterable[dict], *,
     if routing.overall_level:
         accepted += _run_overall_level(run, routing.overall_level, batch_label)
 
-    if routing.simple:
-        _run_simple(run, routing.simple, is_spec=facts.is_spec,
-                    is_spectrum=facts.is_graph and facts.analysis_kind == ANALYSIS_SPECTRUM,
-                    label=batch_label)
-        # Accepted for processing -- the curves land later, in the task's success callback.
-        accepted += len(routing.simple)
+    for lane, lane_descriptors in ((_TIME, routing.time), (_SPECTRUM, routing.spectrum),
+                                   (_SPECTROGRAM, routing.spectrogram)):
+        if lane_descriptors:
+            # Accepted for processing -- the curves land later, in the task's success callback.
+            accepted += _run_read(run, lane, lane_descriptors, batch_label)
 
     if accepted > 0:
         # A spectrogram holds no curves to count; its title is set as it computes.
         if not facts.is_spec:
-            target.refresh_title()
+            target.refresh_tab_label()
         return True
     return False
 
@@ -142,22 +151,23 @@ def _run_claimed(run: _Run, descriptors, worker, *args, render, **run_kwargs) ->
     target.run_task(worker, *args, on_success=_on_success, on_error=_on_error, **run_kwargs)
 
 
-def _by_recipe(descriptors) -> list[tuple[dict | None, list[dict]]]:
-    """``descriptors`` split by the saved recipe they carry (``RECIPE_KEY``),
-    in drop order; a drop of new channels carries none and stays one group.
+def _by_recipe(channels) -> list[tuple[dict | None, list[DroppedChannel]]]:
+    """``channels`` split by the saved recipe their descriptors carry
+    (``RECIPE_KEY``), in drop order; a drop of new channels carries none and
+    stays one group.
 
     One task serves one config, so restored overlays saved with different
     recipes are computed in as many tasks.
     """
-    groups: dict[str | None, tuple[dict | None, list[dict]]] = {}
-    for desc in descriptors:
-        recipe = desc.get(RECIPE_KEY) or None
+    groups: dict[str | None, tuple[dict | None, list[DroppedChannel]]] = {}
+    for channel in channels:
+        recipe = channel.descriptor.get(RECIPE_KEY) or None
         key = None if recipe is None else json.dumps(recipe, sort_keys=True, default=str)
-        groups.setdefault(key, (recipe, []))[1].append(desc)
+        groups.setdefault(key, (recipe, []))[1].append(channel)
     return list(groups.values())
 
 
-def _config_of(target: DropTarget, recipe, descriptors, read_drop_config):
+def _config_of(target: DropTarget, recipe, channels, read_drop_config):
     """``(config, restore)`` of one group: the config is ``read_drop_config()``
     for a new drop, the saved recipe over the ribbon for restored overlays;
     ``restore`` is what restored overlays bring to the worker -- their Tab
@@ -165,7 +175,7 @@ def _config_of(target: DropTarget, recipe, descriptors, read_drop_config):
    ."""
     resolved = target.restored_config(recipe) if recipe is not None else None
     config = read_drop_config() if resolved is None else resolved.config
-    restored = resolved is not None or any(desc.get(TAB_CACHE_KEY) for desc in descriptors)
+    restored = resolved is not None or any(channel.descriptor.get(TAB_CACHE_KEY) for channel in channels)
     return config, (target.drop_restore(resolved) if restored else None)
 
 
@@ -195,32 +205,40 @@ def _land(run: _Run, landings: Iterable[_Landing], *, what: str = "FFT settings"
                 if result.from_tab_cache:
                     target.log(build_tab_cache_hit_line(subject))
                 target.keep(landing.descriptor, result)
-    target.refresh_title()
+    target.refresh_tab_label()
 
 
-def _land_simple(run: _Run, rendered, *, is_spec: bool) -> None:
-    """Rows of ``read_simple_drops``: a spectrum curve where a spectrum was
-    made, a time curve otherwise; on a spectrogram dock each channel read is
-    paired with the one the dock holds instead -- a spectrogram holds no
-    curves, so its title is not the curve count either."""
+def _land_as_read(run: _Run, channels, rendered) -> None:
+    """Each block drawn as it was read -- a time signal or an Imported result;
+    nothing was computed, so nothing is kept."""
     target = run.target
-    if is_spec:
-        for desc, data_block, _spectrum_result in rendered:
-            _pair_spectrogram_channel(target, desc, data_block)
-        return
-
-    def landing(desc, data_block, spectrum_result):
-        if spectrum_result is None:
-            return _Landing(desc, desc["channel_name"], None,
-                            functools.partial(target.draw_time_curve, desc, data_block))
-        return _Landing(desc, desc["channel_name"], spectrum_result,
-                        functools.partial(target.draw_spectrum_curve, desc,
-                                          spectrum_result.blocks[0]))
-
-    _land(run, [landing(*row) for row in rendered])
+    _land(run, [
+        _Landing(desc, desc["channel_name"], None,
+                 functools.partial(target.draw_time_curve, desc, data_block))
+        for desc, data_block, _spectrum_result in rendered
+    ])
 
 
-def _pair_spectrogram_channel(target: DropTarget, descriptor: dict, block) -> None:
+def _land_spectra(run: _Run, channels, rendered) -> None:
+    """Each spectrum made -- or found in a cache -- drawn and kept."""
+    target = run.target
+    _land(run, [
+        _Landing(desc, desc["channel_name"], spectrum_result,
+                 functools.partial(target.draw_spectrum_curve, desc, spectrum_result.blocks[0]))
+        for desc, _data_block, spectrum_result in rendered
+    ])
+
+
+def _land_on_spectrogram(run: _Run, channels, rendered) -> None:
+    """Each channel read paired with the one the spectrogram holds; a
+    spectrogram holds no curves, so nothing is drawn as one and its title is
+    not the curve count either. ``channels`` are the pooled channels the task
+    read, by their ``drop_key``."""
+    for desc, data_block, _spectrum_result in rendered:
+        _pair_spectrogram_channel(run.target, channels[drop_key(desc)], data_block)
+
+
+def _pair_spectrogram_channel(target: DropTarget, channel: DroppedChannel, block) -> None:
     """Pairs a channel dropped onto a spectrogram with the one it already holds
     and, once both are there, asks the target to compute it. A refused drop
     leaves the dock as it was.
@@ -232,7 +250,7 @@ def _pair_spectrogram_channel(target: DropTarget, descriptor: dict, block) -> No
     inputs = target.spectrogram_inputs()
     decision = decide_spectrogram_drop(
         block, inputs.vib_block, inputs.tacho_block, inputs.tracking_mode,
-        channel_name=descriptor["channel_name"],
+        channel_name=channel.descriptor["channel_name"],
         measurement_path=inputs.restored_measurement_path if inputs.vib_block is None else None,
     )
     for message in decision.messages:
@@ -242,10 +260,7 @@ def _pair_spectrogram_channel(target: DropTarget, descriptor: dict, block) -> No
 
     dropped = None
     if block.channel_type != CHANNEL_TYPE_TACHO:
-        dropped = resolve_dropped_channel(descriptor, inputs.run_lookup)
-        if isinstance(dropped, str):
-            target.log(dropped)
-            return
+        dropped = (channel.run_index, channel.channel_meta)
 
     target.hold_spectrogram_channels(decision.vib_block, decision.tacho_block, dropped)
     if decision.should_compute:
@@ -278,26 +293,6 @@ def _draw_overall_level(target: DropTarget, block) -> None:
     target.draw_overall_level_curve(block)
 
 
-def _no_pool(path):
-    """The lookup of a lane that never reads the pool (time mode asks for no tacho)."""
-    raise AssertionError(f"the simple lane looked up {path!r} in the pool")
-
-
-def _run_simple(run: _Run, descriptors, *, is_spec: bool, is_spectrum: bool,
-                label: str | None) -> None:
-    """Reads every dropped channel -- and on a spectrum dock computes its FFT --
-    in one task, one per saved recipe the descriptors carry."""
-    if not is_spectrum:
-        _run_simple_group(run, descriptors, None, is_spec=is_spec, is_spectrum=False, label=label)
-        return
-    for recipe, group in _by_recipe(descriptors):
-        # Read on the GUI thread, before the worker starts: the worker must not reach the shell.
-        config, restore = _config_of(
-            run.target, recipe, group, functools.partial(_spectrum_drop_config, run.target))
-        _run_simple_group(run, group, config, is_spec=is_spec, is_spectrum=True, label=label,
-                          restore=restore)
-
-
 def _spectrum_drop_config(target: DropTarget):
     inputs = target.spectrum_inputs()
     return resolve_spectrum_drop_config(
@@ -306,25 +301,57 @@ def _spectrum_drop_config(target: DropTarget):
         base_spectrum_format=inputs.base_spectrum_format, base_amplitude_mode=inputs.base_amplitude_mode)
 
 
-def _run_simple_group(run: _Run, descriptors, spectrum_config, *, is_spec: bool,
-                      is_spectrum: bool, label: str | None, restore=None) -> None:
-    target = run.target
-    finder = target.cache_finder() if is_spectrum else None
-    plan = plan_tacho_per_file(descriptors, _no_pool, None, against_time=True)
-    prepared = [
-        (desc, mock_run, mock_meta)
-        for desc, _ch_name, mock_run, mock_meta, _tacho_meta in plan.prepared
-    ]
+@dataclasses.dataclass(frozen=True)
+class _ReadLane:
+    """What tells the read lanes -- Imported, Time, Spectrum and Spectrogram --
+    apart; everything else they share in ``_run_read``. Each reads its channels
+    in a background task (``read_simple_drops``).
+
+    ``read_config(target)`` is the FFT config of the Spectrum lane, read on the
+    GUI thread once per saved recipe; None for a lane that only reads, which
+    neither splits by recipe nor asks the cache. ``land(run, channels,
+    rendered)`` lands what the task brings back; ``job_name`` names the job
+    when the caller gives no label.
+    """
+
+    read_config: Callable[[DropTarget], Any] | None
+    land: Callable[[_Run, Mapping, Any], None]
+    job_name: str
+
+
+_IMPORTED = _ReadLane(read_config=None, land=_land_as_read, job_name="Load")
+_TIME = _ReadLane(read_config=None, land=_land_as_read, job_name="Load")
+_SPECTRUM = _ReadLane(read_config=_spectrum_drop_config, land=_land_spectra, job_name="Spectrum")
+_SPECTROGRAM = _ReadLane(read_config=None, land=_land_on_spectrogram, job_name="Load")
+
+
+def _run_read(run: _Run, lane: _ReadLane, descriptors, label: str | None) -> int:
+    """One task for the channels of a read lane -- one per saved recipe on the
+    Spectrum lane; how many channels the pool holds and are served."""
+    channels = run.resolve(descriptors)
+    if not channels:
+        return 0
+    if lane.read_config is None:
+        _run_read_group(run, lane, channels, None, label)
+        return len(channels)
+    for recipe, group in _by_recipe(channels):
+        # Read on the GUI thread, before the worker starts: the worker must not reach the shell.
+        config, restore = _config_of(
+            run.target, recipe, group, functools.partial(lane.read_config, run.target))
+        _run_read_group(run, lane, group, config, label, restore)
+    return len(channels)
+
+
+def _run_read_group(run: _Run, lane: _ReadLane, channels, config, label: str | None,
+                    restore=None) -> None:
     _run_claimed(
-        run, descriptors, _with_restore(run.workers.read_simple_drops, restore),
-        prepared, spectrum_config, finder,
-        render=functools.partial(_land_simple, run, is_spec=is_spec),
-        job_label=label or f"{'Spectrum' if is_spectrum else 'Load'} — {len(prepared)} channels",
-        progress_units=len(prepared),
+        run, [c.descriptor for c in channels], _with_restore(run.workers.read_simple_drops, restore),
+        [(c.descriptor, c.run_index, c.channel_meta) for c in channels], config,
+        run.target.cache_finder() if config is not None else None,
+        render=functools.partial(lane.land, run, {drop_key(c.descriptor): c for c in channels}),
+        job_label=label or f"{lane.job_name} — {len(channels)} channels",
+        progress_units=len(channels),
     )
-
-
-_NOT_LOADED_REFUSAL = "ERROR: Cannot add channels of '{file_name}' -- its file is not currently loaded."
 
 
 @dataclasses.dataclass(frozen=True)
@@ -421,32 +448,36 @@ def _run_tracked(run: _Run, lane: _TrackedLane, descriptors, label: str | None,
     """One task per saved recipe on a tracked lane; how many channels have a
     tacho (or need none) and are served. ``for_group`` finishes the config
     of each group."""
+    channels = run.resolve(descriptors)
+    if not channels:
+        return 0
     inputs = lane.read_inputs(run.target)
     served = 0
-    for recipe, group in _by_recipe(descriptors):
+    for recipe, group in _by_recipe(channels):
         config, restore = _config_of(run.target, recipe, group, lambda: inputs.config)
         served += _run_tracked_group(run, lane, group, for_group(config), inputs, label, restore)
     return served
 
 
-def _run_tracked_group(run: _Run, lane: _TrackedLane, descriptors, config, inputs,
+def _run_tracked_group(run: _Run, lane: _TrackedLane, channels, config, inputs,
                        label: str | None, restore) -> int:
     """Tacho is resolved once per source file."""
     target = run.target
     dock_tacho_path = inputs.dock_tacho.source.file_path if inputs.dock_tacho else None
-    plan = plan_tacho_per_file(
-        descriptors, inputs.run_lookup, dock_tacho_path, against_time=lane.against_time(config))
-    for refusal in plan.refusals:
-        if refusal.file_path not in run.refused_paths:
-            run.refused_paths.add(refusal.file_path)
-            line = _NOT_LOADED_REFUSAL if refusal.not_loaded else lane.refusal
-            target.log(line.format(file_name=refusal.file_name))
-    prepared = list(plan.prepared)
+    if not lane.against_time(config):
+        channels, refused = resolve_tacho_per_file(channels, dock_tacho_path)
+        for channel in refused:
+            path = channel.descriptor["file_path"]
+            if path not in run.refused_paths:
+                run.refused_paths.add(path)
+                target.log(lane.refusal.format(file_name=channel.descriptor["file_name"]))
+    prepared = [(c.descriptor, c.descriptor["channel_name"], c.run_index, c.channel_meta, c.tacho_meta)
+                for c in channels]
     if not prepared:
         return 0
 
     _run_claimed(
-        run, [p[0] for p in prepared], _with_restore(lane.worker(run.workers, inputs), restore),
+        run, [c.descriptor for c in channels], _with_restore(lane.worker(run.workers, inputs), restore),
         prepared, target.cache_finder(), config, inputs.dock_tacho, dock_tacho_path,
         render=functools.partial(lane.land, run),
         job_label=label or f"{lane.job_name} — {len(prepared)} channels",

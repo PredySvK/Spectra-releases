@@ -17,8 +17,6 @@ from gui.ribbon.ribbon_widgets import RibbonGroup, build_tab_layout, make_refres
 from gui.ribbon.save_section import ComputeResultSetButton
 from view_models.analysis_kinds import ANALYSIS_SPECTROGRAM
 
-_DEFAULTS = SpectrogramConfig()
-
 
 class TabAccSpectrogram(RibbonDspTab):
     sig_display_settings_changed = Signal()
@@ -28,13 +26,7 @@ class TabAccSpectrogram(RibbonDspTab):
     _analysis_kind = ANALYSIS_SPECTROGRAM
 
     def _on_display_setting_changed(self, _val: str = ""):
-        if hasattr(self, "combo_spectrum_format"):
-            self._set_val("spec2d_format", self.combo_spectrum_format.currentText())
-        if hasattr(self, "combo_amplitude_mode"):
-            self._set_val("spec2d_amplitude", self.combo_amplitude_mode.currentText())
-        if hasattr(self, "combo_color_scale"):
-            self._set_val("spec2d_color_scale", self.combo_color_scale.currentText())
-        self.sig_display_settings_changed.emit()
+        self._emit_display_settings_changed()
 
     def init_ui(self):
         layout = QHBoxLayout()
@@ -52,11 +44,8 @@ class TabAccSpectrogram(RibbonDspTab):
         layout.addWidget(vertical_separator())
 
         # -- Spectrum --
-        self.combo_fft_size = self._build_choice_combo("fft_size", "spec2d_fft_size")
-        self.combo_fft_size.currentTextChanged.connect(lambda v: self._set_val("spec2d_fft_size", v))
-
-        self.combo_window_type = self._build_choice_combo("window_type", "spec2d_window")
-        self.combo_window_type.currentTextChanged.connect(lambda v: self._set_val("spec2d_window", v))
+        self.combo_fft_size = self._build_field_combo("fft_size")
+        self.combo_window_type = self._build_field_combo("window_type")
 
         spectrum_group = RibbonGroup("Spectrum", tooltip="Block size and window of the waterfall")
         spectrum_group.add_fields([
@@ -70,14 +59,14 @@ class TabAccSpectrogram(RibbonDspTab):
         layout.addWidget(vertical_separator())
 
         # -- View --
-        self.combo_spectrum_format = self._build_choice_combo("spectrum_format", "spec2d_format")
+        self.combo_spectrum_format = self._build_field_combo("spectrum_format")
         self.combo_spectrum_format.currentTextChanged.connect(self._on_display_setting_changed)
         self.combo_format = self.combo_spectrum_format
 
-        self.combo_amplitude_mode = self._build_choice_combo("amplitude_mode", "spec2d_amplitude")
+        self.combo_amplitude_mode = self._build_field_combo("amplitude_mode")
         self.combo_amplitude_mode.currentTextChanged.connect(self._on_display_setting_changed)
 
-        self.combo_color_scale = self._build_choice_combo("color_scale", "spec2d_color_scale")
+        self.combo_color_scale = self._build_field_combo("color_scale")
         self.combo_color_scale.currentTextChanged.connect(self._on_display_setting_changed)
 
         view_group = RibbonGroup("View", tooltip="Display format, amplitude mode and colour mapping")
@@ -91,9 +80,7 @@ class TabAccSpectrogram(RibbonDspTab):
 
         # -- Options --
         self.cb_remove_dc = QCheckBox("Remove DC Offset")
-        saved_dc = str(self._get_val("spec2d_remove_dc", _DEFAULTS.remove_dc)).lower() == "true"
-        self.cb_remove_dc.setChecked(saved_dc)
-        self.cb_remove_dc.toggled.connect(lambda v: self._set_val("spec2d_remove_dc", v))
+        self._bind_field("remove_dc", self.cb_remove_dc)
 
         options_group = RibbonGroup("Options")
         options_group.add_column(self.cb_remove_dc)

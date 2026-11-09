@@ -11,8 +11,9 @@ with the pre-existing tests of how a measurement is filed on disk.
 No Qt, no window and no app_context.
 """
 from collections import Counter
-from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Sequence, Set
+from dataclasses import dataclass, field
+from types import MappingProxyType
+from typing import Callable, Dict, FrozenSet, List, Mapping, Optional, Sequence, Set, Tuple
 
 from core.block_kinds import resolve_clipped_f_stop, resolve_invalid_samples
 from core.jobs import CancelToken, JobCancelled
@@ -31,17 +32,13 @@ from signal_processing.workflow import (
 @dataclass(frozen=True)
 class _BlockSavePlan:
     """
-    What one save block needs the workers to know: where its shards go, which
-    measurements pass its metadata/range facet (decided in plan_batch(), against
-    the schema), and the channel-level filter to apply per shard.
+    What one save block needs the workers to know: where its shards go and the
+    channel-level filter to apply per shard.
 
-    Frozen plain data because it is handed to background steps. `source_ids` is
-    the set of SourceEntry ids that survived this block's measurement facet; a
-    file not in it contributes nothing to this block even if it feeds others.
+    Frozen plain data because it is handed to background steps.
     """
     block_id: str
     draft: object
-    source_ids: Set[str]
     save: SaveSpec
 
 
@@ -184,6 +181,30 @@ def _run_branches(workflow: Workflow, inputs, bound_channels, cancel: Optional[C
     return outputs, failures
 
 
+@dataclass(frozen=True)
+class _MeasurementOutcome:
+    """
+    What one measurement's step hands back to the run-side summary (named fields,
+    not a positional tuple, so a new notice is one field and one reader).
+
+    Immutable all the way down: the containers are frozen on construction, so
+    the value that crosses from the worker thread cannot be changed by either side.
+    """
+    manifest_by_block: Mapping[str, Optional[dict]] = field(default_factory=dict)
+    errors: Tuple[str, ...] = ()
+    block_errors: Mapping[str, Tuple[str, ...]] = field(default_factory=dict)
+    clipped_blocks: FrozenSet[str] = frozenset()
+    invalid_sample_blocks: FrozenSet[str] = frozenset()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "manifest_by_block", MappingProxyType(dict(self.manifest_by_block)))
+        object.__setattr__(self, "errors", tuple(self.errors))
+        object.__setattr__(self, "block_errors", MappingProxyType(
+            {block_id: tuple(messages) for block_id, messages in self.block_errors.items()}))
+        object.__setattr__(self, "clipped_blocks", frozenset(self.clipped_blocks))
+        object.__setattr__(self, "invalid_sample_blocks", frozenset(self.invalid_sample_blocks))
+
+
 def _run_source_chain(entry, directory: str, channel_labels: Sequence[str],
                       workflow: Workflow, save_plan: Dict[str, _BlockSavePlan],
                       cancel: Optional[CancelToken] = None,
@@ -198,8 +219,7 @@ def _run_source_chain(entry, directory: str, channel_labels: Sequence[str],
     instead of the blocks means what crosses back to the GUI thread is names
     and numbers, not the arrays that were just persisted.
 
-    No logging and no Qt here -- returns
-    (manifest_by_block, errors, block_errors, clipped_blocks, invalid_sample_blocks).
+    No logging and no Qt here -- returns one `_MeasurementOutcome`.
     `manifest_by_block`
     maps a save block id to its shard's manifest entry; a block this file
     contributed nothing to is simply absent. `errors` are the failures that hit every save block alike (the
@@ -226,7 +246,7 @@ def _run_source_chain(entry, directory: str, channel_labels: Sequence[str],
 
     run = run_from_entry(entry, directory)
     if run is None:
-        return {}, [f"{entry.relpath}: not scanned yet"], {}, set(), set()
+        return _MeasurementOutcome(errors=[f"{entry.relpath}: not scanned yet"])
 
     input_block_id = sole_input_block_id(workflow)
     # One bag for this measurement, shared by every channel of it: order
@@ -251,7 +271,7 @@ def _run_source_chain(entry, directory: str, channel_labels: Sequence[str],
         block_errors.setdefault(block_id, []).extend(by_type.values())
     active_root_ids = {block_id for block_id in save_plan if block_id not in blocked}
     if not active_root_ids:
-        return {}, errors, block_errors, set(), set()
+        return _MeasurementOutcome(errors=errors, block_errors=block_errors)
 
     for position, label in enumerate(channel_labels):
         if cancel is not None:
@@ -286,8 +306,7 @@ def _run_source_chain(entry, directory: str, channel_labels: Sequence[str],
         channel_type = resolve_run_channel_type(entry, meta)
         targets = [
             block_id for block_id, plan in save_plan.items()
-            if entry.id in plan.source_ids
-            and save_spec_allows_channel(plan.save, meta.name, channel_type)
+            if save_spec_allows_channel(plan.save, meta.name, channel_type)
         ]
         # Only the branches this channel is saved by are computed: a branch whose
         # SaveSpec does not want it would be thrown away, and its failure used to
@@ -320,7 +339,7 @@ def _run_source_chain(entry, directory: str, channel_labels: Sequence[str],
                     invalid_sample_blocks.add(block_id)
 
     if not any(per_block.values()):
-        return {}, errors, block_errors, set(), set()
+        return _MeasurementOutcome(errors=errors, block_errors=block_errors)
 
     stamp = file_stamp(run.file_path)
     manifest_by_block: Dict[str, Optional[dict]] = {}
@@ -329,7 +348,9 @@ def _run_source_chain(entry, directory: str, channel_labels: Sequence[str],
             continue
         source = source_result_from(entry, results, stamp)
         manifest_by_block[block_id] = write_result_shard(save_plan[block_id].draft, source)
-    return manifest_by_block, errors, block_errors, clipped_blocks, invalid_sample_blocks
+    return _MeasurementOutcome(
+        manifest_by_block=manifest_by_block, errors=errors, block_errors=block_errors,
+        clipped_blocks=clipped_blocks, invalid_sample_blocks=invalid_sample_blocks)
 
 
 def source_result_from(entry, results: List[tuple], stamp: Optional[dict]) -> SourceResult:

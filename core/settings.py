@@ -1,9 +1,11 @@
 """
-settings -- the shape of every application setting the Settings window edits.
+settings -- the shape of every application setting the Settings store holds.
 
 Per key: its default, how a stored value is coerced into a valid one, and
 whether it takes effect only after a restart. No labels -- how a
 setting is shown is view_models/settings; where it is held is session/settings.
+Besides the Settings window's fields, the store holds the Tools tab switches
+(`TOOL_SWITCH_KEYS`, ADR §1.290) and `DIALOG_ONLY_KEYS`, which that window never shows.
 
 The window's other fields are not here: panel toggles are layout and the
 X axis unit is the open project's.
@@ -13,9 +15,11 @@ import math
 from dataclasses import dataclass
 from typing import Callable
 
-from core.tacho_cleaning import DEFAULT_TACHO_SMOOTHING_MS
+from core.tacho_cleaning import (
+    DEFAULT_TACHO_HAMPEL_FILTER, DEFAULT_TACHO_HAMPEL_SIGMA, DEFAULT_TACHO_SMOOTHING_MS,
+)
 from core.theme import resolve_graph_theme, resolve_theme
-from core.units import DISPLAY_BASE_UNIT_GROUPS
+from core.units import DISPLAY_BASE_UNIT_GROUPS, UnitPreferences
 
 
 @dataclass(frozen=True)
@@ -54,6 +58,17 @@ def _non_negative_number(value: object) -> float:
     if not math.isfinite(number) or number < 0:
         raise ValueError(value)
     return number
+
+
+def _positive_number(value: object) -> float:
+    number = float(value)
+    if not math.isfinite(number) or number <= 0:
+        raise ValueError(value)
+    return number
+
+
+def _db_reference(quantity: str) -> SettingDefinition:
+    return SettingDefinition(getattr(UnitPreferences(), f"db_reference_{quantity}"), _positive_number)
 
 
 def _choice(allowed) -> Callable[[object], str]:
@@ -102,6 +117,10 @@ SETTING_DEFINITIONS: dict[str, SettingDefinition] = {
     "decimals_speed": _decimals("0"),
     "decimals_frequency": _decimals("2"),
     "decimals_time": _decimals("4"),
+    # In core.units.DB_REFERENCE_UNITS, whatever the Display unit (#947).
+    "db_reference_acceleration": _db_reference("acceleration"),
+    "db_reference_pressure": _db_reference("pressure"),
+    "db_reference_voltage": _db_reference("voltage"),
     "theme": SettingDefinition("dark", lambda value: resolve_theme(value).value, applies_after_restart=True),
     "graph_theme": SettingDefinition(
         "follow", lambda value: resolve_graph_theme(value).value, applies_after_restart=True),
@@ -110,14 +129,35 @@ SETTING_DEFINITIONS: dict[str, SettingDefinition] = {
     "perf_manual_factor": _integer(10, 2, 10000),
     "perf_render_screen_only": SettingDefinition(True, _flag),
     "highlight_other_opacity": _integer(25, 0, 100),
+    # Opacity of the Track table's background, in percent (90 % = the box fill's alpha 230 of 255).
+    # Set in Track cursor Settings only, never shown in the Settings window.
+    "track_table_opacity": _integer(90, 0, 100),
     # Only ever affects what is written next: h5py decompresses transparently,
     # so result sets already on disk stay readable.
     "result_cache_compression": SettingDefinition("", _choice(("", "lzf", "gzip"))),
     "use_result_cache_lookup": SettingDefinition(True, _flag),
-    # Stamped into every tracked DSP config for the next calculation; no upper
-    # limit -- a window longer than the record is clipped to it.
+    # Tacho cleaning: stamped into every tracked DSP config for the next
+    # calculation. No upper limits -- a window longer than
+    # the record is clipped to it, a threshold past every sample flags none.
+    "tacho_hampel_filter": SettingDefinition(DEFAULT_TACHO_HAMPEL_FILTER, _flag),
+    "tacho_hampel_sigma": SettingDefinition(DEFAULT_TACHO_HAMPEL_SIGMA, _positive_number),
     "tacho_smoothing_ms": SettingDefinition(DEFAULT_TACHO_SMOOTHING_MS, _non_negative_number),
+    # The Tools tab switches: one for every graph, remembered across starts, never shown in
+    # the Settings window. Off at first except the Cursor and the Track pin.
+    "cursor_enabled": SettingDefinition(True, _flag),
+    "cursor_pinned": SettingDefinition(False, _flag),
+    "highlight_enabled": SettingDefinition(False, _flag),
+    "track_cursor_enabled": SettingDefinition(False, _flag),
+    "track_cursor_pinned": SettingDefinition(True, _flag),
+    "track_cursor_highlight_enabled": SettingDefinition(False, _flag),
 }
+
+# Settings that only a tool's own dialog edits; the Settings window never shows them.
+DIALOG_ONLY_KEYS: frozenset[str] = frozenset({"track_table_opacity"})
+
+TOOL_SWITCH_KEYS: frozenset[str] = frozenset({
+    "cursor_enabled", "cursor_pinned", "highlight_enabled", "track_cursor_enabled", "track_cursor_pinned",
+    "track_cursor_highlight_enabled"})
 
 
 def resolve_setting_value(key: str, value: object) -> object:

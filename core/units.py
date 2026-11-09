@@ -5,12 +5,13 @@
 Core Physical Unit System Engine utilizing Pint framework.
 Manages legacy engineering string conversions, cross-dimensional validations,
 and high-speed vectorized NumPy arrays adjustments.
-Now includes Smart Spectral Parsing to scale complex DSP formats instantly post-FFT.
+Spectral Unit labels ("(g)^2/Hz") are read and built by core.unit_label.
 """
 
 import logging
 import re
 from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
 from pint import UnitRegistry, UndefinedUnitError
@@ -20,6 +21,7 @@ from core.channel_types import (
     CHANNEL_TYPE_ACCELEROMETER, CHANNEL_TYPE_GENERAL_DYNAMIC, CHANNEL_TYPE_MICROPHONE,
     CHANNEL_TYPE_TACHO, CHANNEL_TYPE_VOLTAGE,
 )
+from core.unit_label import build_unit_label, resolve_unit_label, resolve_unit_spelling
 
 logger = logging.getLogger(__name__)
 
@@ -55,36 +57,16 @@ class UnitPreferences:
     decimals_speed: str = "auto"
     decimals_frequency: str = "auto"
     decimals_time: str = "auto"
+    # dB reference (0 dB) per quantity, in DB_REFERENCE_UNITS -- not in the Display unit.
+    db_reference_acceleration: float = 1e-6
+    db_reference_pressure: float = 20e-6
+    db_reference_voltage: float = 1.0
+
+# The fixed unit each quantity's dB reference is stated in.
+DB_REFERENCE_UNITS = {"acceleration": "m/s2", "pressure": "Pa", "voltage": "V"}
 
 # Initialize a single, top-level centralized unit framework companion for the active process.
 _UREG = UnitRegistry()
-
-_UNV_UNIT_MAPPING = {
-    'g': 'g',
-    'v': 'V',
-    'volt': 'V',
-    'mv': 'mV',
-    'millivolt': 'mV',
-    'pa': 'Pa',
-    'pascal': 'Pa',
-    'bar': 'bar',
-    'mbar': 'mbar',
-    'rpm': 'rpm',
-    'hz': 'Hz',
-    'hertz': 'Hz',
-    'rad/s': 'rad/s',
-    'm/s2': 'm/s2',
-    'm/s²': 'm/s2',
-    'm/s**2': 'm/s2',
-    'm/s^2': 'm/s2',
-    'mm/s2': 'mm/s2',
-    'mm/s²': 'mm/s2',
-    'mm/s**2': 'mm/s2',
-    'mm/s^2': 'mm/s2',
-    's': 's',
-    'sec': 's',
-    'second': 's',
-}
 
 CANONICAL_UNIT_GROUPS = [
     ["g", "m/s2", "mm/s2"],  # Domain Index 0: Acceleration
@@ -105,8 +87,7 @@ def sanitize_unit_string(raw_unit: str) -> str:
     """Standardizes raw engineering unit characters from file headers into clean internal tokens."""
     if not raw_unit:
         return 'dimensionless'
-    cleaned = str(raw_unit).strip().lower()
-    canonical = _UNV_UNIT_MAPPING.get(cleaned, raw_unit)
+    canonical = resolve_unit_spelling(raw_unit)
 
     pint_translation = {
         'g': 'gravity',
@@ -208,8 +189,7 @@ def get_compatible_options(current_unit: str) -> list:
     a tacho recorded as volts, an unassigned accelerometer).
     For unknown or unassigned units, all supported units are returned.
     """
-    cleaned_input = str(current_unit).strip().lower() if current_unit else ""
-    canonical_input = _UNV_UNIT_MAPPING.get(cleaned_input, current_unit)
+    canonical_input = resolve_unit_spelling(current_unit)
 
     compatible_group = []
     for group in CANONICAL_UNIT_GROUPS:
@@ -259,7 +239,7 @@ def determine_channel_type(unit_str: str, channel_name: str) -> str:
     words and tokens in the channel name are inspected to detect sensor type.
     """
     cleaned_input = str(unit_str).strip().lower() if unit_str else ""
-    canonical_unit = _UNV_UNIT_MAPPING.get(cleaned_input, unit_str)
+    canonical_unit = resolve_unit_spelling(unit_str)
 
     # 1. Unambiguous physical unit domain takes absolute precedence
     for group in CANONICAL_UNIT_GROUPS:
@@ -306,57 +286,6 @@ def strip_channel_name_prefix(raw_name: str) -> str:
     return clean_name
 
 
-def strip_amplitude_suffix(unit: str) -> str:
-    """
-    Peels off a pre-existing "(...)^2", "(...)^2/Hz", " RMS" or " PEAK" suffix,
-    leaving the bare physical unit -- "g RMS" -> "g", "(Pa)^2/Hz" -> "Pa".
-
-    Shared by format_spectral_unit/format_order_unit (so labelling an
-    already-spectral unit again can't double the suffix, e.g. a source channel
-    whose raw unit string from the file is itself "g RMS" for a calibrated RMS
-    channel producing "g RMS RMS") and by convert_signal_to_global_unit's smart
-    parser, which needs the same split to find the linear scale factor.
-
-    Loops until a pass changes nothing, so a unit already doubled up by data
-    computed before this fix (e.g. a persisted "g RMS RMS" session) heals on
-    the next refresh instead of needing a restart.
-    """
-    while True:
-        cu_upper = unit.upper()
-        if unit.endswith(")^2/Hz") or unit.endswith(")²/Hz") or unit.endswith("^2/Hz"):
-            part = unit.split(")^2/Hz")[0].split(")²/Hz")[0].split("^2/Hz")[0]
-            stripped = part.rstrip(")").lstrip("(")
-        elif unit.endswith(")^2") or unit.endswith(")²"):
-            part = unit.split(")^2")[0].split(")²")[0]
-            stripped = part.rstrip(")").lstrip("(")
-        elif unit in ("g^2", "g²"):
-            stripped = "g"
-        elif " RMS" in cu_upper:
-            stripped = unit[:cu_upper.rfind(" RMS")].strip()
-        elif " PEAK" in cu_upper:
-            stripped = unit[:cu_upper.rfind(" PEAK")].strip()
-        else:
-            return unit
-        if stripped == unit:
-            return unit
-        unit = stripped
-
-
-def format_spectral_unit(base_unit: str, spectrum_format: str, amplitude_mode: str) -> str:
-    """
-    The single rule for labelling a 1D spectrum block, so it cannot be written
-    three different ways in three call sites again.
-
-    linear -> "g RMS" (or PEAK); power/canonical -> "(g)^2"; psd -> "(g)^2/Hz".
-    """
-    base_unit = strip_amplitude_suffix(base_unit)
-    if spectrum_format == "psd":
-        return f"({base_unit})^2/Hz"
-    if spectrum_format in ("power", "canonical"):
-        return f"({base_unit})^2"
-    return f"{base_unit} {amplitude_mode.upper()}"
-
-
 def is_squared_format(spectrum_format) -> bool:
     """The single rule for "this spectrum format is a squared quantity" (needs 10*log10, not 20*log10).
 
@@ -368,11 +297,27 @@ def is_squared_format(spectrum_format) -> bool:
 
 
 def format_order_unit(base_unit: str, spectrum_format: str, amplitude_mode: str = "rms") -> str:
-    """The single rule for labelling an order cut block."""
-    base_unit = strip_amplitude_suffix(base_unit)
-    if is_squared_format(spectrum_format) or spectrum_format == "canonical":
-        return f"({base_unit})^2"
-    return f"{base_unit} {amplitude_mode.upper()}"
+    """The single rule for labelling an order cut block: squared formats read "(g)^2", never "/Hz"."""
+    squared = is_squared_format(spectrum_format) or spectrum_format == "canonical"
+    return build_unit_label(base_unit, "power" if squared else "linear", amplitude_mode)
+
+
+_QUANTITY_OF_CHANNEL_TYPE = {
+    CHANNEL_TYPE_ACCELEROMETER: "acceleration",
+    CHANNEL_TYPE_MICROPHONE: "pressure",
+    CHANNEL_TYPE_VOLTAGE: "voltage",
+    CHANNEL_TYPE_TACHO: "speed",
+}
+
+
+def _resolve_unit_quantity(unit: str, channel_type: str) -> Optional[str]:
+    """The UnitPreferences quantity a curve of ``channel_type`` in ``unit``
+    belongs to -- by its channel type, else deduced from its unit; None for
+    none of them."""
+    quantity = _QUANTITY_OF_CHANNEL_TYPE.get(channel_type)
+    if quantity:
+        return quantity
+    return _QUANTITY_OF_CHANNEL_TYPE.get(determine_channel_type(resolve_unit_label(unit).unit, ""))
 
 
 def convert_signal_to_global_unit(y_data, current_unit, channel_type, preferences=None):
@@ -387,19 +332,7 @@ def convert_signal_to_global_unit(y_data, current_unit, channel_type, preference
 
     preferences = preferences or UnitPreferences()
 
-    field_map = {
-        CHANNEL_TYPE_ACCELEROMETER: "acceleration",
-        CHANNEL_TYPE_MICROPHONE: "pressure",
-        CHANNEL_TYPE_VOLTAGE: "voltage",
-        CHANNEL_TYPE_TACHO: "speed",
-    }
-
-    field_name = field_map.get(channel_type)
-    if not field_name:
-        base_probe = strip_amplitude_suffix(current_unit)
-        deduced_type = determine_channel_type(base_probe, "")
-        field_name = field_map.get(deduced_type)
-
+    field_name = _resolve_unit_quantity(current_unit, channel_type)
     if not field_name:
         return y_data, current_unit
 
@@ -407,23 +340,11 @@ def convert_signal_to_global_unit(y_data, current_unit, channel_type, preference
     if not target_global_unit:
         return y_data, current_unit
 
-    # 1. SMART PARSER: Extract mathematical properties and pure physical base unit
-    spec_format = "time"
-    amp_mode = ""
-
-    cu_upper = current_unit.upper()
-    if current_unit.endswith(")^2/Hz") or current_unit.endswith(")²/Hz") or current_unit.endswith("^2/Hz"):
-        spec_format = "psd"
-    elif current_unit.endswith(")^2") or current_unit.endswith(")²") or current_unit in ("g^2", "g²"):
-        spec_format = "power"
-    elif " RMS" in cu_upper:
-        spec_format = "linear"
-        amp_mode = "RMS"
-    elif " PEAK" in cu_upper:
-        spec_format = "linear"
-        amp_mode = "PEAK"
-
-    base_unit = strip_amplitude_suffix(current_unit)
+    # 1. Split the Unit label into its Display unit, Format and Amplitude.
+    label = resolve_unit_label(current_unit)
+    spec_format = label.spectrum_format
+    amp_mode = label.amplitude_mode
+    base_unit = label.unit
 
     if base_unit == target_global_unit:
         return y_data, current_unit
@@ -451,11 +372,46 @@ def convert_signal_to_global_unit(y_data, current_unit, channel_type, preference
     # Instantaneous scalar multiplication (Zero FFT recalculation overhead)
     converted_y = y_data * final_scalar if y_data is not None else None
 
-    # 4. Synthesize the clean Testlab-style canonical string via the same rule
-    # the DSP path uses. "time" has no spectral suffix, so it stays bare.
-    if spec_format in ("psd", "power", "linear"):
-        final_unit_str = format_spectral_unit(target_global_unit, spec_format, amp_mode)
+    # 4. Rebuild the Unit label in the target unit; a plain unit stays bare.
+    if spec_format:
+        final_unit_str = build_unit_label(target_global_unit, spec_format, amp_mode)
     else:
         final_unit_str = target_global_unit
 
     return converted_y, final_unit_str
+
+
+# The usual reference of a linear unit (lower case): acceleration 1e-6 m/s²,
+# velocity 1e-9 m/s, sound pressure 20 µPa, force 1e-6 N.
+_REFERENCE_OF_UNIT = {
+    "m/s²": 1e-6, "m/s^2": 1e-6, "mm/s²": 1e-3, "mm/s^2": 1e-3, "g": 1e-6 / 9.80665,
+    "m/s": 1e-9, "mm/s": 1e-6,
+    "pa": 20e-6, "mpa": 20e-3, "kpa": 20e-9,
+    "n": 1e-6,
+}
+
+
+def resolve_usual_db_reference(unit: str) -> Optional[float]:
+    """The usual dB reference of this linear unit, None when the program has none for it."""
+    return _REFERENCE_OF_UNIT.get(unit.strip().lower())
+
+
+def resolve_db_reference(unit: str, channel_type: str, preferences: Optional[UnitPreferences] = None) -> float:
+    """
+    The dB reference of a curve in ``unit`` (any Unit label, e.g. ``(g)^2/Hz``),
+    as a linear value of its Display unit (``g``): the Settings reference of its
+    quantity converted from DB_REFERENCE_UNITS, else the usual reference of the
+    unit, else 1. A squared format takes its square, a dB value is then the same
+    in every Display unit of the quantity.
+    """
+    preferences = preferences or UnitPreferences()
+    display_unit = resolve_unit_label(unit).unit
+    quantity = _resolve_unit_quantity(unit, channel_type)
+    if quantity in DB_REFERENCE_UNITS:
+        reference = getattr(preferences, f"db_reference_{quantity}")
+        try:
+            return float(convert_numeric_array(
+                np.array([reference]), DB_REFERENCE_UNITS[quantity], display_unit, strict=True)[0])
+        except ValueError:
+            pass
+    return resolve_usual_db_reference(display_unit) or 1.0

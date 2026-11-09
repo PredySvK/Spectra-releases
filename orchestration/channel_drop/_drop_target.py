@@ -29,14 +29,13 @@ class SpectrogramDropInputs:
 
     ``restored_measurement_path`` is the file of a spectrogram restored from
     the Tab cache, which shows its image without the raw channels it was
-    computed from; None for any other. ``run_lookup`` is ``DataPool.run_lookup``.
+    computed from; None for any other.
     """
 
     vib_block: Any
     tacho_block: Any
     tracking_mode: str
     restored_measurement_path: str | None
-    run_lookup: Callable[[str], Any]
 
 
 @dataclass(frozen=True)
@@ -44,7 +43,6 @@ class OrderDropInputs:
     """What an order-cut drop reads from the shell, taken on the GUI thread."""
 
     config: OrderTrackingConfig
-    run_lookup: Callable[[str], Any]
     dock_tacho: Any
     with_overall_level: bool
 
@@ -54,7 +52,6 @@ class OverallLevelDropInputs:
     """What an Overall Level drop reads from the shell, taken on the GUI thread."""
 
     config: OverallLevelConfig
-    run_lookup: Callable[[str], Any]
     dock_tacho: Any
 
 
@@ -72,10 +69,17 @@ class DropTarget(Protocol):
 
     def log(self, message: str) -> None: ...
 
+    def run_lookup(self, file_path: str) -> Any:
+        """The pooled run of ``file_path``, or the ``DeadLink`` saying the pool
+        does not hold it (``DataPool.run_lookup``): what every dropped channel
+        is resolved against."""
+
     def run_task(self, worker: Callable, *args, on_success: Callable, on_error: Callable,
                  **run_kwargs) -> None: ...
 
-    def open_imported_channels(self, descriptors: Iterable[dict]) -> None: ...
+    def open_imported_channels(self, channels: Iterable[Any]) -> None:
+        """Open the pooled ``DroppedChannel``s of Imported results this dock
+        does not show in a tab of their own."""
 
     def spectrum_inputs(self) -> SpectrumDropInputs: ...
 
@@ -132,6 +136,6 @@ class DropTarget(Protocol):
         cache lookup and the saved tab read the channel from -- None for a tacho."""
 
     def run_spectrogram_compute(self) -> None:
-        """Compute the held pair as the dock's own compute; the tab title follows."""
+        """Compute the held pair as the dock's own compute; the tab label follows."""
 
-    def refresh_title(self) -> None: ...
+    def refresh_tab_label(self) -> None: ...

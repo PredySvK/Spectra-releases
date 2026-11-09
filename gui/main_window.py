@@ -21,6 +21,7 @@ from gui.handlers.result_content import ResultContentHandler
 from gui.ribbon.ribbon_bar import RibbonBar
 from gui.ribbon.ribbon_widgets import RibbonGroup
 from gui.welcome.welcome_page import WelcomePage
+from gui.workspace.plot_title import set_plot_title
 from gui.workspace.workspace import Workspace, find_dock_by_id
 from gui.workspace.workspace_layout import (
     WorkspaceLayout, DEFAULT_BOTTOM_HEIGHT, DEFAULT_EXPLORER_WIDTH,
@@ -30,7 +31,7 @@ from io_modules.changelog import read_changelog
 from gui.filter_panel.filter_panel import FilterPanel
 from gui.bottom_panels.log_widget import LogWidget
 from gui.bottom_panels.bottom_panel import BottomPanel
-from gui.bottom_panels.evaluation_panel import EvaluationPanel
+from gui.bottom_panels.evaluation_card import EvaluationCard
 from app_context import AppContext
 from view_models.analysis_kinds import (
     ANALYSIS_MODE_ACC_ORDER_TRACKING,
@@ -148,7 +149,7 @@ class MainWindowFrame(QWidget):
 
         plot_item = self.placeholder_graph.plot_widget.plotItem
         from core.app_metadata import APP_NAME
-        plot_item.setTitle(f"{APP_NAME} - Engineering Canvas")
+        set_plot_title(self.placeholder_graph.plot_widget, f"{APP_NAME} - Engineering Canvas")
         plot_item.hideAxis('left')
         plot_item.hideAxis('bottom')
         self.placeholder_graph.plot_widget.showGrid(x=False, y=False)
@@ -222,7 +223,7 @@ class MainWindowFrame(QWidget):
         self.app_context.logger_callback = self.log_panel.log_message
 
         from gui.jobs.jobs_dock import JobsDockWidget
-        self.jobs_panel = JobsDockWidget(self.job_runner)
+        self.jobs_panel = JobsDockWidget(self.job_runner, waiting_batch_runs=self.workflow_run_bridge)
 
         # Built before BottomPanel (below) since the Evaluation card needs it
         # for its dock tasks -- the same live-dock pattern (DockTasks, ADR
@@ -241,17 +242,17 @@ class MainWindowFrame(QWidget):
         self.workspace.bind_selection_drops(
             SelectionDropHandler(self.app_context, self.job_runner, self.workspace))
         self.explorer_panel.selections_panel.selection_activated.connect(self.workspace.draw_selection)
-        self.evaluation_panel = EvaluationPanel(self.app_context, self.workspace)
+        self.evaluation_card = EvaluationCard(self.app_context, self.workspace)
         # The one dependency that cannot go the other way round: the card is
         # made from the manager, so the manager gets it back by setter.
-        self.workspace.bind_evaluation_panel(self.evaluation_panel)
+        self.workspace.bind_evaluation_card(self.evaluation_card)
 
         # System Log, Job Manager and Evaluation as one panel of tabs -- the
         # same shape as the Explorer dock. The job status strip in the left column still carries
         # the one job the user is waiting on. Each tab toggles on its own from
         # the Settings window’s Layout page; the dock's own title strip is dropped (it only
         # repeated "Output" and cost a row) so the tab bar is the whole chrome.
-        bottom_panel = BottomPanel(self.log_panel, self.jobs_panel, self.evaluation_panel)
+        bottom_panel = BottomPanel(self.log_panel, self.jobs_panel, self.evaluation_card)
         bottom_dock = QDockWidget("Output", sub_area)
         bottom_dock.setWidget(bottom_panel)
         bottom_dock.setObjectName("BottomDock")
@@ -262,15 +263,22 @@ class MainWindowFrame(QWidget):
 
         self.workspace_layout = WorkspaceLayout(
             self.app_context, sub_area, explorer_dock, filter_dock, job_status_dock,
-            bottom_dock, bottom_panel, self.log_panel, self.jobs_panel, self.evaluation_panel,
+            bottom_dock, bottom_panel, self.log_panel, self.jobs_panel, self.evaluation_card,
         )
-        # Late for the same reason evaluation_panel is: the layout is assembled
+        # Late for the same reason evaluation_card is: the layout is assembled
         # from panels that are themselves made from the manager.
         self.workspace.bind_workspace_layout(self.workspace_layout)
-        self.workspace.bind_cursor_switch(self.ribbon.tab_tools.btn_cursor)
-        self.workspace.bind_pin_switch(self.ribbon.tab_tools.btn_cursor_pin)
-        self.workspace.bind_highlight_switch(self.ribbon.tab_tools.btn_highlight)
+        tools = self.ribbon.tab_tools
+        self.workspace.bind_tool_switches({
+            "cursor_enabled": tools.btn_cursor,
+            "cursor_pinned": tools.btn_cursor_pin,
+            "highlight_enabled": tools.btn_highlight,
+            "track_cursor_enabled": tools.btn_track_cursor,
+            "track_cursor_pinned": tools.btn_track_cursor_pin,
+            "track_cursor_highlight_enabled": tools.btn_track_cursor_highlight,
+        })
         self.ribbon.tab_tools.btn_cursor_settings.clicked.connect(self.workspace.open_cursor_settings)
+        self.ribbon.tab_tools.btn_track_cursor_settings.clicked.connect(self.workspace.open_track_cursor_settings)
 
         self.workspace_tabs.tabCloseRequested.connect(lambda idx: self.workspace.close_specific_tab(idx))
         self.workspace.show_home_tab()
@@ -334,6 +342,7 @@ class MainWindowFrame(QWidget):
             set_titlebar_text=self.set_titlebar_text,
             show_x_axis_unit=self._show_x_axis_unit_in_settings,
             job_runner=self.job_runner,
+            batch_runs=self.workflow_run_bridge,
         )
 
         project_tab.btn_select_dir.clicked.connect(self.project_document.select_data_directory)
@@ -375,23 +384,9 @@ class MainWindowFrame(QWidget):
         workflow_tab.btn_delete.clicked.connect(self.workflow_authoring.delete_workflow)
 
         # --- ROUTING OF RECALCULATE / EXTRACT BUTTONS ---
-        self.ribbon.tab_acc_spectrum.btn_recalculate.clicked.connect(self.workspace.refresh_active_spectrum)
         self.ribbon.tab_acc_spectrum.cb_band_rms.toggled.connect(
             self.workspace.toggle_band_rms_cursors)
-        # BUGS.md C1 used to require wrapping this in a lambda:
-        # refresh_active_spectrogram took an optional `newly_opened_dock` and
-        # a direct connect fed QAbstractButton.clicked's `checked` bool into
-        # it, so every click was silently treated as a tab-open of a non-dock.
-        # S4 (ideas/session_persistence/PLAN.md) moved the "fresh open" branch
-        # into dispatch_compute's `origin` -- refresh_active_spectrogram
-        # takes no extra parameter to feed anymore, so a direct connect is safe.
-        self.ribbon.tab_acc_spectrogram.btn_recalculate.clicked.connect(
-            self.workspace.refresh_active_spectrogram)
-        self.ribbon.tab_acc_order_tracking.btn_recalculate.clicked.connect(
-            self.workspace.refresh_active_order_tracking)
-        self.ribbon.tab_acc_overall_level.btn_recalculate.clicked.connect(
-            self.workspace.refresh_active_overall_level)
-        # "Refresh Last N" (S8, ideas/session_persistence/PLAN.md) -- the
+        # "Refresh Last N" (S8, the session persistence plan) -- the
         # dropdown RefreshSplitButton adds beside the plain Refresh above.
         self.ribbon.tab_acc_spectrum.btn_recalculate.refresh_last_n_requested.connect(
             self.workspace.refresh_last_n_curves)
@@ -412,6 +407,7 @@ class MainWindowFrame(QWidget):
         ):
             ribbon_tab.sig_display_settings_changed.connect(functools.partial(
                 self.workspace.rebuild_active_dock_display_settings, analysis_kind))
+            self._connect_refresh(ribbon_tab.btn_recalculate, analysis_kind)
 
         # One "Compute Result Set..." button per analysis tab; the dialog it
         # opens routes folder-vs-query -- see batch_run.py.
@@ -446,7 +442,7 @@ class MainWindowFrame(QWidget):
         # The Evaluation card recomputes on the same
         # dock-focus event the Filter panel routes on.
         self.workspace_tabs.currentChanged.connect(
-            lambda idx: self.evaluation_panel.on_dock_focus_changed(self.workspace_tabs.widget(idx)))
+            lambda idx: self.evaluation_card.on_dock_focus_changed(self.workspace_tabs.widget(idx)))
 
         # The pool redraws on any facet change, but only rebuilds its facets
         # when the checkbox itself moves: switching it on brings the pool's own
@@ -487,6 +483,11 @@ class MainWindowFrame(QWidget):
         self._set_project_ui_enabled(False)
 
     # ---- frameless title bar --------------------------------------------
+
+    def _connect_refresh(self, button, analysis_kind: str) -> None:
+        """`clicked` carries a `checked` bool: a partial or a default argument
+        would take it, a lambda with no parameters does not (BUGS.md C1)."""
+        button.clicked.connect(lambda: self.workspace.refresh_active_tab(analysis_kind))
 
     def _log_job_step_failure(self, job_id: int, message: str) -> None:
         record = self.job_runner.record(job_id)
@@ -714,6 +715,8 @@ class MainWindowFrame(QWidget):
             session.set_cache_adopter(None)
             session.set_open_tabs_capture(None)
             session.set_saved_listener(None)
+            session.set_dirty_listener(None)
+            session.set_save_warning_log(None)
 
         # The folder watcher outlives the widgets it would refresh otherwise,
         # and a notification arriving after the window is gone rebuilds a tree

@@ -23,3 +23,5 @@ Frequency can be shown on the axis in Hz or RPM, and you can switch between them
 For controls that affect curve rendering, see [Graph Rendering](topic:settings/graph_defaults). To load saved curves into the active graph, see [Result Pool](topic:results/intro).
 
 For the hover readout and the selected-curve highlight, see [Cursor and Highlight](topic:tools/cursor).
+
+To choose which parts name each curve in the legend, right-click the graph and choose **Legend Settings…** ([Legend Settings](topic:graphs/legend_settings)).

@@ -18,15 +18,19 @@ $$H=\max\bigl(1,\ \operatorname{round}(N(1-o))\bigr),\qquad M=\left\lfloor\frac{
 
 ## Průměrování
 
-$P_m[k]=\lvert X_m[k]\rvert^2$ je neškálovaný výkon bloku $m$. Průměruje se výkon, před škálováním:
+$P_m[k]=\lvert X_m[k]\rvert^2$ je neškálovaný výkon bloku $m$. Průměruje se před škálováním, ve všech režimech kromě Linear average výkon. Režimy se jmenují a řadí jako v Simcenter Testlab:
 
 | Režim | Výsledek | Poznámka |
 |---|---|---|
-| **Linear** (výchozí) | $\bar P[k]=\frac1M\sum_m P_m[k]$ | klasický průměr bloků |
-| **Peak Hold** | $\bar P[k]=\max_m P_m[k]$ | zachová přechodový jev, který by průměr setřel |
-| **Exponential** | $\bar P_0=P_0,\quad \bar P_m=(1-\alpha)\,\bar P_{m-1}+\alpha\,P_m$ | pozdější bloky váží více; $\alpha$ se ořezává na 0–1 |
+| **Energy average** (výchozí) | $\bar P[k]=\frac1M\sum_m P_m[k]$ | klasický průměr výkonu bloků |
+| **Linear average** | $\bar P[k]=\Bigl(\frac1M\sum_m \lvert X_m[k]\rvert\Bigr)^2$ | průměr amplitudy; nižší než Energy average, když se úroveň mění (rozběh, šum). Jen formát Linear |
+| **Energy exponential average** | $\bar P_0=P_0,\quad \bar P_m=p\,\bar P_{m-1}+(1-p)\,P_m$ | pozdější bloky váží více; $p$ je Exponential parameter |
+| **Minimum value** | $\bar P[k]=\min_m P_m[k]$ | nejnižší hodnota, kterou bin měl |
+| **Maximum value** | $\bar P[k]=\max_m P_m[k]$ | zachová přechodový jev, který by průměr setřel |
 
-Váha $\alpha$ (pás karet *Weight α*, rozsah 0,01–1, výchozí **0,1**) se používá jen v režimu Exponential.
+Exponential parameter $p$ (pás karet *Exp. parameter*, 0–99 %, výchozí **50 %**) se používá jen v režimu Energy exponential average. Říká, kolik ze starého průměru si každý nový blok ponechá, stejně jako v Testlabu, takže stejné procento dá stejné spektrum: 10 % je $0{,}1\,\bar P_{m-1}+0{,}9\,P_m$. Vyšší hodnota vyhlazuje víc; 0 % je jen poslední blok.
+
+Linear average ukáže přesně průměr amplitudy $\frac1M\sum_m \lvert X_m\rvert$, RMS nebo Peak, lineárně nebo v dB. **Ukazuje jen formát Linear:** druhá mocnina průměru amplitudy není průměrný výkon (Power a PSD s Linear average jsou v Testlabu Energy average) a PSD z něj není hustota (na šumu vyjde asi o 1 dB níž). Pás karet proto s Linear average nenabízí Power ani PSD a křivka Linear average, která už v grafu je, se v těchto pohledech skryje a důvod stojí v titulku grafu. Pro Power nebo PSD použijte Energy average.
 
 ## Škálování a pohled
 
@@ -39,7 +43,7 @@ $\bar P$ se stane $P_\text{canon}$ a pak se zobrazí jako Linear, Power nebo PSD
 | Velikost FFT | 4096 |
 | Okno | Hanning |
 | Formát / Amplituda / Škála | Linear / RMS / Linear |
-| Průměrování | Linear, $\alpha=0{,}1$ |
+| Průměrování | Energy average, Exponential parameter 50 % |
 | Remove DC Offset | zapnuto |
 | Překryv | 50 % (pevný) |
 

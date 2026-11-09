@@ -7,7 +7,8 @@ in the usual per-user or system folder, or via `-IsccPath <path-to-ISCC.exe>`.
 
 Output: `dist\Spectra\Spectra.exe` and
 `dist\Spectra-<APP_VERSION>-setup.exe`. Product version and shortcut
-AppUserModelID are read from `core/app_metadata.py`. The installer is unsigned.
+AppUserModelID are read from `core/app_metadata.py`. The installer and `Spectra.exe` are unsigned; UPX packing is off
+(`upx=False` in `spectra.spec`) to lower the risk of Defender ML false positives.
 
 The installer needs no elevation, defaults to `%LOCALAPPDATA%\Programs\Spectra`,
 and remembers a custom folder on reinstall. Start menu and optional desktop

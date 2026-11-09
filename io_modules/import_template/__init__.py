@@ -12,8 +12,15 @@ template takes from the file name, folder, sheet and column header is kept on
 the channels under `resolve_template_field_key`, and
 `build_template_schema_fields` is its Raw metadata schema. Readers consult
 only the registry (`install_project_templates`), never the built-ins or the
-library, so a project reads the same without them. `read_sample_fits` is the
-wizard's check of further sample files, read like the scan does (a worker).
+library, so a project reads the same without them.
+The wizard reads all its samples whole (`read_samples`, a `SampleRead` each)
+and finds the further files of the first one's kind (`read_more_samples`), both
+on a worker; `resolve_header_unit` and `resolve_source_amplitude` say what a
+heading cell states before any template override.
+A template splits the texts around a channel (file name, folder, sheet, header rows) into chips (`build_text_chips`, own cuts
+`build_cut_spans`, the number in a chip `resolve_chip_number`) and its roles
+name the chips (`build_chip_roles` is what they make of one channel's texts,
+`resolve_chip_source_text` the text of a source for one channel); a sheet without the heading row is a `SkippedSheet`, not a misfit.
 
 What does not belong here: the template's shape (core/import_template), the
 wizard's state (view_models/import_template), or which project holds which
@@ -27,6 +34,7 @@ from io_modules.import_template._builtin import (
 from io_modules.import_template._library import (
     delete_library_template,
     write_library_template_from_file,
+    read_library_problems,
     read_library_templates,
     read_template_file,
     resolve_library_file,
@@ -36,15 +44,8 @@ from io_modules.import_template._library import (
 )
 from io_modules.import_template._metadata import (
     TEMPLATE_FIELD_PREFIX,
-    SourcePiece,
-    build_source_pieces,
     build_template_schema_fields,
-    resolve_field_label,
-    resolve_piece_index,
-    resolve_source_fields,
     resolve_template_field_key,
-    resolve_key_value,
-    resolve_number_unit,
 )
 from io_modules.import_template._reader import (
     AccReaderImportTemplate,
@@ -66,47 +67,68 @@ from io_modules.import_template._table import (
     RPM_PER_UNIT,
     SECONDS_PER_UNIT,
     SheetReading,
+    SkippedSheet,
     TemplateChannel,
     TemplateReading,
     Workbook,
     build_template_reading,
     build_text_format,
-    resolve_metadata_source_label,
     read_workbook,
     resolve_cell_text,
+    resolve_chip_source_text,
     resolve_head_row_count,
     resolve_header_column,
+    resolve_header_unit,
     resolve_heading_row,
     resolve_linear_values,
-    resolve_metadata_source_text,
-    resolve_pick_source_text,
     resolve_read_sheets,
+    resolve_source_amplitude,
+    resolve_source_text,
     resolve_x_factor,
     resolve_x_units,
 )
-from io_modules.import_template._sample_fit import SampleFit, read_sample_fits
+from io_modules.import_template._samples import SampleRead, read_more_samples, read_samples
+from io_modules.import_template._text_chips import (
+    TextChip,
+    TextChips,
+    build_cut_spans,
+    NAME_JOIN,
+    ChipRoles,
+    build_chip_roles,
+    resolve_axis_text,
+    build_text_chips,
+    resolve_chip_label,
+    resolve_chip_number,
+    resolve_text_source_label,
+)
 from io_modules.import_template._text_table import TextFormat, resolve_text_format
 
 __all__ = [
     "HZ_PER_UNIT",
+    "NAME_JOIN",
     "RPM_PER_UNIT",
     "SECONDS_PER_UNIT",
     "TEMPLATE_FIELD_PREFIX",
     "AccReaderImportTemplate",
-    "SampleFit",
+    "ChipRoles",
+    "SampleRead",
     "SheetReading",
-    "SourcePiece",
+    "SkippedSheet",
     "TemplateChannel",
     "TemplateReading",
+    "TextChip",
+    "TextChips",
     "TextFormat",
     "Workbook",
-    "read_sample_fits",
-    "build_source_pieces",
+    "read_more_samples",
+    "read_samples",
+    "build_cut_spans",
     "build_template_reading",
     "build_template_schema_fields",
+    "build_text_chips",
+    "build_chip_roles",
     "build_text_format",
     "resolve_text_format",
-    "resolve_metadata_source_label",
     "delete_library_template",
     "discard_import_template_caches",
     "resolve_installed_template",
@@ -118,29 +140,31 @@ __all__ = [
     "read_template_match",
     "resolve_template_name_fit",
     "read_builtin_template",
+    "read_library_problems",
     "read_library_templates",
     "read_template_file",
     "read_workbook",
+    "resolve_axis_text",
     "resolve_cell_text",
-    "resolve_field_label",
+    "resolve_chip_source_text",
+    "resolve_chip_label",
+    "resolve_chip_number",
+    "resolve_text_source_label",
     "resolve_head_row_count",
     "resolve_header_column",
+    "resolve_header_unit",
     "resolve_heading_row",
     "resolve_installed_signature",
     "resolve_linear_values",
     "resolve_library_file",
     "resolve_library_folder",
-    "resolve_metadata_source_text",
-    "resolve_pick_source_text",
-    "resolve_piece_index",
     "resolve_read_sheets",
-    "resolve_source_fields",
+    "resolve_source_amplitude",
+    "resolve_source_text",
     "resolve_template_cache_key",
     "resolve_template_field_key",
     "resolve_x_factor",
     "resolve_x_units",
-    "resolve_key_value",
-    "resolve_number_unit",
     "read_template_misfit_reason",
     "write_library_template",
     "write_template_file",

@@ -122,8 +122,11 @@ _WINDOWS: Tuple[Choice, ...] = (
 )
 _AMPLITUDES: Tuple[Choice, ...] = (("RMS", "rms"), ("Peak", "peak"))
 _FORMATS: Tuple[Choice, ...] = (("Linear", "linear"), ("Power", "power"), ("PSD", "psd"))
+# In Testlab's order.
 _AVERAGING: Tuple[Choice, ...] = (
-    ("Linear", "linear"), ("Peak Hold", "peak_hold"), ("Exponential", "exponential"))
+    ("Energy average", "energy"), ("Linear average", "linear"),
+    ("Energy exponential average", "energy_exponential"),
+    ("Minimum value", "minimum"), ("Maximum value", "maximum"))
 _TRACKING_MODES: Tuple[Choice, ...] = (("RPM Tracked", "rpm"), ("Free Run (Time)", "time"))
 _DIRECTIONS: Tuple[Choice, ...] = (("Up (Run-Up)", "up"), ("Down (Run-Down)", "down"))
 

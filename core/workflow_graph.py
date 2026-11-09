@@ -41,7 +41,7 @@ from math import isfinite
 from types import MappingProxyType
 from typing import Any, Dict, Mapping, Optional, Tuple
 
-from core.frozen import freeze_identities, freeze_range_map, freeze_str_map
+from core.frozen import freeze_identities
 from core.models import ChannelIdentity
 
 # The reserved `block_type` of an input block. An input block is a block -- it takes
@@ -104,13 +104,13 @@ class InputSpec:
 @dataclass(frozen=True)
 class SaveSpec:
     """
-    Which channels and measurements of a marked block's output get written to its
-    result set (decision 4, 1.6). Saving is opt-in per block: a block with no
-    `SaveSpec` produces nothing on disk, only an in-memory block the graph feeds
-    downstream.
+    Which channels of a marked block's output get written to its result set
+    (decision 4, 1.6). Saving is opt-in per block: a block with no `SaveSpec`
+    produces nothing on disk, only an in-memory block the graph feeds downstream.
+    Which measurements a run covers is the Input block's Measurement selection
+    (§1.275).
 
-    A *static* filter only -- by channel identity or channel type, and by
-    metadata facet (the same vocabulary `MeasurementSelection` uses). Filtering
+    A *static* filter only -- by channel identity or channel type. Filtering
     by a *computed* metric ("save only channels peaking above X") is deliberately
     out of v1: result-set coverage would then depend on the data, so "do I
     already have this?" could not be decided from parameters alone, and `status`
@@ -129,16 +129,12 @@ class SaveSpec:
     all_channels: bool = True
     channel_identities: Tuple[ChannelIdentity, ...] = ()
     channel_types: Tuple[str, ...] = ()
-    metadata_values: Mapping[str, Tuple[str, ...]] = field(default_factory=dict)
-    ranges: Mapping[str, Tuple[Any, Any]] = field(default_factory=dict)
 
     def __post_init__(self):
         object.__setattr__(self, "label", str(self.label))
         object.__setattr__(self, "all_channels", bool(self.all_channels))
         object.__setattr__(self, "channel_identities", freeze_identities(self.channel_identities))
         object.__setattr__(self, "channel_types", tuple(str(t) for t in self.channel_types))
-        object.__setattr__(self, "metadata_values", freeze_str_map(self.metadata_values))
-        object.__setattr__(self, "ranges", freeze_range_map(self.ranges))
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -146,8 +142,6 @@ class SaveSpec:
             "all_channels": self.all_channels,
             "channel_identities": [list(identity) for identity in self.channel_identities],
             "channel_types": list(self.channel_types),
-            "metadata_values": {key: list(values) for key, values in self.metadata_values.items()},
-            "ranges": {key: list(bounds) for key, bounds in self.ranges.items()},
         }
 
     @classmethod
@@ -161,11 +155,6 @@ class SaveSpec:
                 for identity in (data.get("channel_identities") or ())
             ),
             channel_types=tuple(data.get("channel_types") or ()),
-            metadata_values=data.get("metadata_values") or {},
-            ranges={
-                key: tuple(bounds) for key, bounds in (data.get("ranges") or {}).items()
-                if bounds is not None
-            },
         )
 
 
@@ -277,8 +266,8 @@ class Workflow:
 
     `__post_init__` checks only what can be checked without `BLOCKS`: block ids are
     unique, and every wire endpoint names a block that exists. Cycle detection,
-    port type-checking and "every mandatory port is fed" are `validate_graph` in
-    `signal_processing/workflow.py`.
+    port type-checking and "every mandatory port is fed" are `resolve_block_errors`
+    in `signal_processing/workflow.py`.
     """
     name: str = ""
     blocks: Tuple[WorkflowBlock, ...] = ()

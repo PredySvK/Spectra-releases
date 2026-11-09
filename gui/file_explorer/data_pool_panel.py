@@ -382,15 +382,11 @@ class DataPoolPanel(QWidget):
 
         from selection.source_facets import visible_pool_channels
 
-        query = panel.pool_query()
         return visible_pool_channels(
             self.app_context.pool.loaded_runs,
             self.app_context.project_session.source_location.entries_by_path,
             self.app_context.pool.schema().master,
-            query.metadata_values,
-            query.channel_identities,
-            selected_ranges=query.ranges,
-            selected_identity_values=query.identity_values,
+            panel.pool_query(),
         )
 
     def apply_visibility(self):

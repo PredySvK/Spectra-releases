@@ -134,7 +134,7 @@ class PoolWatcher(QObject):
 
         pending, self._pending = self._pending, set()
 
-        changed = []
+        changed = {}
         for directory in pending:
             if not os.path.isdir(directory):
                 continue
@@ -142,7 +142,7 @@ class PoolWatcher(QObject):
             fingerprint = folder_fingerprint(directory)
             if fingerprint == self._fingerprints.get(key):
                 continue
-            changed.append(directory)
+            changed[directory] = fingerprint
 
         if not changed:
             return
@@ -152,23 +152,25 @@ class PoolWatcher(QObject):
         )
         self._refreshing.update(changed)
         self.data_pool.refresh_directories(
-            changed, quiet=True,
+            list(changed), quiet=True,
             on_finished=lambda outcome: self._on_refresh_finished(outcome, changed),
         )
 
-    def _on_refresh_finished(self, outcome, directories):
+    def _on_refresh_finished(self, outcome, fingerprints_before_scan):
         # A declined question is an answer: re-reading the same folders would
         # ask it again every settle cycle. The folder is asked about again the
         # next time something in it changes.
         if not outcome.completed and not outcome.declined:
-            self._pending.update(directories)
-            self._refreshing.difference_update(directories)
+            self._pending.update(fingerprints_before_scan)
+            self._refreshing.difference_update(fingerprints_before_scan)
             if not self.data_pool.is_running:
                 self._settle.start()
             return
 
-        for directory in directories:
+        # The fingerprint from before the scan, not a fresh one: a file that
+        # landed while the scan ran may not be in the pool, and a fresh
+        # fingerprint would make its pending change look already read.
+        for directory, fingerprint in fingerprints_before_scan.items():
             self._refreshing.discard(directory)
             if os.path.isdir(directory):
-                key = canonical_path(directory)
-                self._fingerprints[key] = folder_fingerprint(directory)
+                self._fingerprints[canonical_path(directory)] = fingerprint

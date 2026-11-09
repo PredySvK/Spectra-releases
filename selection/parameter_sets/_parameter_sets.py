@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, 
 
 from core.block_kinds import spec_for
 from core.curve_recipe import RECIPE_ALGORITHM_VERSION
-from core.tacho_cleaning import resolve_tacho_cleaning_params
+from core.dsp_configs import resolve_active_tracking_params
 from core.project_model import NVHProject, ResultSetRef
 
 if TYPE_CHECKING:
@@ -60,12 +60,15 @@ def shape_signature(kind: str, params: Mapping[str, Any]) -> Tuple:
 def _signature_pairs(kind: str, params: Mapping[str, Any], exempt: Tuple[str, ...] = ()) -> Tuple:
     """`params` as sorted `(key, value)` pairs, without the kind's
     `cache_exempt_params` and `display_only_params` and without `exempt`;
-    a default or unused tacho smoothing window is left out too."""
+    what shaped nothing is resolved the way a recipe resolves it -- the
+    inactive mode's Tracking range, a time sweep's direction, a default or
+    unused tacho smoothing window."""
     spec = spec_for(kind)
     left_out = set(spec.cache_exempt_params) | set(spec.display_only_params) | set(exempt)
-    # A live config always holds the tacho smoothing window, a recipe only one
-    # that is not the default; both must name one computation.
-    params = resolve_tacho_cleaning_params(params)
+    # A live config always holds the tacho smoothing window and the Ramp
+    # choice, a recipe only what shaped the result; both
+    # must name one computation.
+    params = resolve_active_tracking_params(params)
     return tuple(
         (key, _hashable(params[key])) for key in sorted(params) if key not in left_out
     )

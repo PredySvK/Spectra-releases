@@ -9,6 +9,7 @@ from typing import Any, Collection, Iterable, List, Tuple
 from core.block_kinds import KIND_ORDER_CUT, KINDS
 from core.channel_types import CHANNEL_TYPE_GENERAL_DYNAMIC
 from io_modules.project_store import project_folder
+from io_modules.result_cache import find_missing_result_set_files
 from selection.source_facets import sources_for_result_sets
 
 
@@ -65,14 +66,18 @@ def plan_result_set_load(
             f"skipping kind(s): {', '.join(sorted(skipped_kinds))}."
         )
 
+    folder = project_folder(project_path) if project_path else ""
+    file_paths = {ref.id: os.path.join(folder, ref.file) for ref in comparable}
+    missing = find_missing_result_set_files(file_paths.values())
+
     read_plan: List[dict] = []
     estimate = 0
     for ref in comparable:
         sources = sources_for_result_sets(project, [ref.id])
         if not sources:
             continue
-        file_path = os.path.join(project_folder(project_path), ref.file) if project_path else ref.file
-        if not os.path.exists(file_path):
+        file_path = file_paths[ref.id]
+        if file_path in missing:
             messages.append(
                 f"WARNING: Load Result Sets skipped '{ref.label}' -- "
                 "its result-cache file is missing on disk."

@@ -11,13 +11,14 @@ a contract shared across two files, so a typo in one copy of
 with nothing to flag it. One home now owns the name and the payload shape.
 
 A plain mixin (like BandRmsCursorsMixin): the concrete dock is the
-QWidget, so it must come before QWidget in the bases and it is responsible
-for calling setAcceptDrops(True).
+WorkspaceDock, which declares the signals, so it must come before
+WorkspaceDock in the bases and it is responsible for calling
+setAcceptDrops(True).
 """
 
 import json
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt
 
 
 CHANNEL_DRAG_MIME = "application/x-nvh-channels"
@@ -27,10 +28,8 @@ SELECTION_DRAG_MIME = "application/x-nvh-selection"
 
 
 class ChannelDropTargetMixin:
-    # Broadcasts the dropped descriptor list to external controllers,
-    # decoupling the dock from the routing logic in Workspace.
-    sig_channels_dropped = Signal(list)
-    sig_selection_dropped = Signal(str)
+    # Emits WorkspaceDock.sig_channels_dropped / sig_selection_dropped, which
+    # decouple the dock from the routing logic in Workspace.
 
     def dragEnterEvent(self, event):
         mime = event.mimeData()

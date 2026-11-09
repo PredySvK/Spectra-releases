@@ -1,0 +1,30 @@
+{
+  "scenario": "wizard_table",
+  "size": [1500, 1000],
+  "elements": [
+    {"kind": "marker", "target": "WizardHeading", "text": {
+      "en": "Headings: the heading row, found by the text of its first cell or by its number.",
+      "cs": "Headings: řádek záhlaví, nalezený podle textu první buňky, nebo podle čísla."}},
+    {"kind": "marker", "target": "WizardSheets", "text": {
+      "en": "Sheets: which sheets are read (all, the first N, without the last N, listed by name).",
+      "cs": "Sheets: které listy se čtou (všechny, prvních N, bez posledních N, vyjmenované)."}},
+    {"kind": "marker", "target": "WizardColumns", "text": {
+      "en": "Columns: X/Y pairs, Shared X, or One curve per sheet. (guess) marks the guess of the wizard.",
+      "cs": "Columns: páry X/Y, společné X, nebo jedna křivka na list. (guess) je odhad průvodce."}},
+    {"kind": "marker", "target": "WizardUnits", "text": {
+      "en": "Units: detected in the headings; the boxes below override X and the amplitude unit.",
+      "cs": "Units: zjištěné z hlaviček; políčka pod tím přepíšou jednotku X a amplitudy."}},
+    {"kind": "marker", "target": "WizardSheetTabs", "text": {
+      "en": "One tab per sheet of every sample; a dimmed sheet is not read.",
+      "cs": "Jedna záložka na každý list každého vzorku; ztlumený list se nečte."}},
+    {"kind": "marker", "target": "WizardRowNumbers", "text": {
+      "en": "Click a row number: it sets the heading row, the next click the first data row.",
+      "cs": "Klik na číslo řádku: nastaví řádek záhlaví, další klik první datový řádek."}},
+    {"kind": "marker", "target": "WizardPreview", "text": {
+      "en": "Preview of the sheet: header texts, heading row, X columns; dimmed = not read.",
+      "cs": "Náhled listu: texty záhlaví, řádek záhlaví, sloupce X; ztlumené = nečte se."}},
+    {"kind": "marker", "target": "WizardNext", "text": {
+      "en": "Next stays off while no channel is read.",
+      "cs": "Next zůstává vypnuté, dokud se nečte žádný kanál."}}
+  ]
+}

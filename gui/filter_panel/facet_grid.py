@@ -44,8 +44,9 @@ from core.filter_card_config import (
 from core.models import ChannelIdentity
 from core.project_model import FilterSelection
 from io_modules.metadata_schema import parse_value
+from selection.source_facets import ColumnRule
 from selection.trace_filter import (
-    EMPTY_FACET_VALUE, OfferedFacets, PanelRender, PoolQuery, ResolvedFacets,
+    EMPTY_FACET_VALUE, OfferedFacets, PanelRender, ResolvedFacets,
     facet_value_availability, format_result_kind, resolve_pool_query, resolve_value_checked,
     write_range_bound, write_value_check,
 )
@@ -727,7 +728,7 @@ class FacetGrid(QWidget):
 
     # ---- reading the current selection ----------------------------------
 
-    def pool_query(self) -> PoolQuery:
+    def pool_query(self) -> ColumnRule:
         """What "Filter Data Pool" narrows the pool by -- only the columns that
         are a real narrowing of what this card offers (resolve_pool_query)."""
         return resolve_pool_query(self._sel, self._offering)

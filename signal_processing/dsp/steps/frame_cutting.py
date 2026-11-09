@@ -101,7 +101,7 @@ def cut_trigger_blocks(time_data: np.ndarray, trigger_indices: np.ndarray,
     difference here is invisible in the plot -- it shows up only as an
     amplitude mismatch the user cannot attribute to anything.
 
-    idx is a fractional sample index (see generate_tracking_triggers' crossing
+    idx is a fractional sample index (see _compute_rpm_triggers' crossing
     interpolation). Rounding to the *nearest* sample removes the systematic
     up-to-one-dt late bias that np.where's "+1" rule used to skew every window
     by, without the cost of linearly resampling the window: linear interpolation

@@ -32,7 +32,7 @@ from core.models import ChannelIdentity
 # again at run time (§1.215).
 MODE_EXPLICIT = "explicit"
 
-# A facet predicate evaluated at run time: "the same thing on new data". This is
+# A Column rule evaluated at run time: "the same thing on new data". This is
 # the mode a saved recipe wants.
 MODE_QUERY = "query"
 
@@ -58,11 +58,8 @@ class MeasurementSelection:
     mode: str = MODE_QUERY
 
     # --- query mode -------------------------------------------------------
-    # Test Setup labels (SourceEntry.setup_label). Empty means "any setup".
-    setup_labels: Tuple[str, ...] = ()
     # Filter column key -> accepted values. AND across columns, OR inside one.
-    # Query mode only; an explicit selection refuses it, as it refuses
-    # setup_labels and ranges.
+    # Query mode only; an explicit selection refuses it, as it refuses ranges.
     column_values: Mapping[str, Tuple[str, ...]] = field(default_factory=dict)
     # field key -> (lo, hi) in the field's own type: floats for numeric fields,
     # ISO "YYYY-MM-DD" strings for date fields (see comparator_facets).
@@ -79,14 +76,13 @@ class MeasurementSelection:
             raise ValueError(
                 f"Unknown selection mode '{self.mode}'. Valid modes: {', '.join(MODES)}."
             )
-        object.__setattr__(self, "setup_labels", tuple(str(label) for label in self.setup_labels))
         object.__setattr__(self, "source_ids", tuple(str(sid) for sid in self.source_ids))
         object.__setattr__(self, "column_values", freeze_str_map(self.column_values))
         object.__setattr__(self, "ranges", freeze_range_map(self.ranges))
-        if self.mode == MODE_EXPLICIT and (self.setup_labels or self.column_values or self.ranges):
+        if self.mode == MODE_EXPLICIT and (self.column_values or self.ranges):
             raise ValueError(
                 "An explicit selection is a frozen list of sources and channel pairs; "
-                "setup labels, column values and ranges belong to a query selection."
+                "column values and ranges belong to a query selection."
             )
         if self.channel_identities is not None:
             if self.mode != MODE_EXPLICIT:
@@ -98,7 +94,6 @@ class MeasurementSelection:
         data = {
             "name": self.name,
             "mode": self.mode,
-            "setup_labels": list(self.setup_labels),
             "column_values": {key: list(values) for key, values in self.column_values.items()},
             "ranges": {key: list(bounds) for key, bounds in self.ranges.items()},
             "source_ids": list(self.source_ids),
@@ -116,7 +111,6 @@ class MeasurementSelection:
         return cls(
             name=str(data.get("name") or ""),
             mode=str(data.get("mode") or MODE_QUERY),
-            setup_labels=tuple(data.get("setup_labels") or ()),
             column_values=data.get("column_values") or {},
             ranges={
                 key: tuple(bounds) for key, bounds in (data.get("ranges") or {}).items()

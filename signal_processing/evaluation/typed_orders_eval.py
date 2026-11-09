@@ -78,9 +78,9 @@ def order_rows_from_spectrogram(
     Dominant orders (#142) both end here, which is what makes a Dominant
     order's value equal the Typed orders row for the same order by
     construction."""
-    z_axis = block.axes[1]
+    tracking_axis = block.axes[1]
     frequencies = np.asarray(block.axes[0].values, dtype=np.float64)
-    rpm_axis = np.asarray(z_axis.values, dtype=np.float64)
+    rpm_axis = np.asarray(tracking_axis.values, dtype=np.float64)
     # NVHDataBlock.spectrogram stores (frequency, z); the moving-band
     # integrator wants one row per rpm step.
     p_canon_matrix = np.asarray(block.values, dtype=np.float64).T

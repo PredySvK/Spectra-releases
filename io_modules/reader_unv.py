@@ -80,6 +80,12 @@ class AsciiDataset58Encountered(Exception):
     """
 
 
+def _resolve_id5(raw_id5: str, index: int) -> str:
+    """id5 as both branches take it: a blank one becomes Dataset_<index>, so a
+    dataset with no name is listed under one name whichever branch read it."""
+    return raw_id5.strip() or f"Dataset_{index}"
+
+
 def _build_channel_metadata(
     index: int, *, id1: str, id2: str, id3: str, id4: str, id5: str, raw_unit: str,
     func_type_code: int, abscissa_inc: float, abscissa_min: float, num_pts: int,
@@ -145,14 +151,13 @@ class AccReaderUnv:
         self._dataset_offsets = {}  # set_idx -> fast-path read descriptor
         self._scanned = False
 
-    def scan_file_structure(self) -> MeasurementRunIndex:
-        file_name = os.path.basename(self.file_path)
-        return MeasurementRunIndex(file_name, self.file_path)
+    def read_run_index(self) -> MeasurementRunIndex:
+        """The file's channels and Lost parts, read from its header (MeasurementReader)."""
+        run_index = MeasurementRunIndex(os.path.basename(self.file_path), self.file_path)
+        self._read_channels(run_index)
+        return run_index
 
-    def load_channels_on_demand(self, run_index: MeasurementRunIndex):
-        if run_index.available_channels:
-            return
-
+    def _read_channels(self, run_index: MeasurementRunIndex) -> None:
         try:
             self._fast_scan_headers(run_index)
             self._scanned = True
@@ -176,7 +181,7 @@ class AccReaderUnv:
         Populates self._dataset_offsets without touching a MeasurementRunIndex.
 
         DataAccessor.fetch_channel_data builds a fresh AccReaderUnv per
-        channel read (io_modules/data_accessor.py) -- load_channels_on_demand
+        channel read (io_modules/data_accessor.py) -- read_run_index
         is not guaranteed to have run on this instance -- so
         read_single_channel_data must be able to populate the fast-path offset
         map on its own. A failed scan just leaves the map empty: every read
@@ -196,7 +201,7 @@ class AccReaderUnv:
         delimiters without loading the binary payload -- only 58b headers
         (11 fixed ASCII lines) are read; the payload is skipped via seek().
 
-        `run_index` is optional: load_channels_on_demand wants channel
+        `run_index` is optional: read_run_index wants channel
         metadata registered, read_single_channel_data (via _ensure_scanned)
         only wants the byte-offset map and skips that work.
         """
@@ -242,9 +247,7 @@ class AccReaderUnv:
         data_offset = f.tell()
 
         id1 = header_lines[0].decode("latin1", errors="replace").strip()
-        id5 = header_lines[4].decode("latin1", errors="replace").strip()
-        if not id5:
-            id5 = f"Dataset_{set_idx}"
+        id5 = _resolve_id5(header_lines[4].decode("latin1", errors="replace"), set_idx)
 
         l7_fields = _split_fixed_width(header_lines[5], _RECORD6_WIDTHS)
         func_type_code = _int_or(l7_fields[0], 1)
@@ -327,9 +330,9 @@ class AccReaderUnv:
                 id2 = str(ds_header.get('id2', '')).strip()
                 id3 = str(ds_header.get('id3', '')).strip()
                 id4 = str(ds_header.get('id4', '')).strip()
-                id5 = str(ds_header.get('id5', f'Dataset_{idx}')).strip()
+                id5 = _resolve_id5(str(ds_header.get('id5', '')), idx)
 
-                raw_unit = str(ds_header.get('ordinate_axis_units_lab', 'g')).strip()
+                raw_unit = str(ds_header.get('ordinate_axis_units_lab', '')).strip()
                 abscissa_inc = float(ds_header.get('abscissa_inc', 0.0))
 
                 raw_num_pts = ds_header.get('num_pts')
@@ -423,8 +426,11 @@ class AccReaderUnv:
 
         # DC Offset removal logic is strictly removed from I/O layer.
 
-        block_name = ds.get('id1', f'Channel_{dataset_index}').strip()
-        y_axis_unit = ds.get('ordinate_axis_units_lab', 'g').strip()
+        # The name and unit the fast path reads (id1, else id5), so the branch
+        # a dataset happens to take never shows in the channel.
+        block_name = (str(ds.get('id1', '')).strip()
+                      or _resolve_id5(str(ds.get('id5', '')), dataset_index))
+        y_axis_unit = str(ds.get('ordinate_axis_units_lab', '')).strip()
 
         return RawChannel(
             name=block_name,

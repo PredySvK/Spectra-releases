@@ -16,10 +16,9 @@ from typing import Any, List, Mapping, Optional, Sequence, Set, Tuple
 from core.measurement_selection import MeasurementSelection
 from core.workflow_graph import SaveSpec, Workflow
 from io_modules.project_store import resolve_root
-from selection.measurement_selection import (
-    resolve as resolve_selection,
-    resolve_save_sources,
-)
+from selection.measurement_selection import resolve as resolve_selection
+from orchestration.batch._in_pool_sources import resolve_in_pool_sources
+from orchestration.batch._overwrite import UpcomingTarget
 from signal_processing.workflow import check_versions, save_block_ids
 from signal_processing.workflow_readiness import ISSUE_INPUT_NOT_CHOSEN, resolve_chain_readiness
 
@@ -28,8 +27,11 @@ from signal_processing.workflow_readiness import ISSUE_INPUT_NOT_CHOSEN, resolve
 class PlannedSaveBlock:
     """
     One save block as the plan sees it: everything decided before a draft exists
-    -- which measurements it covers, what its result set will be called, which
-    existing set (if any) it replaces.
+    -- what its result set will be called, which existing set (if any) it replaces.
+
+    `overwrite_upcoming` names a set a Batch run ahead is still writing: its id
+    is unknown until that run ends, so `resolve_upcoming_overwrites` turns it
+    into `overwrite_result_set_id` when this run starts (#967).
 
     `sink_what` is the name the sink puts in its own messages: the run's `what`
     when one block saves, and `what '<set label>'` when several do, so two
@@ -38,9 +40,9 @@ class PlannedSaveBlock:
     block_id: str
     set_label: str
     overwrite_result_set_id: Optional[str]
-    source_ids: frozenset
     save: SaveSpec
     sink_what: str
+    overwrite_upcoming: Optional[UpcomingTarget] = None
 
 
 @dataclass(frozen=True)
@@ -115,7 +117,7 @@ def plan_batch(workflow: Workflow, selection: MeasurementSelection, *,
 
     `sources` is the project's whole SourceEntry list -- which of them are in
     the pool is this floor's rule, not the caller's. `schema` is the pool's
-    merged master schema (the metadata facets a save block may filter on), and
+    merged master schema (what the selection's columns are judged by), and
     `project_path` with `data_roots` is what turns a root id into a folder on
     this machine.
 
@@ -142,7 +144,7 @@ def plan_batch(workflow: Workflow, selection: MeasurementSelection, *,
 
     messages = [f"WARNING: {what} -- {warning}" for warning in check_versions(workflow)]
 
-    candidates = [entry for entry in sources if entry.in_pool]
+    candidates = resolve_in_pool_sources(sources)
     resolution = resolve_selection(
         selection, candidates, schema, channel_types=save_channel_types(workflow),
         time_responses_only=True,
@@ -168,24 +170,17 @@ def plan_batch(workflow: Workflow, selection: MeasurementSelection, *,
     save_blocks: List[PlannedSaveBlock] = []
     for block_id in save_ids:
         workflow_block = workflow.block(block_id)
-        kept = resolve_save_sources(workflow_block.save, resolution.sources, schema)
         set_label = workflow_block.save.label or (label if single_save else f"{label} - {block_id}")
         sink_what = what if single_save else f"{what} '{set_label}'"
-        for note in kept.unevaluable_constraints:
-            messages.append(f"WARNING: {sink_what} -- {note}")
         save_blocks.append(PlannedSaveBlock(
             block_id=block_id, set_label=set_label,
             overwrite_result_set_id=overwrite_by_block.get(block_id),
-            source_ids=frozenset(source.id for source in kept.sources), save=workflow_block.save,
-            sink_what=sink_what,
+            save=workflow_block.save, sink_what=sink_what,
         ))
 
-    wanted_ids = set().union(*(workflow_block.source_ids for workflow_block in save_blocks))
     errors: List[str] = []
     steps: List[BatchStep] = []
     for entry in resolution.sources:
-        if entry.id not in wanted_ids:
-            continue    # filtered out of every save block by its facet
         directory = directory_by_root.get(entry.root_id)
         if directory is None:
             errors.append(f"{entry.relpath}: its data folder is not available")
@@ -199,10 +194,7 @@ def plan_batch(workflow: Workflow, selection: MeasurementSelection, *,
         # Decided here rather than after the drafts are open: nothing is on disk
         # yet, so a run that cannot happen never creates a staging folder only
         # to delete it again.
-        messages.append(
-            f"WARNING: {what} skipped -- no source file to run "
-            f"(none located, or every one filtered out by a block's save filter)."
-        )
+        messages.append(f"WARNING: {what} skipped -- no source file to run (none located).")
         return _refused(label, what, messages)
 
     set_count = f"{len(save_ids)} result set(s)" if not single_save else "1 result set"

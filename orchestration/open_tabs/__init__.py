@@ -10,11 +10,14 @@ several channels at once, which has no run of its own to name it.
 `build_tab_spec` turns a dock's captured data into the `TabSpec` a Save writes
 (dead-link and not-yet-landed restored tabs included).
 
+`resolve_curve_refusal` says whether a tab with a warning takes a new curve.
+
 What does not belong here: parsing and resolving saved tabs (`session.open_tabs`),
 the pending restore itself (`view_models.plot.GraphCurves`), and building docks
 or dispatching the re-drop (`gui/`).
 """
 
+from orchestration.open_tabs._curve_refusal import resolve_curve_refusal
 from orchestration.open_tabs._overlay_identity import (
     build_base_trace_spec,
     build_overlay_trace_specs,
@@ -25,4 +28,5 @@ __all__ = [
     "build_base_trace_spec",
     "build_overlay_trace_specs",
     "build_tab_spec",
+    "resolve_curve_refusal",
 ]

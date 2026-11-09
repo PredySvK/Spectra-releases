@@ -30,7 +30,7 @@ from selection.trace_filter import Signature, TraceIdentity, identities_match
 # already excludes it upstream). Kinds with alternative quantities (e.g.
 # overall_level's "rpm|time") cannot be uniquely reverse-mapped from
 # x_quantity alone, so they are excluded here and resolve their kind from
-# trace.block / data_block. A Residual shares rpm with order_cut and always
+# trace.block. A Residual shares rpm with order_cut and always
 # carries its block, so it is excluded too and rpm stays
 # order_cut. Built once at import time rather than listed by hand, so a new
 # curve-shaped kind in core.block_kinds needs no second edit here.
@@ -66,7 +66,7 @@ def identity_for_trace(trace: Trace, sources_by_path: Dict[str, SourceEntry],
     if file_path:
         source = sources_by_path.get(canonical_path(file_path))
 
-    block = trace.data_block if trace.data_block is not None else trace.block
+    block = trace.block
     block_kind = getattr(block, "kind", None) if block is not None else None
     result_kind = block_kind if block_kind is not None else (
         KIND_BY_X_QUANTITY.get(trace.x_quantity) if trace.x_quantity else None

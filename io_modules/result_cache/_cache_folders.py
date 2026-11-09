@@ -76,6 +76,14 @@ def label_folder_exists(base: str) -> bool:
     return os.path.exists(base) or os.path.exists(f"{base}.h5")
 
 
+def find_missing_result_set_files(paths: Iterable[str]) -> frozenset:
+    """
+    The result-set paths in `paths` with nothing on disk -- neither a format-2
+    folder nor a format-1 `.h5` file at the path as given.
+    """
+    return frozenset(path for path in paths if not os.path.exists(path))
+
+
 def swap_in_overwrite(final_folder: str, draft_folder: str) -> None:
     """
     Swaps a staged draft folder over the result set it replaces.

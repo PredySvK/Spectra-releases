@@ -5,32 +5,35 @@ import uuid
 from dataclasses import replace
 import pyqtgraph as pg
 import numpy as np
-from PySide6.QtWidgets import QWidget, QHBoxLayout
+from PySide6.QtWidgets import QHBoxLayout
 from PySide6.QtCore import Qt
 from typing import Optional
 
 from core.benchmark import benchmark_step
-from core.axis_projections import X_AXIS_NATIVE, resolve_x_axis_display
+from core.axis_projections import X_AXIS_NATIVE
 from core.evaluation import EvaluationConfig
 from core.data_block import NVHDataBlock
 from core.models import MeasurementRunIndex, ChannelMetadata
+from gui.workspace.plot_title import set_plot_title
 from gui.workspace.channel_drop_target import ChannelDropTargetMixin
 from gui.workspace.cursor import SpectrogramCursorMixin
 from core.units import UnitPreferences
 from gui.workspace.display_prefix_axis import DisplayPrefixAxisItem
 from gui.workspace.plot_area import style_plot_area
+from gui.workspace.workspace_dock import WorkspaceDock
 from orchestration.channel_drop import PendingDrops
 from view_models.analysis_kinds import ANALYSIS_SPECTROGRAM
 from view_models.plot import (
     DisplaySettings,
+    DrawnSpectrogram,
     GraphSpectrogram,
     SpectrogramModel,
+    build_drawn_spectrogram,
     resolve_display_settings,
-    resolve_image_axis_extent,
 )
 
 
-class SpectrogramDock(ChannelDropTargetMixin, SpectrogramCursorMixin, QWidget):
+class SpectrogramDock(ChannelDropTargetMixin, SpectrogramCursorMixin, WorkspaceDock):
 
     def __init__(self, parent=None, app_context=None):
         super().__init__(parent)
@@ -48,6 +51,8 @@ class SpectrogramDock(ChannelDropTargetMixin, SpectrogramCursorMixin, QWidget):
         # The spectrogram this dock holds. Every change ends
         # in _on_spectrogram_changed, the one place it reaches the screen.
         self.spectrogram = GraphSpectrogram(on_change=self._on_spectrogram_changed)
+        # The spectrogram as it is on screen; the Cursor reads this same one (#893).
+        self.drawn_spectrogram: Optional[DrawnSpectrogram] = None
         self.tacho_block: Optional[NVHDataBlock] = None
         self.pending_drops = PendingDrops()
 
@@ -116,6 +121,17 @@ class SpectrogramDock(ChannelDropTargetMixin, SpectrogramCursorMixin, QWidget):
         jet_colormap = pg.ColorMap(pos, color)
         self.lut_widget.gradient.setColorMap(jet_colormap)
         self._init_cursor()
+        self._disable_logarithmic_axes()
+
+    def _disable_logarithmic_axes(self) -> None:
+        """No Logarithmic axis on a spectrogram (§1.276): the image is a
+        uniform grid, so a log axis would move the axis and leave the picture.
+        A non-checkable box ignores setChecked too, so neither a click nor
+        setLogMode can switch the plot library into log mode."""
+        ctrl = self.plot_widget.plotItem.ctrl
+        for box in (ctrl.logXCheck, ctrl.logYCheck):
+            box.setCheckable(False)
+            box.setEnabled(False)
 
     def visible_traces(self) -> list:
         """
@@ -151,29 +167,13 @@ class SpectrogramDock(ChannelDropTargetMixin, SpectrogramCursorMixin, QWidget):
         The dB/log colour transform already happened in the builder; this only
         lays the given matrix onto the image and locks the view to it.
         """
-        self.hide_cursor_box()
+
         # Both axes follow the global X axis unit (issue #459): the frequency
         # axis on the left, the bottom one when it is speed. The model keeps
-        # its native values; only what is drawn is rescaled.
+        # its native values; only what is drawn is rescaled (§1.130).
         x_axis_unit = self.app_context.unit_preferences().x_axis_unit if self.app_context else X_AXIS_NATIVE
-        frequency_axis = resolve_x_axis_display("frequency", x_axis_unit)
-        bottom_axis = resolve_x_axis_display(model.z_quantity, x_axis_unit)
-        z_unit = bottom_axis.unit if bottom_axis.scale != 1.0 else model.z_unit
-        self.plot_widget.getAxis('left').set_quantity("frequency")
-        self.plot_widget.getAxis('bottom').set_quantity(model.z_quantity)
-        self.plot_widget.getAxis('left').setLabel(frequency_axis.label, frequency_axis.unit)
-        color_scale = getattr(model, "color_scale", "") or ""
-        if "dB" in color_scale:
-            mag_unit = "dB"
-        else:
-            block = getattr(model, "block", None)
-            mag_unit = getattr(model, "value_unit", "") or getattr(block, "value_unit", "")
         with benchmark_step("draw"):
-            self.render_spectrogram_matrix(
-                model.freqs * frequency_axis.scale, model.zvals * bottom_axis.scale, model.image,
-                z_label=model.z_label, z_unit=z_unit, mag_unit=mag_unit,
-            )
-        self.plot_widget.setTitle(model.title)
+            self.draw_spectrogram(build_drawn_spectrogram(model, x_axis_unit))
 
     def apply_x_axis_unit(self) -> None:
         """Redraw the held waterfall for a changed global X axis unit."""
@@ -182,14 +182,16 @@ class SpectrogramDock(ChannelDropTargetMixin, SpectrogramCursorMixin, QWidget):
             self._on_spectrogram_changed(model)
 
     def apply_unit_preferences(self) -> None:
-        """Update axes and colour bar display prefixes when unit preferences change."""
-        model = self.spectrogram.model
-        if model is not None:
-            self._on_spectrogram_changed(model)
+        """Rebuild the held waterfall in the changed global units (its colour
+        values follow the Display unit, #947) -- in memory, no STFT re-run --
+        or, with nothing held, update the axes' and colour bar's display prefixes."""
+        if self.spectrogram.model is not None:
+            self.rebuild_with_display_settings()
         else:
             self.plot_widget.getAxis('left').update_display_prefix()
             self.plot_widget.getAxis('bottom').update_display_prefix()
             self.color_bar_axis.update_display_prefix()
+            self.refresh_cursor_box()
 
     def _display_settings(self) -> DisplaySettings:
         """The one place this dock reads app_context for how its waterfall is
@@ -202,6 +204,7 @@ class SpectrogramDock(ChannelDropTargetMixin, SpectrogramCursorMixin, QWidget):
 
     def plot_block(self, block: NVHDataBlock) -> None:
         """Shows ``block`` as this dock's waterfall, in this dock's display settings."""
+        self._clear_cursor()
         self.spectrogram.show_block(block, self._display_settings())
 
     def rebuild_with_display_settings(
@@ -224,32 +227,30 @@ class SpectrogramDock(ChannelDropTargetMixin, SpectrogramCursorMixin, QWidget):
         self.spectrogram.rebuild_display(replace(
             self._display_settings(), **{k: v for k, v in overrides.items() if v is not None}))
 
-    def render_spectrogram_matrix(self, frequencies, times, magnitude_matrix, z_label="Time", z_unit="s", mag_unit: str = ""):
-        if len(times) > 1 and times[0] > times[-1]:
-            times = times[::-1]
-            magnitude_matrix = magnitude_matrix[:, ::-1]
-        if len(frequencies) > 1 and frequencies[0] > frequencies[-1]:
-            frequencies = frequencies[::-1]
-            magnitude_matrix = magnitude_matrix[::-1, :]
+    def draw_spectrogram(self, drawn: DrawnSpectrogram) -> None:
+        """Put ``drawn`` on screen as given -- axes ascending, units decided (#893)."""
+        self.drawn_spectrogram = drawn
+        left_axis = self.plot_widget.getAxis('left')
+        bottom_axis = self.plot_widget.getAxis('bottom')
+        left_axis.set_quantity("frequency")
+        bottom_axis.set_quantity(drawn.x_quantity)
+        left_axis.setLabel(drawn.y_label, drawn.y_unit)
+        bottom_axis.setLabel(text=drawn.x_label, units=drawn.x_unit)
 
-        self.image_item.setImage(magnitude_matrix.T, autoLevels=True)
+        self.image_item.setImage(drawn.z.T, autoLevels=True)
+        x_lo, x_hi = drawn.x_extent
+        y_lo, y_hi = drawn.y_extent
+        self.image_item.setRect(pg.QtCore.QRectF(x_lo, y_lo, x_hi - x_lo, y_hi - y_lo))
 
-        t_min, t_max = float(np.min(times)), float(np.max(times))
-        f_min, f_max = float(np.min(frequencies)), float(np.max(frequencies))
+        self.color_bar_axis.setLabel(units=drawn.z_unit)
+        self.lut_widget.setLevels(float(drawn.z.min()), float(drawn.z.max()))
 
-        x_lo, x_hi = resolve_image_axis_extent(times)
-        y_lo, y_hi = resolve_image_axis_extent(frequencies)
-        rect = pg.QtCore.QRectF(x_lo, y_lo, x_hi - x_lo, y_hi - y_lo)
-        self.image_item.setRect(rect)
-
+        t_min, t_max = float(drawn.x[0]), float(drawn.x[-1])
+        f_min, f_max = float(drawn.y[0]), float(drawn.y[-1])
         if t_max <= t_min: t_max = t_min + 1.0
         if f_max <= f_min: f_max = f_min + 1.0
-
-        bottom_axis = self.plot_widget.getAxis('bottom')
-        bottom_axis.setLabel(text=z_label, units=z_unit)
-
-        self.color_bar_axis.setLabel(units=mag_unit)
-        self.lut_widget.setLevels(float(magnitude_matrix.min()), float(magnitude_matrix.max()))
         self.plot_widget.getViewBox().disableAutoRange()
         self.plot_widget.setXRange(t_min, t_max, padding=0.0)
         self.plot_widget.setYRange(f_min, f_max, padding=0.0)
+        set_plot_title(self.plot_widget, drawn.title)
+        self.refresh_cursor_box()

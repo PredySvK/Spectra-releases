@@ -33,9 +33,7 @@ class TabAccOrderTracking(RibbonDspTab):
     _analysis_kind = ANALYSIS_ORDERS
 
     def _on_display_setting_changed(self, _val: str = ""):
-        if hasattr(self, "combo_amplitude_mode"):
-            self._set_val("order_amplitude", self.combo_amplitude_mode.currentText())
-        self.sig_display_settings_changed.emit()
+        self._emit_display_settings_changed()
 
     def init_ui(self):
         layout = QHBoxLayout()
@@ -53,11 +51,8 @@ class TabAccOrderTracking(RibbonDspTab):
         layout.addWidget(vertical_separator())
 
         # -- Spectrum --
-        self.combo_fft_size = self._build_choice_combo("fft_size", "order_fft_size")
-        self.combo_fft_size.currentTextChanged.connect(lambda v: self._set_val("order_fft_size", v))
-
-        self.combo_window_type = self._build_choice_combo("window_type", "order_window")
-        self.combo_window_type.currentTextChanged.connect(lambda v: self._set_val("order_window", v))
+        self.combo_fft_size = self._build_field_combo("fft_size")
+        self.combo_window_type = self._build_field_combo("window_type")
 
         spectrum_group = RibbonGroup("Spectrum", tooltip="Block size and window of the order FFT")
         spectrum_group.add_fields([
@@ -72,7 +67,7 @@ class TabAccOrderTracking(RibbonDspTab):
         layout.addWidget(vertical_separator())
 
         # -- View --
-        self.combo_amplitude_mode = self._build_choice_combo("amplitude_mode", "order_amplitude")
+        self.combo_amplitude_mode = self._build_field_combo("amplitude_mode")
         self.combo_amplitude_mode.currentTextChanged.connect(self._on_display_setting_changed)
 
         view_group = RibbonGroup("View", tooltip="Display amplitude mode")
@@ -81,29 +76,23 @@ class TabAccOrderTracking(RibbonDspTab):
         layout.addWidget(vertical_separator())
 
         # -- Live Orders (what the active plot shows) --
-        raw_target = self._get_val(
-            "order_targets", ", ".join(f"{order:g}" for order in _DEFAULTS.orders_to_extract))
-        initial_parsed = parse_orders_text(str(raw_target))
-        self._last_valid_orders: List[float] = (
-            initial_parsed if initial_parsed else list(_DEFAULTS.orders_to_extract))
-
-        self.edit_target_orders = QLineEdit(str(raw_target))
+        self._last_valid_orders: List[float] = list(_DEFAULTS.orders_to_extract)
+        self.edit_target_orders = QLineEdit()
         self.edit_target_orders.setFixedWidth(90)
         self._default_orders_tooltip = (
             "Orders shown in the active plot, e.g. 1. "
             "Enter several at once separated by commas or semicolons, e.g. 1, 2, 4.5"
         )
-        self.edit_target_orders.setToolTip(self._default_orders_tooltip)
-        if initial_parsed is None or not initial_parsed:
-            self.edit_target_orders.setStyleSheet(f"border: 1px solid {APP_TOKENS.input_error};")
+        # Saved only once it parses, so the tab saves it itself.
+        self._bind_field("orders_to_extract", self.edit_target_orders, save_on_change=False)
+        self._show_target_orders_validity()
         self.edit_target_orders.textChanged.connect(self._on_target_orders_changed)
 
         self.spin_order_width = QDoubleSpinBox()
         self.spin_order_width.setDecimals(2)
         self.spin_order_width.setRange(0.01, 2.0)
         self.spin_order_width.setSingleStep(0.05)
-        self.spin_order_width.setValue(self._get_val("order_width", _DEFAULTS.order_width, float))
-        self.spin_order_width.valueChanged.connect(lambda v: self._set_val("order_width", v))
+        self._bind_field("order_width", self.spin_order_width)
 
         orders_group = RibbonGroup("Live Orders", tooltip="Orders drawn in the active plot (not the batch)")
         orders_group.add_fields([("Target Orders", self.edit_target_orders),
@@ -118,15 +107,10 @@ class TabAccOrderTracking(RibbonDspTab):
         self.cb_overall_level = QCheckBox("Overall Level + Residual")
         self.cb_overall_level.setToolTip(
             "Also draw the Overall Level (F min 10 Hz, Full Bandwidth) from the same computation")
-        overall_level_default = self.dsp_choices.parameter("overall_level").default
-        self.cb_overall_level.setChecked(
-            str(self._get_val("order_overall_level", overall_level_default)).lower() == "true")
-        self.cb_overall_level.toggled.connect(lambda v: self._set_val("order_overall_level", v))
+        self._bind_field("overall_level", self.cb_overall_level)
 
         self.cb_remove_dc = QCheckBox("Remove DC Offset")
-        saved_dc = str(self._get_val("order_remove_dc", _DEFAULTS.remove_dc)).lower() == "true"
-        self.cb_remove_dc.setChecked(saved_dc)
-        self.cb_remove_dc.toggled.connect(lambda v: self._set_val("order_remove_dc", v))
+        self._bind_field("remove_dc", self.cb_remove_dc)
 
         options_group = RibbonGroup("Options")
         options_group.add_column(self.cb_remove_dc, self.cb_overall_level)
@@ -140,19 +124,27 @@ class TabAccOrderTracking(RibbonDspTab):
     def _after_push(self):
         self.app_context.order_tracking_overall_level = self.cb_overall_level.isChecked()
 
-    def _on_target_orders_changed(self, text: str) -> None:
-        parsed = parse_orders_text(text)
+    def _sync_dependent_widgets(self):
+        self._show_target_orders_validity()
+
+    def _show_target_orders_validity(self) -> bool:
+        """Mark the Target Orders field valid or not; a valid one becomes the last valid orders."""
+        parsed = parse_orders_text(self.edit_target_orders.text())
         if parsed is None or not parsed:
             self.edit_target_orders.setStyleSheet(f"border: 1px solid {APP_TOKENS.input_error};")
             self.edit_target_orders.setToolTip(
                 "Invalid orders: enter positive numbers with decimal dot (.), "
                 "separated by commas or semicolons."
             )
-            return
+            return False
         self.edit_target_orders.setStyleSheet("")
         self.edit_target_orders.setToolTip(self._default_orders_tooltip)
         self._last_valid_orders = parsed
-        self._set_val("order_targets", text)
+        return True
+
+    def _on_target_orders_changed(self, text: str) -> None:
+        if self._show_target_orders_validity():
+            self._save_field("orders_to_extract", text)
 
     def get_dsp_config(self) -> OrderTrackingConfig:
         """Translates UI selections into standard DTOs for the DSP layer."""

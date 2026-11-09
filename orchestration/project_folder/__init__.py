@@ -3,6 +3,7 @@ Project folder -- carrying it along when Save As moves the project to another
 folder.
 
 `run_save_as` holds the one order of a Save As: let Tab cache writes land,
+read what lies in the folders on a background job,
 plan the Project folder copy, ask about the result sets, copy, save -- all or
 nothing. The window's side comes through `SaveAsSteps`.
 `run_project_folder_copy` is its background half: copy on a job, then save.
@@ -10,7 +11,8 @@ nothing. The window's side comes through `SaveAsSteps`.
 after its first save; a failure is a log warning, never a failed save.
 
 What does not belong here: the Save As dialogs (gui/), what the copy plan holds
-and the project mutation (session/), the file copying (io_modules/).
+and the project mutation (session/), reading the folders and copying the files
+(io_modules/).
 """
 
 from ._copy import ProjectFolderCopyOutcome, run_project_folder_copy

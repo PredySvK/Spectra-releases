@@ -266,8 +266,7 @@ def _stop_thread(thread: threading.Thread) -> bool:
 
 def _read_measurement_index(path: str):
     reader = open_measurement_reader(path)
-    run_index = reader.scan_file_structure()
-    reader.load_channels_on_demand(run_index)
+    run_index = reader.read_run_index()
     return run_index
 
 

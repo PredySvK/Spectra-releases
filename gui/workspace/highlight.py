@@ -3,10 +3,16 @@ The Highlight on GraphDock: with it on, the curve under the mouse is drawn thick
 every other curve is dimmed (CONTEXT.md "Highlight"); the legend rows follow -- a thicker
 sample for that curve, the other rows' sample and text dimmed alike. Independent of the Cursor.
 
-Which curve is decided in view_models.cursor (the Cursor's nearest-curve rule); this
-mixin only swaps pens on the drawn items. Pens are touched only when the highlighted
-curve changes, not on every mouse move; leave / off / a pressed button / a redraw
-puts the original pens back.
+Which curve is decided in view_models.cursor.CursorState and delivered through the shared
+hover gate in gui.workspace.cursor; this mixin only swaps pens on the drawn items and
+legend rows. Pens are touched only when the highlighted curve changes, not on every mouse
+move; leave / off / a pressed button / a redraw puts the original pens back.
+
+The same pen work dims the curves for the Track cursor highlight: each curve's look follows
+two inputs, the Highlight's curve (or None) and whether the Track cursor highlight is
+showing (TrackCursorMixin reports it). Highlighted curve -> thicker, own colour, on top;
+every other curve while either is active -> faded; neither -> own pen. The legend follows
+the Highlight alone. Pens are touched only when that pair changes.
 
 Runs synchronously on the GUI thread (the pen swap measured in ADR §1.150).
 """
@@ -14,13 +20,11 @@ Runs synchronously on the GUI thread (the pen swap measured in ADR §1.150).
 from typing import Any, Dict, List, Optional, Tuple
 
 import pyqtgraph as pg
-from PySide6.QtCore import QEvent, QPointF, Qt, Signal
+from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
-from PySide6.QtWidgets import QApplication
 
-from gui.workspace.cursor import CURSOR_MOUSE_RATE_HZ, CURSOR_RADIUS_PX
 from gui.workspace.plot_area import GRAPH_TOKENS
-from view_models.cursor import HIGHLIGHT_DIM_ALPHA, resolve_highlighted_trace
+from view_models.cursor import HIGHLIGHT_DIM_ALPHA
 from view_models.plot import Trace
 
 HIGHLIGHT_EXTRA_WIDTH = 2
@@ -65,53 +69,97 @@ class HighlightSample(pg.ItemSample):
 
 
 class HighlightMixin:
-    """Hover Highlight, mixed into GraphDock."""
+    """Hover Highlight pen and legend styling, mixed into GraphDock."""
 
-    # The `H` shortcut asks the app to flip the one global switch; the ribbon
-    # button owns the state (Workspace.toggle_highlight).
-    sig_highlight_toggle_requested = Signal()
+    # The `H` shortcut emits WorkspaceDock.sig_highlight_toggle_requested; the
+    # Settings store owns the state (Workspace.toggle_tool_switch, ADR §1.290).
 
     def _init_highlight(self) -> None:
         """Called at the end of GraphDock.init_ui, after _init_cursor."""
         self._highlight_items: List[Tuple[Trace, Any, Any]] = []  # (trace, item, original pen)
         self._highlighted: Optional[Trace] = None
-        self._highlight_proxy = pg.SignalProxy(
-            self.plot_widget.scene().sigMouseMoved, rateLimit=CURSOR_MOUSE_RATE_HZ,
-            slot=lambda args: self.update_highlight_at(args[0]))
+        # The Track cursor highlight is showing: every curve but the Highlight's is dimmed.
+        self._track_dimming = False
+        # A Settings window's Auto apply preview of the other curves' opacity (%), shown instead of the saved one.
+        self._highlight_preview: Optional[int] = None
         shortcut = QShortcut(QKeySequence("H"), self)
         shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         shortcut.activated.connect(self.sig_highlight_toggle_requested)
 
     def remember_highlight_item(self, trace: Trace, item: Any, pen: Any) -> None:
         self._highlight_items.append((trace, item, pen))
-        if self._highlighted is not None:  # a curve appended while highlighting joins in
-            _set_pen(item, *self._highlight_look(trace, pen, self._highlighted))
+        # A clipped / downsampled PlotDataItem re-sets its inner curve's pen from its own on
+        # every X range change (updateItems: Auto range, pan, zoom), which drops the look.
+        item.curve.sigPlotChanged.connect(
+            lambda curve, trace=trace, pen=pen: self._keep_curve_look(curve, trace, pen))
+        if self._highlighted is not None or self._track_dimming:  # a curve appended meanwhile joins in
+            _set_pen(item, *self._curve_look(trace, pen))
+        if self._highlighted is not None:
             self._paint_legend(self._highlighted)
 
+    def _keep_curve_look(self, curve: Any, trace: Trace, pen: Any) -> None:
+        """Put the current look back after the curve took its own pen again; visibility and z stay."""
+        if self._highlighted is not None or self._track_dimming:
+            curve.setPen(self._curve_look(trace, pen)[0])
+
     def forget_highlight_items(self) -> None:
-        """The items were just destroyed by a redraw -- nothing left to restore."""
+        """The items were just destroyed by a redraw -- nothing left to restore.
+
+        The Track cursor reports its highlight again at the end of the redraw (refresh_track_cursor).
+        """
         self._highlight_items = []
         self._highlighted = None
+        self._track_dimming = False
 
     def highlighted_trace(self) -> Optional[Trace]:
         return self._highlighted
 
     def refresh_highlight(self) -> None:
-        """Repaint the current highlight after the other curves' opacity changes."""
-        if self._highlighted is not None:
-            self._apply_highlight(self._highlighted)
+        """Repaint the current looks after the other curves' opacity changes."""
+        if self._highlighted is not None or self._track_dimming:
+            self._apply_curve_looks(self._highlighted, self._track_dimming, legend=self._highlighted is not None)
+
+    def set_highlight_preview(self, percent: Optional[int]) -> None:
+        """Dim the other curves by ``percent`` in place of the saved setting; None puts the saved one back."""
+        self._highlight_preview = percent
+        self.refresh_highlight()
 
     def clear_highlight(self) -> None:
-        """Every curve back to its own pen."""
-        if self._highlighted is None:
-            return
-        self._highlighted = None
-        for _, item, pen in self._highlight_items:
-            _set_pen(item, pen)
-        self._paint_legend(None)
+        """No highlighted curve; the curves keep the Track cursor highlight's look while it shows."""
+        self._set_curve_looks(None, self._track_dimming)
 
-    def _highlight_look(self, trace: Trace, pen: Any, target: Trace) -> Tuple[Any, bool, bool]:
-        """(pen, visible, on top) for a curve while ``target`` is highlighted.
+    def set_track_cursor_dimming(self, showing: bool) -> None:
+        """The Track cursor places its dots: every curve but the Highlight's is dimmed while ``showing``."""
+        self._set_curve_looks(self._highlighted, showing)
+
+    def _set_highlighted_trace(self, target: Optional[Trace]) -> None:
+        self._set_curve_looks(target, self._track_dimming)
+
+    def _set_curve_looks(self, target: Optional[Trace], track_dimming: bool) -> None:
+        """Touch the pens only when the pair (highlighted curve, Track cursor highlight) changes."""
+        if target is self._highlighted and track_dimming == self._track_dimming:
+            return
+        self._apply_curve_looks(target, track_dimming, legend=target is not self._highlighted)
+
+    def _apply_highlight(self, target: Trace) -> None:
+        self._apply_curve_looks(target, self._track_dimming, legend=True)
+
+    def _apply_curve_looks(self, target: Optional[Trace], track_dimming: bool, *, legend: bool) -> None:
+        self._highlighted = target
+        self._track_dimming = track_dimming
+        for trace, item, pen in self._highlight_items:
+            _set_pen(item, *self._curve_look(trace, pen))
+        if legend:  # the Track cursor highlight leaves the legend alone
+            self._paint_legend(target)
+
+    def _curve_look(self, trace: Trace, pen: Any) -> Tuple[Any, bool, bool]:
+        """(pen, visible, on top) for a curve under the current Highlight and Track cursor highlight."""
+        if self._highlighted is None and not self._track_dimming:
+            return pen, True, False
+        return self._highlight_look(trace, pen, self._highlighted)
+
+    def _highlight_look(self, trace: Trace, pen: Any, target: Optional[Trace]) -> Tuple[Any, bool, bool]:
+        """(pen, visible, on top) for a curve while ``target`` is highlighted; None dims every curve.
 
         Other curves fade by mixing their colour toward the plot background, not by pen alpha:
         an OpenGL viewport ignores pen alpha. At 0 % they are hidden outright.
@@ -127,14 +175,10 @@ class HighlightMixin:
 
     def _highlight_keep(self) -> float:
         """How much of their own colour the other curves keep (the Settings percent)."""
-        percent = getattr(self.app_context, "highlight_other_opacity", None)
+        percent = self._highlight_preview
+        if percent is None:
+            percent = getattr(self.app_context, "highlight_other_opacity", None)
         return HIGHLIGHT_DIM_ALPHA if percent is None else percent / 100
-
-    def _apply_highlight(self, target: Trace) -> None:
-        self._highlighted = target
-        for trace, item, pen in self._highlight_items:
-            _set_pen(item, *self._highlight_look(trace, pen, target))
-        self._paint_legend(target)
 
     def _paint_legend(self, target: Optional[Trace]) -> None:
         """Legend rows in the curves' look while ``target`` is highlighted; own look for None.
@@ -166,27 +210,6 @@ class HighlightMixin:
             label.setOpacity(opacity)
             sample.update()
 
-    def eventFilter(self, obj, event):
-        # The Cursor installed the filter on the viewport; this only adds the restore.
-        if event.type() == QEvent.Type.Leave and obj is self.plot_widget.viewport():
-            self.clear_highlight()
-        return super().eventFilter(obj, event)
-
     def update_highlight_at(self, scene_pos: QPointF) -> None:
-        """Highlight the curve under a mouse at ``scene_pos``; restore when none."""
-        vb = self.plot_widget.plotItem.vb
-        if (not getattr(self.app_context, "highlight_enabled", False)
-                or self.curves.model is None
-                or QApplication.mouseButtons() != Qt.MouseButton.NoButton
-                or not vb.sceneBoundingRect().contains(scene_pos)):
-            self.clear_highlight()
-            return
-        mouse = vb.mapFromScene(scene_pos)
-        log_y = bool(self.plot_widget.plotItem.ctrl.logYCheck.isChecked())
-        target = resolve_highlighted_trace(
-            self.visible_traces(), self._cursor_transforms(log_y),
-            (mouse.x(), mouse.y()), CURSOR_RADIUS_PX)
-        if target is None:
-            self.clear_highlight()
-        elif target is not self._highlighted:
-            self._apply_highlight(target)
+        """Highlight the curve under a mouse at ``scene_pos`` via the shared hover gate."""
+        self.update_cursor_at(scene_pos)

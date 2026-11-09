@@ -53,8 +53,11 @@ class AccReaderProcessedMeasurement:
     def __init__(self, file_path: str):
         self.file_path = file_path
 
-    def scan_file_structure(self) -> MeasurementRunIndex:
-        return MeasurementRunIndex(os.path.basename(self.file_path), self.file_path)
+    def read_run_index(self) -> MeasurementRunIndex:
+        """The file's channels and Lost parts, read from its header (MeasurementReader)."""
+        run_index = MeasurementRunIndex(os.path.basename(self.file_path), self.file_path)
+        self._read_channels(run_index)
+        return run_index
 
     def _read_columns(self):
         with open(self.file_path, encoding="utf-8-sig") as stream:
@@ -65,9 +68,7 @@ class AccReaderProcessedMeasurement:
         matrix = np.asarray(rows, dtype=np.float64).reshape(-1, len(channels) + 1)
         return channels, matrix
 
-    def load_channels_on_demand(self, run_index: MeasurementRunIndex):
-        if run_index.available_channels:
-            return
+    def _read_channels(self, run_index: MeasurementRunIndex) -> None:
         channels, matrix = self._read_columns()
         for index, (name, recorded_unit) in enumerate(channels):
             unit = _resolve_value_unit(recorded_unit)

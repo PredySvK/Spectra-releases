@@ -2,13 +2,14 @@
 
 The program reads measurements from files and never changes them. Add a folder with **Add Data Directory** on the *Project* tab. Every supported file in it (and, when you pick a parent folder, in the folders below) appears in the [Data Pool](topic:data_management/intro): one entry per file, one channel per signal.
 
-Three things take part in an import:
+Four things take part in an import:
 
 | What | Where it comes from | Page |
 |---|---|---|
 | **Signals** | the measurement files | [Supported formats](topic:import/formats) |
 | **Excel metadata** | a spreadsheet you keep next to the data | [Metadata from Excel](topic:import/metadata) |
 | **Channel pairs** | a spreadsheet the Pairing tab writes | [Channel pairing](topic:import/channel_pairing) |
+| **Import template** | a template the wizard builds for table files | [Import wizard](topic:import/template_wizard) |
 
 ## Several folders and subfolders
 

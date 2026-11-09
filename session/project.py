@@ -21,6 +21,7 @@ All internal documentation strings and variable labels are standardly written
 in English.
 """
 
+import logging
 import os
 from collections import Counter
 from dataclasses import dataclass, field, replace
@@ -86,6 +87,15 @@ OpenTabsCapture = Callable[[], List[Dict]]
 # Supplied by the GUI: called after every successful write, whichever path
 # triggered it, so the window title, recent list and file claim catch up.
 SavedListener = Callable[[], None]
+
+# Supplied by the GUI: called when the project steps from saved to unsaved, so
+# the window title gains its "*" right away (#887). The step back is a write
+# and reaches the window through SavedListener.
+DirtyListener = Callable[[], None]
+
+# Supplied by the GUI: where a step after a successful write reports that it
+# failed (the log). The save itself still succeeded.
+SaveWarningLog = Callable[[str], None]
 
 
 @dataclass
@@ -173,6 +183,8 @@ class ProjectSession(ProjectFolderMixin, ResultSetsMixin):
         self._cache_adopter = cache_adopter
         self._open_tabs_capture: Optional[OpenTabsCapture] = None
         self._saved_listener: Optional[SavedListener] = None
+        self._dirty_listener: Optional[DirtyListener] = None
+        self._save_warning_log: Optional[SaveWarningLog] = None
         self._workflow_history: Dict[str, _WorkflowHistory] = {}
         self._source_location = SourceLocation()
 
@@ -229,6 +241,14 @@ class ProjectSession(ProjectFolderMixin, ResultSetsMixin):
         """Plugs in what the window does after every successful write."""
         self._saved_listener = listener
 
+    def set_dirty_listener(self, listener: Optional[DirtyListener]) -> None:
+        """Plugs in what the window does when the project goes unsaved."""
+        self._dirty_listener = listener
+
+    def set_save_warning_log(self, log: Optional[SaveWarningLog]) -> None:
+        """Plugs in where a failed step after a successful write is reported."""
+        self._save_warning_log = log
+
     @property
     def display_name(self) -> str:
         """Window-title form: the project name, marked when unsaved."""
@@ -241,7 +261,7 @@ class ProjectSession(ProjectFolderMixin, ResultSetsMixin):
 
         Applies to an Untitled project too, so that work is not lost on close.
         """
-        self._dirty = True
+        self._mark_dirty()
 
     def mark_view_changed(self) -> None:
         """
@@ -251,7 +271,27 @@ class ProjectSession(ProjectFolderMixin, ResultSetsMixin):
         is nothing stored to be behind, so it never prompts.
         """
         if self.has_file:
-            self._dirty = True
+            self._mark_dirty()
+
+    def _mark_dirty(self) -> None:
+        """
+        Sets the flag and tells the dirty listener -- only on the step into
+        unsaved, not on every further edit.
+
+        The listener only redraws the title, so whatever it raises is logged
+        and the change that called it stands.
+        """
+        if self._dirty:
+            return
+        self._dirty = True
+        if self._dirty_listener is None:
+            return
+        try:
+            self._dirty_listener()
+        except Exception as error:      # noqa: BLE001 -- the edit must not fail on the title
+            logging.getLogger(__name__).warning(
+                "The project has unsaved changes, but the window "
+                "could not show it: %s", error)
 
     @property
     def x_axis_unit(self) -> str:
@@ -364,21 +404,54 @@ class ProjectSession(ProjectFolderMixin, ResultSetsMixin):
         self._remove_unreferenced_tab_cache()
 
     def save(self) -> str:
-        """Saves to the existing path. Use save_as() when there is none yet."""
+        """
+        Saves to the existing path. Use save_as() when there is none yet.
+
+        Raises only when the project file was not written; a step after the
+        write that fails is a warning.
+        """
         self._write()
-        self._notify_saved()
+        self._finish_write(self._remove_unreferenced_tab_cache)
         return self._path
 
     def _write(self) -> None:
-        """Writes the project to its path, current tabs included. Tells nobody:
-        a caller that must roll back on failure (commit_result_set) notifies
-        only once the whole unit has succeeded."""
+        """
+        Writes the project to its path, current tabs included -- the point a
+        save is committed at. Runs nothing after the write: the
+        caller rolls back its own unit if this raises and calls
+        `_finish_write` once it has succeeded.
+        """
         if self._path is None:
             raise ValueError("Project has never been saved; a path is required.")
         self._capture_open_tabs()
         save_project(self._project, self._path)
         self._dirty = False
-        self._remove_unreferenced_tab_cache()
+
+    def _finish_write(self, *steps: Callable[[], None]) -> None:
+        """
+        Runs what follows a committed write -- `steps`, then the saved listener
+        -- each on its own.
+
+        The project file is on disk by now, so nothing here may undo it or
+        turn the save into a failure: whatever a step raises goes to the save
+        warning log and the next step still runs. Every step is something the
+        program can rebuild (an index, a cache, the window), never the only
+        copy of anything.
+        """
+        for step in (*steps, self._saved_listener):
+            if step is None:
+                continue
+            try:
+                step()
+            except Exception as error:      # noqa: BLE001 -- the boundary itself
+                self._report_save_warning(error)
+
+    def _report_save_warning(self, error: Exception) -> None:
+        message = f"WARNING: The project was saved, but a step after the save failed: {error}"
+        if self._save_warning_log is not None:
+            self._save_warning_log(message)
+        else:
+            logging.getLogger(__name__).warning(message)
 
     def _remove_unreferenced_tab_cache(self) -> None:
         """
@@ -403,10 +476,6 @@ class ProjectSession(ProjectFolderMixin, ResultSetsMixin):
     def _capture_open_tabs(self) -> None:
         if self._open_tabs_capture is not None:
             self._project.open_tabs = list(self._open_tabs_capture())
-
-    def _notify_saved(self) -> None:
-        if self._saved_listener is not None:
-            self._saved_listener()
 
     def save_edit(self, edit: Callable[[], None]) -> bool:
         """
@@ -444,6 +513,10 @@ class ProjectSession(ProjectFolderMixin, ResultSetsMixin):
         `folder_copy` -- a plan from `build_project_folder_copy` whose copies
         have already been made -- or it is refused, and so is a folder that
         already holds another project.
+
+        All or nothing up to the write: anything that fails before the project
+        file is on disk puts the session back and raises. Nothing after it
+        raises or is undone.
         """
         was_untitled = self._path is None
         new_path = os.path.abspath(project_path)
@@ -472,12 +545,13 @@ class ProjectSession(ProjectFolderMixin, ResultSetsMixin):
             self._restore_result_sets(result_set_snapshot)
             raise
 
-        if folder_copy is not None and folder_copy.copies:
-            self._write_cache_index()
-        if was_untitled:
-            self._carry_untitled_scan_caches()
         self._dirty = False
-        self._notify_saved()
+        after_write = []
+        if folder_copy is not None and folder_copy.copies:
+            after_write.append(self._write_cache_index)
+        if was_untitled:
+            after_write.append(self._carry_untitled_scan_caches)
+        self._finish_write(*after_write)
         return new_path
 
     def ensure_saved(self, path_provider: PathProvider) -> bool:

@@ -128,11 +128,16 @@ class MainApplicationShell(FramelessWindow):
     def closeEvent(self, event):
         """Guarantees that all un-pinned graph windows and children are destroyed cleanly."""
         if hasattr(self, 'workspace_frame') and self.workspace_frame:
-            # Asked first: closing cancels every job, and a cancelled batch run
-            # discards every result set it already computed (#411). A batch
-            # that finishes while this question is open marks the project
-            # dirty, so the unsaved-changes question below still covers it.
-            if not _confirm_cancelling_running_jobs(self.workspace_frame.job_runner, self):
+            # Asked first (#968): closing stops every Batch run, and a stopped
+            # one writes nothing. Wait closes by itself once the line has
+            # finished -- the update included, if this close installs one.
+            # A Batch run saves the project as it writes, so the
+            # unsaved-changes question below asks only about other edits.
+            from gui.handlers.batch_run import confirm_leaving_batch_runs
+            installer = getattr(self, "_update_installer", None)
+            retry = self.close if installer is None else (lambda: self.run_update(installer))
+            if not confirm_leaving_batch_runs(getattr(self.workspace_frame, "workflow_run_bridge", None),
+                                              self, "close Spectra", retry):
                 event.ignore()
                 return
 
@@ -178,34 +183,6 @@ class MainApplicationShell(FramelessWindow):
                                         f"closing without updating. Start it again to retry.\n{error}")
 
         event.accept()
-
-
-def _confirm_cancelling_running_jobs(job_runner, parent) -> bool:
-    """
-    Asks before closing would cancel work the user started and is waiting on.
-
-    Only loud batch-lane jobs count: those are the runs whose results a cancel
-    throws away. Quiet jobs (the folder watcher's re-scan) and the interactive
-    lane (previews, cache adoption) lose nothing worth a question. Returns
-    False when the user chooses to keep the window open.
-    """
-    running = [r for r in job_runner.running_jobs()
-               if r.lane == "batch" and not r.quiet]
-    if not running:
-        return True
-
-    labels = "\n".join(f"  - {r.label}" for r in running)
-    count = f"{len(running)} job is" if len(running) == 1 else f"{len(running)} jobs are"
-    answer = QMessageBox.question(
-        parent,
-        "Jobs still running",
-        f"{count} still running:\n{labels}\n\n"
-        "Closing cancels them and discards what they have computed so far.\n"
-        "Cancel them and close?",
-        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        QMessageBox.StandardButton.No,
-    )
-    return answer == QMessageBox.StandardButton.Yes
 
 
 # =====================================================================
@@ -378,12 +355,8 @@ if __name__ == "__main__":
         # the window is closed, and user state was saved in closeEvent. Hard exit
         # terminates the abandoned worker threads without lingering on QThreadPool
         # destructor (#414).
-        try:
-            sys.stdout.flush()
-            sys.stderr.flush()
-        except Exception:
-            pass
-        os._exit(exit_code)
+        from io_modules.hard_exit import exit_hard
+        exit_hard(exit_code)
     sys.exit(exit_code)
 
 

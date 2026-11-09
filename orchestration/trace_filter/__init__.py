@@ -15,6 +15,7 @@ from orchestration.trace_filter._filter_card import save_filter_card
 from orchestration.trace_filter._identity_context import (
     IdentityContext,
     build_identity_context,
+    resolve_curve_metadata_sources,
 )
 from orchestration.trace_filter._mask_plan import (
     MaskApplicationPlan,
@@ -26,5 +27,6 @@ __all__ = [
     "MaskApplicationPlan",
     "build_identity_context",
     "plan_mask_application",
+    "resolve_curve_metadata_sources",
     "save_filter_card",
 ]

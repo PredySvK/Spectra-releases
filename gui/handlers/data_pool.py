@@ -17,11 +17,10 @@ as a `JobRunner`. What is left here is everything the use
 case deliberately cannot do: the modal progress dialog, the Cancel button, the
 application-shell effects of each folder, the explorer refresh, the
 conflict dialog and the failure popup. Editing an Import template -- from the
-misfit report or the project's copy -- is the same kind of shell work: the
-wizard, the consequence summary and the library question are here, replacing
-the copy and re-reading its files is the use case's `start_template_edit`. An
-Add with a library template that differs from the project's copy offers the
-same replacement before the Add.
+misfit report or the project's copy -- is the same split: the wizard, the
+consequence summary, the misfit report and the library question are dialogs
+here, answering the use case's `IngestAskers`; their order, and the one run an
+edit ends in, are the use case's.
 
 One folder is one step, so a folder of large files would otherwise be a
 single jump from 0 to 100 percent. The step is given a `progress_fn` (through
@@ -52,8 +51,9 @@ import os
 from PySide6.QtCore import QObject, Qt
 from PySide6.QtWidgets import QDialog, QFileDialog, QMessageBox, QProgressDialog
 
-from orchestration.data_pool import MissingMeasurementCheck, PoolIngestUseCase
-from view_models.import_template import build_template_edit_summary
+from orchestration.data_pool import (
+    EditedTemplate, IngestAskers, IngestRequest, MissingMeasurementCheck, PoolIngestUseCase,
+)
 
 
 class DataPoolHandler(QObject):
@@ -110,56 +110,31 @@ class DataPoolHandler(QObject):
 
         `import_templates` (ImportTemplates) read the files they fit instead of
         the suffix's reader; a file that fits none of the templates its name
-        belongs to is listed in a report after the run.
-
-        A template that differs from the project's copy of its name (a library
-        change) is offered over the consequence summary first: replacing the
-        copy re-reads its files before the Add, keeping it adds with the copy,
-        Cancel drops the Add.
+        belongs to is listed in a report after the run. A template that
+        differs from the project's copy of its name is offered as a
+        replacement first (the use case asks, the summary dialog answers).
         """
-        from gui.dialogs.import_template_dialog import ask_library_change
-        session = self.app_context.project_session
-        replacements = []
-        for template in import_templates:
-            copy = session.resolve_import_template(template.name)
-            if copy is None or copy == template:
-                continue
-            summary = build_template_edit_summary(
-                copy, template, filter_cards=session.project.filter_cards,
-                filter_profiles=session.filter_profiles, open_tabs=session.current_open_tabs())
-            replace = ask_library_change(self.parent_widget, summary)
-            if replace is None:
-                return
-            if replace:
-                replacements.append(template)
-        self._replace_then(replacements, lambda: self._start(
-            paths, ask_for_setup=ask_for_setup, import_templates=import_templates))
-
-    def _replace_then(self, templates, then) -> None:
-        """Replaces the project's copies by `templates` one after another, re-reading each one's files, then `then`."""
-        if not templates:
-            then()
-            return
-        self._start([], template_edit=templates[0], then=lambda: self._replace_then(templates[1:], then))
+        self._start(IngestRequest.add(list(paths), import_templates=import_templates,
+                                      ask_for_setup=ask_for_setup))
 
     def refresh_directories(self, directories, quiet: bool = False,
                             on_finished=None, ask_source_amplitude: bool = True) -> None:
         """
         Re-reads folders already in the pool, without undoing what the user did to it.
 
-        The use case re-reads with an empty file selection that admits unknown
-        files, and that is the whole rule: a measurement written into the folder since the last scan joins the pool --
-        which is the point of watching folders at all -- while one the user took
-        out of the pool stays out, and an edited file is simply re-read.
+        A Refresh admits the files the project does not know yet, and that is
+        the whole rule: a measurement written into the folder since the last
+        scan joins the pool -- which is the point of watching folders at all --
+        while one the user took out of the pool stays out, and an edited file
+        is simply re-read.
 
         A file the project does not know yet raises the Source amplitude
         question when it is an Imported result, so no file enters the pool on
         an assumed basis -- except when `ask_source_amplitude` is False, which
         opening a project passes: that is a routine action and stays silent.
         """
-        directories = [directory for directory in directories if directory]
-        self._start([], refresh=directories, quiet=quiet, on_finished=on_finished,
-                    ask_source_amplitude=ask_source_amplitude)
+        self._start(IngestRequest.refresh(directories, quiet=quiet), on_finished=on_finished,
+                    ask=ask_source_amplitude)
 
     def check_missing_after_project_open(self) -> None:
         """
@@ -168,34 +143,23 @@ class DataPoolHandler(QObject):
         """
         self._missing_check.start(after_project_open=True)
 
-    def _ask_source_amplitude(self, questions):
-        """The Source amplitude question, with the progress dialog out of its way."""
-        from gui.dialogs.source_amplitude_dialog import ask_source_amplitudes
-        return self._ask_unobstructed(ask_source_amplitudes, questions)
+    def _askers(self, ask: bool = True) -> IngestAskers:
+        """The dialogs that answer the use case's questions; without `ask` a run asks nothing itself."""
+        return IngestAskers(
+            source_amplitude=self._ask_source_amplitude if ask else None,
+            import_template=self._ask_import_template if ask else None,
+            library_change=self._ask_library_change,
+            edit_template=self._edit_template,
+            confirm_edit=self._confirm_edit,
+            choose_misfit=self._choose_misfit,
+            save_to_library=self._save_to_library,
+        )
 
-    def _ask_unobstructed(self, ask, questions):
-        progress = self._dialog
-        if progress is not None:
-            progress.hide()
-        try:
-            return ask(self.parent_widget, questions)
-        finally:
-            if progress is not None and self._dialog is progress:
-                progress.show()
-
-    def _ask_import_template(self, questions):
-        """The which-template question, with the progress dialog out of its way."""
-        from gui.dialogs.import_template_dialog import ask_import_templates
-        return self._ask_unobstructed(ask_import_templates, questions)
-
-    def _start(self, paths, ask_for_setup: bool = False, quiet: bool = False,
-               on_finished=None, refresh=None, ask_source_amplitude: bool = True,
-               import_templates=(), template_edit=None, then=None):
-        # Every kind is planned on the worker, because planning walks trees and
-        # reads file headers (#507); which flags belong to which kind is the use
-        # case's to decide. `then` runs after a completed run's own reports, so
-        # a run it starts does not have its dialog closed by this one's finish.
-        if not (paths or refresh or template_edit):
+    def _start(self, request, on_finished=None, ask: bool = True) -> None:
+        # Which flags belong to which kind of run, the order of the questions
+        # and what follows a finished run are the use case's to decide; what
+        # is left here is the dialog and the shell's reports.
+        if request is None or not (request.paths or request.replacements):
             return
 
         # A second Add supersedes the first rather than interleaving with it:
@@ -208,7 +172,7 @@ class DataPoolHandler(QObject):
         # A refresh nobody asked for gets no dialog. The folder watcher fires
         # whenever a measurement lands on disk, and a progress window stealing
         # focus each time would make the feature something to switch off.
-        if not quiet:
+        if not request.quiet:
             # 0..100 rather than one tick per folder: a single big folder is
             # one step, and its own re-parse progress (reported through the
             # step's progress_fn) is what the user needs to see move.
@@ -229,26 +193,95 @@ class DataPoolHandler(QObject):
             self._dialog.canceled.connect(self._cancel_running)
             self._dialog.show()
 
+        askers = self._askers(ask)
+
         def _done(outcome):
             if on_finished is not None:
                 on_finished(outcome)
             self._on_finished(outcome)
-            if then is not None and outcome.completed:
-                then()
+            # After the run's own reports, so a run it starts does not have its
+            # dialog closed by this one's finish.
+            self._start(self._use_case.plan_follow_up(outcome, askers))
 
-        if template_edit is not None:
-            self._use_case.start_template_edit(template_edit, quiet=quiet, on_folder=self._on_folder,
-                                               on_finished=_done)
+        self._use_case.start(request, askers=askers, on_folder=self._on_folder, on_finished=_done)
+
+    # ---- the questions (GUI thread) -------------------------------------
+
+    def _ask_unobstructed(self, ask, *questions):
+        """Asks with the progress dialog out of the question's way."""
+        progress = self._dialog
+        if progress is not None:
+            progress.hide()
+        try:
+            return ask(self.parent_widget, *questions)
+        finally:
+            if progress is not None and self._dialog is progress:
+                progress.show()
+
+    def _ask_source_amplitude(self, questions):
+        from gui.dialogs.source_amplitude_dialog import ask_source_amplitudes
+        return self._ask_unobstructed(ask_source_amplitudes, questions)
+
+    def _ask_import_template(self, questions):
+        from gui.dialogs.import_template_dialog import ask_import_templates
+        return self._ask_unobstructed(ask_import_templates, questions)
+
+    def _ask_library_change(self, summary):
+        from gui.dialogs.import_template_dialog import ask_library_change
+        return self._ask_unobstructed(ask_library_change, summary)
+
+    def _confirm_edit(self, summary) -> bool:
+        from gui.dialogs.import_template_dialog import confirm_template_edit
+        return confirm_template_edit(self.parent_widget, summary)
+
+    def _choose_misfit(self, misfits, fixable):
+        from gui.dialogs.import_template_dialog import show_misfit_report
+        return show_misfit_report(self.parent_widget, misfits, list(fixable))
+
+    def _save_to_library(self, template) -> None:
+        from gui.dialogs.import_template_dialog import ask_save_to_library
+        saved = ask_save_to_library(self.parent_widget, template)
+        if saved:
+            self.app_context.log(f"POOL: {saved}")
+
+    def _edit_template(self, template, sample_path, from_misfits, taken_names):
+        """The import wizard on `sample_path` with the project's copy loaded; what it ended with."""
+        from gui.dialogs.import_template_wizard import (
+            ENDING_MISFIT, ENDING_PROJECT, SAVED_NEW, TemplateWizardDialog,
+        )
+        dialog = TemplateWizardDialog(
+            self.parent_widget, [sample_path], self.job_runner, template=template,
+            ending=ENDING_MISFIT if from_misfits else ENDING_PROJECT, taken_names=taken_names)
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.saved_template is None:
+            return None
+        saved_as_new = dialog.saved_as == SAVED_NEW
+        if saved_as_new:
+            self.app_context.log(f"POOL: Saved the Import template '{dialog.saved_template.name}' into your library.")
+        return EditedTemplate(dialog.saved_template, saved_as_new=saved_as_new)
+
+    # ---- editing an Import template ------------------------------------
+
+    def edit_project_template(self, name: str) -> None:
+        """Edits the project's copy of an Import template on a sample the user picks, one of its files offered."""
+        location = self.app_context.project_session.source_location
+        files = sorted(run.file_path for run in self.app_context.pool.loaded_runs
+                       if (entry := location.entry_for_run(run)) is not None and entry.import_template == name)
+        sample, _ = QFileDialog.getOpenFileName(
+            self.parent_widget, f"Sample workbook to edit '{name}' on", files[0] if files else "",
+            "Table files (*.xlsx *.txt *.csv)")
+        if sample:
+            self.edit_import_template(name, sample)
+
+    def edit_import_template(self, name: str, sample_path: str, misfit_paths=()) -> None:
+        """
+        Opens the import wizard on `sample_path` with the project's copy of the
+        template `name` loaded, and starts the run the edit ends in
+        (`PoolIngestUseCase.plan_template_edit` holds the order).
+        """
+        if self.app_context.project_session.resolve_import_template(name) is None:
+            self.app_context.log(f"WARNING: The project holds no Import template '{name}' to edit.")
             return
-        options = dict(quiet=quiet, on_folder=self._on_folder, on_finished=_done,
-                       ask_source_amplitude=(self._ask_source_amplitude
-                                             if ask_source_amplitude else None),
-                       ask_import_template=self._ask_import_template if ask_source_amplitude else None)
-        if refresh:
-            self._use_case.start_refresh(refresh, **options)
-        else:
-            self._use_case.start_selection(list(paths), ask_for_setup=ask_for_setup,
-                                           import_templates=import_templates, **options)
+        self._start(self._use_case.plan_template_edit(name, sample_path, self._askers(), misfit_paths))
 
     @property
     def _job_id(self):
@@ -299,7 +332,6 @@ class DataPoolHandler(QObject):
 
         self._report_conflicts(outcome)
         self._report_failures(outcome)
-        self._report_misfits(outcome)
 
     def _on_missing_checked(self, outcome):
         """The pool's Missing measurements changed: redraw the tree, say what is owed."""
@@ -323,85 +355,6 @@ class DataPoolHandler(QObject):
         from gui.dialogs.schema_conflict_dialog import show_schema_conflicts
         show_schema_conflicts(self.app_context, self.parent_widget,
                               list(outcome.schema_conflicts))
-
-    def _report_misfits(self, outcome):
-        if not outcome.report_misfits:
-            return
-        from gui.dialogs.import_template_dialog import show_misfit_report
-        misfits = outcome.misfits
-        templates = [self._misfit_template(misfit) for misfit in misfits]
-        chosen = show_misfit_report(self.parent_widget, misfits, [bool(name) for name in templates])
-        if chosen is None:
-            return
-        name = templates[misfits.index(chosen)]
-        self.edit_import_template(name, chosen.path, misfit_paths=[
-            misfit.path for misfit, template in zip(misfits, templates) if template == name])
-
-    def _misfit_template(self, misfit) -> str:
-        """The project's template a misfit can be fixed in: the first of those it names that the project holds."""
-        session = self.app_context.project_session
-        return next((name for name in misfit.templates if session.resolve_import_template(name) is not None), "")
-
-    # ---- editing an Import template ------------------------------------
-
-    def edit_project_template(self, name: str) -> None:
-        """Edits the project's copy of an Import template on a sample the user picks, one of its files offered."""
-        location = self.app_context.project_session.source_location
-        files = sorted(run.file_path for run in self.app_context.pool.loaded_runs
-                       if (entry := location.entry_for_run(run)) is not None and entry.import_template == name)
-        sample, _ = QFileDialog.getOpenFileName(
-            self.parent_widget, f"Sample workbook to edit '{name}' on", files[0] if files else "",
-            "Table files (*.xlsx *.txt *.csv)")
-        if sample:
-            self.edit_import_template(name, sample)
-
-    def edit_import_template(self, name: str, sample_path: str, misfit_paths=()) -> None:
-        """
-        Opens the import wizard on `sample_path` with the project's copy of the
-        template `name` loaded.
-
-        From the misfit report (`misfit_paths`, the files that did not fit it)
-        the wizard ends in Overwrite or Save as new, and the files are added
-        afterwards with the template it ended with. In the project it ends in
-        Apply. Overwrite and Apply show the consequence summary first; Cancel
-        changes nothing, confirming replaces the copy and re-reads only its
-        files, and once they are read offers to save the edit into the library too.
-        """
-        from gui.dialogs.import_template_dialog import ask_save_to_library, confirm_template_edit
-        from gui.dialogs.import_template_wizard import (
-            ENDING_MISFIT, ENDING_PROJECT, SAVED_NEW, ImportTemplateWizardDialog,
-        )
-        template = self.app_context.project_session.resolve_import_template(name)
-        if template is None:
-            self.app_context.log(f"WARNING: The project holds no Import template '{name}' to edit.")
-            return
-        dialog = ImportTemplateWizardDialog(
-            self.parent_widget, sample_path, self.job_runner, template=template,
-            ending=ENDING_MISFIT if misfit_paths else ENDING_PROJECT, taken_names=tuple(self.app_context.project_session.resolve_import_templates()))
-        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.saved_template is None:
-            return
-        edited = dialog.saved_template
-        add_misfits = (lambda: self.add_paths(list(misfit_paths), import_templates=(edited,))) if misfit_paths else None
-        if dialog.saved_as == SAVED_NEW:
-            self.app_context.log(f"POOL: Saved the Import template '{edited.name}' into your library.")
-            if add_misfits is not None:
-                add_misfits()
-            return
-        session = self.app_context.project_session
-        summary = build_template_edit_summary(
-            template, edited, filter_cards=session.project.filter_cards,
-            filter_profiles=session.filter_profiles, open_tabs=session.current_open_tabs())
-        if not confirm_template_edit(self.parent_widget, summary):
-            return
-
-        def _after_rescan() -> None:
-            saved = ask_save_to_library(self.parent_widget, edited)
-            if saved:
-                self.app_context.log(f"POOL: {saved}")
-            if add_misfits is not None:
-                add_misfits()
-
-        self._start([], template_edit=edited, then=_after_rescan)
 
     def _report_failures(self, outcome):
         if not outcome.report_failures:

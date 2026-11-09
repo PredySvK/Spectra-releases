@@ -3,7 +3,8 @@ view_models.tab_label -- short Tab labels and tooltips for graph tabs.
 
 Architecture:
 - View-model floor (Floor 3): Pure Python, Qt-free logic for resolving graph tab labels
-  and tooltips from an analysis kind, sources, dead links, and optional custom labels.
+  and tooltips from an analysis kind, sources, a Dead link or failed compute, and
+  optional custom labels.
 - Deduplication: file + channel pairs counted once, result-set curves counted once.
 - Tab width: capped at ~25 characters with ellipsis (…).
 """

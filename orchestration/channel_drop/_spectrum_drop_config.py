@@ -6,7 +6,7 @@ from typing import Any, Mapping, Optional
 from core.dsp_configs import SpectrumConfig
 
 # The settings a base trace's compute spec records and a drop takes over.
-_FROM_COMPUTE_SPEC = ("fft_size", "window_type", "averaging_type", "exponential_alpha")
+_FROM_COMPUTE_SPEC = ("fft_size", "window_type", "averaging_type", "exponential_parameter")
 
 
 def resolve_spectrum_drop_config(ribbon_config: SpectrumConfig, *, config_from_trace: bool,
@@ -15,7 +15,7 @@ def resolve_spectrum_drop_config(ribbon_config: SpectrumConfig, *, config_from_t
                                  base_amplitude_mode: str = "") -> SpectrumConfig:
     """
     The config a newly dropped comparison curve is computed with (R1,
-    ideas/session_persistence/PLAN.md §4).
+    the session persistence plan §4).
 
     Default is ``ribbon_config``. With ``config_from_trace`` on ("new curve
     takes the trace's settings") and a base trace whose ``compute_spec`` is

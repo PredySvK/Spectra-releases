@@ -20,6 +20,8 @@ Zapsáno vzorcem: $L_\mathrm{RMS}=\sqrt{\sum_k w_k E_k}$, kde $E_k$ je energie p
 
 Formát spektra **Linear**, **Power** nebo **PSD**, volba amplitudy **RMS / Peak** a lineární či **dB** osa určují způsob zobrazení spektra. Výpočet Band RMS pro stejné spektrum nemění. Hodnota zůstává ve fyzikální jednotce kanálu a je označená RMS. Možnosti zobrazení spektra popisuje [Amplituda a Formát](topic:shared/amplitude_format).
 
+Na spektru průměrovaném režimem **Linear average** ([Spectrum 1D](topic:spectrum/intro)) je Band RMS efektivní hodnota křivky průměrné amplitudy, ne energie signálu v pásmu; při rozběhu nebo na šumu vyjde nižší. Pro energii v pásmu použijte Energy average.
+
 V *Settings* → *View* přepíná **X axis unit** měřítko vodorovného zobrazení a popisky. Spektrum se počítá ve frekvenci; i když je osa zobrazená v RPM, pásmo zůstává uložené v Hz a před integrací se převede zpět. Změna tohoto zobrazení nemění měřený rozsah ani jeho hodnotu.
 
 ## Které křivky funkci podporují

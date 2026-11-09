@@ -23,7 +23,8 @@ read back, moved and named.
 - Identity: `params_hash` and `result_params_from_block` are what a set's
   settings are matched by; `FORMAT_VERSION` is the on-disk format.
 - Moving: `measure_result_sets`, `copy_result_sets`, `remove_result_sets` and
-  `label_folder_exists` serve Save As and the project-folder copy.
+  `label_folder_exists` serve Save As and the project-folder copy;
+  `find_missing_result_set_files` tells Load Result Sets which sets are gone.
 - Naming: `sanitize_result_set_label` turns a typed name into a safe folder
   name; `build_result_set_label` and friends derive the default one.
 
@@ -51,6 +52,7 @@ from ._cache_draft import (
 )
 from ._cache_folders import (
     copy_result_sets,
+    find_missing_result_set_files,
     label_folder_exists,
     measure_result_sets,
     remove_result_sets,
@@ -95,6 +97,7 @@ __all__ = [
     "discard_draft",
     "find_cached_result",
     "find_duplicate_result_set",
+    "find_missing_result_set_files",
     "finish_swap_in",
     "label_folder_exists",
     "manifest_entry_for",

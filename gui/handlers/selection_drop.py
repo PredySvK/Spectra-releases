@@ -67,9 +67,9 @@ class SelectionDropHandler:
         if len(descriptors) > CONFIRM_CHANNEL_COUNT and not self._confirm(name, len(descriptors)):
             return
         if dock is None:
+            channels = resolve_dropped_channels(descriptors, context.pool.run_lookup, context.log)
             self._workspace.open_channels_tab(
-                resolve_dropped_channels(descriptors, context.pool.run_lookup, context.log),
-                what=f"Selection '{name}'")
+                [channel.row for channel in channels], what=f"Selection '{name}'")
         else:
             self._workspace.route_channel_drop(
                 dock, descriptors, batch_label=f"Order tracking — Selection '{name}'")

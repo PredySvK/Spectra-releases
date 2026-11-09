@@ -28,6 +28,8 @@ from typing import Any, Dict, Optional, Set, Tuple
 import logging
 import uuid
 
+from core.field_priority import move_key, with_key_order
+
 logger = logging.getLogger(__name__)
 
 
@@ -329,6 +331,16 @@ def renumbered(columns) -> Tuple[FilterColumnConfig, ...]:
     )
 
 
+def _with_column_sequence(card: FilterCardConfig, keys: Tuple[str, ...]) -> FilterCardConfig:
+    """`card` with its columns in the order of `keys`, renumbered dense."""
+    by_key = {column.key: column for column in card.columns}
+    return replace(card, columns=renumbered(by_key[key] for key in keys))
+
+
+def _ordered_keys(card: FilterCardConfig) -> Tuple[str, ...]:
+    return tuple(column.key for column in card.ordered_columns)
+
+
 def with_column_order(card: FilterCardConfig, key: str, requested_order: int) -> FilterCardConfig:
     """
     Move the column `key` to position `requested_order` (1-based), typing a new
@@ -336,30 +348,25 @@ def with_column_order(card: FilterCardConfig, key: str, requested_order: int) ->
 
     Collision is defined (§1.32 / ticket #40): the edited column takes the
     requested slot and every column at or after it shifts down, then the whole
-    card is renumbered dense. Out-of-range numbers clamp to the ends.
+    card is renumbered dense. Out-of-range numbers clamp to the ends. The rule is
+    `core.field_priority.with_key_order`, the same one every checkbox + Priority
+    window uses (#1025).
     """
-    target = card.column(key)
-    others = sorted(
-        (column for column in card.columns if column.key != key),
-        key=lambda column: column.order,
-    )
-    position = max(1, min(int(requested_order), len(others) + 1)) - 1
-    reordered = others[:position] + [target] + others[position:]
-    return replace(card, columns=renumbered(reordered))
+    card.column(key)  # KeyError naming the miss
+    return _with_column_sequence(card, with_key_order(_ordered_keys(card), key, requested_order))
 
 
 def move_column(card: FilterCardConfig, key: str, delta: int) -> FilterCardConfig:
     """
     Nudge the column `key` `delta` places (the up/down arrows: +1 / -1). A nudge
-    past either end is a no-op that returns the same card. Just `with_column_order`
-    against the column's current sorted position, so the two stay one rule.
+    past either end is a no-op that returns the same card. Just
+    `core.field_priority.move_key` over the columns' current order, so typing a
+    number and the arrows stay one rule.
     """
-    ordered = card.ordered_columns
-    index = next(i for i, column in enumerate(ordered) if column.key == key)
-    target_index = max(0, min(index + delta, len(ordered) - 1))
-    if target_index == index:
-        return card
-    return with_column_order(card, key, target_index + 1)
+    card.column(key)  # KeyError naming the miss
+    keys = _ordered_keys(card)
+    moved = move_key(keys, key, delta)
+    return card if moved == keys else _with_column_sequence(card, moved)
 
 
 def add_column(card: FilterCardConfig, column: FilterColumnConfig) -> FilterCardConfig:

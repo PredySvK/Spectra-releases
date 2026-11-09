@@ -3,15 +3,15 @@
 from typing import Any
 
 from core.settings import SETTING_DEFINITIONS
-from ._pages import SETTINGS_IMMEDIATE_KEYS, SETTINGS_PROJECT_KEYS, SettingsPage
+from ._pages import SETTINGS_FIELD_KEYS, SETTINGS_IMMEDIATE_KEYS, SETTINGS_PROJECT_KEYS, SettingsPage
 
 
 class SettingsDraft:
-    """Last applied values plus the user's unapplied edits."""
+    """Last applied values plus the user's unapplied edits, for the keys the window shows only."""
 
     def __init__(self, values: dict[str, Any]):
-        base = {key: defn.default for key, defn in SETTING_DEFINITIONS.items()}
-        base.update(values)
+        base = {key: defn.default for key, defn in SETTING_DEFINITIONS.items() if key in SETTINGS_FIELD_KEYS}
+        base.update({key: value for key, value in values.items() if key in SETTINGS_FIELD_KEYS})
         self._applied = dict(base)
         self._edited = dict(base)
 
@@ -58,6 +58,8 @@ class SettingsDraft:
         """
         dirty = self.dirty_keys
         for key, value in values.items():
+            if key not in SETTINGS_FIELD_KEYS:
+                continue
             if key in dirty and key in SETTINGS_IMMEDIATE_KEYS:
                 # Our own preview's echo must not replace the restore point.
                 self._edited[key] = value

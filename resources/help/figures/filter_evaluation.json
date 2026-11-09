@@ -11,8 +11,8 @@
     {"kind": "marker", "target": "EvaluationTable", "text": {
       "en": "Result table: one row per extracted value, with where on the curve it sits.",
       "cs": "Tabulka výsledků: jeden řádek na každou vytaženou hodnotu, včetně místa na křivce."}},
-    {"kind": "marker", "target": "ExportCsvButton", "text": {
-      "en": "Export CSV: save the table to a file (Ctrl+C copies the selected rows).",
-      "cs": "Export CSV: uloží tabulku do souboru (Ctrl+C zkopíruje vybrané řádky)."}}
+    {"kind": "marker", "target": "ExportXlsxButton", "text": {
+      "en": "Export XLSX: save the table to an Excel file (Ctrl+C copies the selected rows).",
+      "cs": "Export XLSX: uloží tabulku do souboru Excelu (Ctrl+C zkopíruje vybrané řádky)."}}
   ]
 }

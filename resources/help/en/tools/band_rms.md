@@ -20,6 +20,8 @@ In symbols, $L_\mathrm{RMS}=\sqrt{\sum_k w_k E_k}$, where $E_k$ is energy per bi
 
 The spectrum's **Linear**, **Power**, or **PSD** format, **RMS / Peak** amplitude choice, and linear or **dB** axis control how the spectrum is displayed. They do not change the Band RMS calculation for the same spectrum. The readout remains in the channel's physical unit and is labelled RMS. See [Amplitude & Format](topic:shared/amplitude_format) for the spectrum display choices.
 
+On a spectrum averaged by **Linear average** ([Spectrum 1D](topic:spectrum/intro)), Band RMS is the RMS of the mean-amplitude curve, not the signal's energy in the band; on a run-up or noise it reads lower. For the energy in the band, use Energy average.
+
 In *Settings* → *View*, **X axis unit** changes the horizontal display scale and labels. A spectrum is calculated in frequency; even when its axis is shown in RPM, the band is kept in Hz and converted back before integration. Changing this display setting does not change the measured range or its value.
 
 ## Which curves support it

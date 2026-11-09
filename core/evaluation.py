@@ -12,7 +12,7 @@ module changing.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, Mapping, Optional, Tuple, Union
 
 from core.data_block import NVHDataBlock
@@ -101,7 +101,9 @@ class SingleValue:
         and lin/dB never move a maximum, Amplitude can: read a
         row from `EvaluationTable.rows_in` of the same `amplitude_mode`."""
         if self.is_empty:
-            empty_unit = self.block.value_unit
+            # The unit a valued row of this curve would carry, Amplitude and
+            # Format included: a curve without a value still has a unit.
+            _, empty_unit = self.block.to_display_values(spectrum_format, amplitude_mode)
             if prefs is not None:
                 _, empty_unit = convert_signal_to_global_unit(
                     None, empty_unit, self.block.channel_type, prefs
@@ -161,37 +163,66 @@ class EvaluationTable:
 @dataclass(frozen=True)
 class EvaluationConfig:
     """
-    Which Evaluation a dock has selected and with what parameters, as data
-    with a JSON round trip.
+    Which Evaluation a dock has selected, the parameters of every Evaluation
+    the dock has had, and the table's own settings, as data with a JSON round
+    trip.
+
+    `params_by_evaluation` keeps an Evaluation's parameters after the dock
+    moves to another one, so going back finds them again; an Evaluation with
+    no entry runs on its defaults. An unknown Evaluation's entry is kept too.
     """
     evaluation_name: str = "max"
-    params: Dict[str, Any] = field(default_factory=dict)
+    params_by_evaluation: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     respect_trace_filter: bool = True
     metadata_columns: Tuple[str, ...] = ()
+
+    @property
+    def params(self) -> Dict[str, Any]:
+        """The selected Evaluation's parameters; empty means its defaults."""
+        return self.params_for(self.evaluation_name)
+
+    def params_for(self, evaluation_name: str) -> Dict[str, Any]:
+        """`evaluation_name`'s remembered parameters; empty means its defaults."""
+        return dict(self.params_by_evaluation.get(evaluation_name, {}))
+
+    def with_params(self, params: Mapping[str, Any]) -> "EvaluationConfig":
+        """This config with the selected Evaluation's parameters replaced,
+        every other Evaluation's left as they were."""
+        remembered = dict(self.params_by_evaluation)
+        remembered[self.evaluation_name] = dict(params)
+        return replace(self, params_by_evaluation=remembered)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "evaluation_name": self.evaluation_name,
-            "params": dict(self.params),
+            "params_by_evaluation": {
+                name: dict(params) for name, params in self.params_by_evaluation.items()
+            },
             "respect_trace_filter": self.respect_trace_filter,
             "metadata_columns": list(self.metadata_columns),
         }
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "EvaluationConfig":
+        # A project saved before §1.259 has a single `params`; it is not read
+        # (no backward compatibility, §1.259 point 7).
         if not isinstance(data, (dict, Mapping)):
             return cls()
         raw_name = data.get("evaluation_name")
         eval_name = str(raw_name) if raw_name is not None else "max"
-        raw_params = data.get("params")
-        params = dict(raw_params) if isinstance(raw_params, dict) else {}
+        raw_params = data.get("params_by_evaluation")
+        params_by_evaluation = {
+            str(name): dict(params)
+            for name, params in (raw_params.items() if isinstance(raw_params, dict) else ())
+            if isinstance(params, dict)
+        }
         raw_respect = data.get("respect_trace_filter")
         respect = bool(raw_respect) if raw_respect is not None else True
         raw_cols = data.get("metadata_columns")
         meta_cols = tuple(str(c) for c in raw_cols) if isinstance(raw_cols, (list, tuple)) else ()
         return cls(
             evaluation_name=eval_name,
-            params=params,
+            params_by_evaluation=params_by_evaluation,
             respect_trace_filter=respect,
             metadata_columns=meta_cols,
         )

@@ -15,7 +15,7 @@ from core.block_kinds import PARAM_ORDER
 from core.units import strip_channel_name_prefix
 from selection.parameter_sets import build_parameter_sets
 from view_models.analysis_kinds import (
-    ANALYSIS_SPECTROGRAM, ANALYSIS_TIME, resolve_analysis_kind,
+    ANALYSIS_SPECTROGRAM, resolve_analysis_kind,
 )
 from orchestration import live_compute
 from orchestration.live_compute import ComputeOrigin, resolve_cache_finder
@@ -27,12 +27,11 @@ from orchestration.channel_drop import (
     SpectrogramDropInputs,
     SpectrumDropInputs,
     read_plotted_keys,
-    resolve_dropped_channels,
     run_channel_drop,
 )
 from orchestration.trace_filter import build_identity_context
 from view_models.trace_filter import resolve_set_curve_same_as
-from gui.handlers.dock_tab_title import set_dock_tab_title, update_dock_tab_title
+from gui.handlers.dock_tab_label import update_dock_tab_label
 
 
 def execute_channel_drop_processing(
@@ -77,7 +76,7 @@ class _DockDropTarget:
         curves = dock.curves if self._is_graph else None
         self.facts = DropFacts(
             self._is_graph, isinstance(dock, SpectrogramDock),
-            getattr(dock, "analysis_kind", ANALYSIS_TIME),
+            dock.analysis_kind,
             self._is_graph and dock.curves.holds_result_content,
             plotted_keys=frozenset(read_plotted_keys(
                 curves.descriptors() if curves else [],
@@ -93,10 +92,11 @@ class _DockDropTarget:
             self._dock.dock_id, worker, *args,
             on_success=on_success, on_error=on_error, purpose=PURPOSE_DROP, **run_kwargs)
 
-    def open_imported_channels(self, descriptors):
-        context = self._context
-        self._workspace.open_channels_tab(
-            resolve_dropped_channels(descriptors, context.pool.run_lookup, context.log))
+    def run_lookup(self, file_path):
+        return self._context.pool.run_lookup(file_path)
+
+    def open_imported_channels(self, channels):
+        self._workspace.open_channels_tab([channel.row for channel in channels])
 
     def spectrum_inputs(self):
         """The ribbon config, the "new curve takes the trace's settings"
@@ -113,7 +113,7 @@ class _DockDropTarget:
         )
 
     def restored_config(self, recipe):
-        return self._workspace.resolve_restore_config(self.facts.analysis_kind, recipe)
+        return self._workspace.base_curve_compute.resolve_restore_config(self.facts.analysis_kind, recipe)
 
     def drop_restore(self, resolved):
         project_path = getattr(getattr(self._context, "project_session", None), "path", None)
@@ -132,16 +132,14 @@ class _DockDropTarget:
         context = self._context
         return OrderDropInputs(
             config=context.order_tracking_settings,
-            run_lookup=self._context.pool.run_lookup,
-            dock_tacho=getattr(self._dock, "tacho_block", None),
+            dock_tacho=self._dock.tacho_block,
             with_overall_level=context.order_tracking_overall_level,
         )
 
     def overall_level_inputs(self):
         return OverallLevelDropInputs(
             config=self._context.overall_level_settings,
-            run_lookup=self._context.pool.run_lookup,
-            dock_tacho=getattr(self._dock, "tacho_block", None),
+            dock_tacho=self._dock.tacho_block,
         )
 
     def parameter_sets(self):
@@ -195,16 +193,15 @@ class _DockDropTarget:
         return self._dock.curves.model
 
     def keep(self, descriptor, result):
-        self._workspace.keep_dropped_channel(self._dock, descriptor, result)
+        self._workspace.base_curve_compute.keep_dropped_channel(self._dock.dock_id, descriptor, result)
 
     def spectrogram_inputs(self):
         dock = self._dock
         return SpectrogramDropInputs(
-            vib_block=getattr(dock, "vib_block", None),
-            tacho_block=getattr(dock, "tacho_block", None),
+            vib_block=dock.vib_block,
+            tacho_block=dock.tacho_block,
             tracking_mode=self._context.spectrogram_settings.tracking_mode,
             restored_measurement_path=_restored_measurement_path(dock),
-            run_lookup=self._context.pool.run_lookup,
         )
 
     def hold_spectrogram_channels(self, vib_block, tacho_block, dropped):
@@ -219,12 +216,12 @@ class _DockDropTarget:
         it, it supersedes one in flight); a failure leaves the image already
         on screen, as a failed Refresh does."""
         dock = self._dock
-        _update_spectrogram_tab_title(dock)
-        self._workspace.dispatch_compute(
-            dock, origin=ComputeOrigin.REFRESH, vib_block=dock.vib_block)
+        _update_spectrogram_tab_label(dock)
+        self._workspace.base_curve_compute.start(
+            dock.dock_id, origin=ComputeOrigin.REFRESH, vib_block=dock.vib_block)
 
-    def refresh_title(self):
-        update_dock_tab_title(self._dock)
+    def refresh_tab_label(self):
+        update_dock_tab_label(self._dock)
 
 
 def _source_label(descriptor):
@@ -234,19 +231,17 @@ def _source_label(descriptor):
 def _restored_measurement_path(dock_instance):
     """The file of a spectrogram that shows an image it holds no raw channels
     for (restored from the Tab cache); None for any other."""
-    spectrogram = getattr(dock_instance, "spectrogram", None)
-    run_index = getattr(dock_instance, "run_index", None)
-    if spectrogram is None or spectrogram.model is None or run_index is None:
+    run_index = dock_instance.run_index
+    if dock_instance.spectrogram.model is None or run_index is None:
         return None
     return run_index.file_path
 
 
-def _update_spectrogram_tab_title(dock_instance):
+def _update_spectrogram_tab_label(dock_instance):
     """
     Keeps a spectrogram dock's tab label and tooltip in sync when a channel
     is replaced.
     """
-    vib_block = getattr(dock_instance, "vib_block", None)
-    if vib_block is None or dock_instance.parentWidget() is None:
+    if dock_instance.vib_block is None or dock_instance.parentWidget() is None:
         return
-    update_dock_tab_title(dock_instance)
+    update_dock_tab_label(dock_instance)

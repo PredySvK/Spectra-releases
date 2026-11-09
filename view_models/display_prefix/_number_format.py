@@ -145,10 +145,14 @@ class NumberFormat:
         values: Sequence[float],
         *,
         spacing: Optional[float] = None,
-        scale: float = 1.0,
-        axis_range: Optional[tuple[float, float]] = None,
+        axis_prefix: Optional[tuple[str, float]] = None,
     ) -> tuple[list[str], str]:
-        """(tick strings, label unit) for an axis; decimals never apply to ticks."""
+        """(tick strings, label unit) for an axis; decimals never apply to ticks.
+
+        ``axis_prefix`` is the (prefix, factor) the axis label already shows
+        (``resolve_axis_prefix``); the ticks take it as is, so label and ticks
+        never disagree (#1005). Without it the prefix follows ``values``.
+        """
         if self.prefix == "scientific":
             if spacing and spacing > 0:
                 non_zero = [abs(v) for v in values if abs(v) > _ZERO]
@@ -158,12 +162,11 @@ class NumberFormat:
                 places = 1
             return [f"{v:.{places}e}" for v in values], self.unit
 
-        if axis_range is not None:
-            max_value = max(abs(axis_range[0]), abs(axis_range[1])) * scale
+        if axis_prefix is not None:
+            prefix, factor = axis_prefix
         else:
-            non_zero = [abs(v) * scale for v in values if math.isfinite(v) and abs(v) > _ZERO]
-            max_value = max(non_zero) if non_zero else 0.0
-        prefix, factor = self.resolve_axis_prefix(max_value)
+            non_zero = [abs(v) for v in values if math.isfinite(v) and abs(v) > _ZERO]
+            prefix, factor = self.resolve_axis_prefix(max(non_zero) if non_zero else 0.0)
 
         scaled_spacing = spacing * factor if spacing is not None else None
         places = (max(0, math.ceil(-math.log10(scaled_spacing)))

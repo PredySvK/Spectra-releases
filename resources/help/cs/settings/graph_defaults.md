@@ -15,7 +15,7 @@ Otevřete okno **Settings** ozubeným kolem v titulkovém pruhu a vyberte strán
 
 **Výchozí:** Enable downsampling zapnuto, vybrané Automatic (matches monitor width), Manual factor 10 a Render screen only zapnuto. Ruční faktor se použije jen při volbě **Manual factor**.
 
-**Other curves opacity** nastavuje, jak viditelné zůstanou ostatní křivky, když je zapnutý [Highlight](topic:tools/cursor): 0 % je skryje, 100 % je neztlumí (výchozí 25 %). Je to stejná hodnota jako **Other curves opacity (Highlight)** v dialogu nastavení Cursoru; změna na jednom místě se projeví i na druhém.
+**Other curves opacity** nastavuje, jak viditelné zůstanou ostatní křivky, když je zapnutý [Highlight](topic:tools/cursor): 0 % je skryje, 100 % je neztlumí (výchozí 25 %). Je to stejná hodnota jako **Other curves opacity** v Cursor Settings a Track cursor Settings; změna na jednom místě se projeví i na druhém.
 
 ## Použití a zapamatování voleb
 

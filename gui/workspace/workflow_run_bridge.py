@@ -18,14 +18,12 @@ so it is a plain callback list instead.
 All internal documentation strings and variable labels are standardly written
 in English.
 """
-from typing import Callable, List, Mapping, Optional, Sequence, Tuple
+from typing import Callable, List, Optional, Sequence
 
-from core.measurement_selection import MeasurementSelection
-from core.jobs import CancelToken
-from core.workflow_graph import Workflow
 from orchestration.batch import (
-    BatchOutcome, plan_batch, run_batch, supersede_running_batch,
-    WorkflowChainPlan, WorkflowChainBatch, plan_chain_batches, run_chain_batches,
+    BatchOutcome, BatchRuns, CalculateAndSavePlan, UpcomingResultSet, WaitingBatchRun,
+    WorkflowChainPlan, WorkflowChainBatch, plan_chain_batches, plan_result_set_batches,
+    run_chain_batches,
 )
 
 
@@ -61,10 +59,12 @@ class WorkflowRunBridge:
         self.job_runner = job_runner
         # (label, was_anything_written)
         self.run_finished = _FinishedCallback()
-        self._chain_cancel = CancelToken()
+        self._waiting_listeners: List[Callable[[], None]] = []
+        self._batch_runs = BatchRuns(job_runner, on_message=self._log, on_finished=self._on_finished,
+                                     on_waiting_changed=self._on_waiting_changed)
 
     def build_chain_batches(self, chains: tuple[WorkflowChainPlan, ...]) -> tuple[WorkflowChainBatch, ...]:
-        """Read the pool snapshot and resolve all chains before the run dialog."""
+        """Plan every chain of a Workflow run in full against the pool snapshot."""
         context = self.app_context
         session = context.project_session
         return plan_chain_batches(
@@ -72,74 +72,75 @@ class WorkflowRunBridge:
             project_path=session.path, data_roots=session.project.data_roots,
         )
 
-    def start_chains(self, chains: tuple[WorkflowChainBatch, ...], *, overwrite_by_block=None) -> None:
-        """Hand sequential execution to orchestration using the existing job queue."""
-        self.supersede()
-        self._chain_cancel = CancelToken()
-        context = self.app_context
-        run_chain_batches(
-            chains, context.project_session, self.job_runner,
-            overwrite_by_block=overwrite_by_block,
-            compression=getattr(context, "result_cache_compression", None),
-            on_message=context.log, on_finished=self._on_finished,
-            cancel=self._chain_cancel,
-        )
-
-    def start_runs(self, runs: Sequence[Tuple[Workflow, MeasurementSelection, str, Optional[Mapping[str, str]]]],
-                   what: str = "Run workflow") -> None:
-        """
-        `start` for several runs at once -- one `(workflow, selection, label,
-        overwrite_by_block)` each, as Compute Result Set over several
-        Selections asks for. Each is planned and logged like `start`; the
-        runnable ones then run one after another, so a later one does not
-        supersede an earlier one. Every run reports `run_finished` once, a refused
-        one included: that is the contract of `run_chain_batches`.
-        """
+    def build_result_set_batches(self, plans: Sequence[CalculateAndSavePlan]) -> tuple[WorkflowChainBatch, ...]:
+        """Plan every runnable result set of a Compute Result Set in full, in the same shape."""
         context = self.app_context
         session = context.project_session
-        self.supersede()
-        self._chain_cancel = CancelToken()
-
-        batches = []
-        for workflow, selection, label, overwrite_by_block in runs:
-            plan = plan_batch(
-                workflow, selection,
-                sources=session.project.sources,
-                schema=context.pool.schema().master,
-                project_path=session.path,
-                data_roots=session.project.data_roots,
-                label=label, what=what, overwrite_by_block=overwrite_by_block,
-            )
-            for message in plan.messages:
-                context.log(message)
-            batches.append(WorkflowChainBatch(workflow, plan))
-
-        run_chain_batches(
-            tuple(batches), session, self.job_runner,
-            compression=getattr(context, "result_cache_compression", None),
-            on_message=context.log, on_finished=self._on_finished,
-            cancel=self._chain_cancel,
+        return plan_result_set_batches(
+            plans, sources=session.project.sources, schema=context.pool.schema().master,
+            project_path=session.path, data_roots=session.project.data_roots,
         )
 
-    def supersede(self) -> None:
-        """Stop the active batch and its not-yet-submitted chains."""
-        self._chain_cancel.cancel()
-        supersede_running_batch(self.job_runner)
+    @property
+    def busy(self) -> bool:
+        """Whether a Batch run computes or waits: a new one has to ask Wait / Interrupt."""
+        return self._batch_runs.busy
 
-    def start(self, workflow: Workflow, selection: MeasurementSelection,
-              label: str, overwrite_by_block: Optional[Mapping[str, str]] = None,
-              what: str = "Run workflow") -> None:
-        """
-        Plan the run, log what the plan has to say, and -- if it can happen at
-        all -- hand it to the job queue.
+    @property
+    def waiting(self) -> tuple[WaitingBatchRun, ...]:
+        """The waiting Batch runs, the next to start first -- the Jobs panel's waiting rows (#966)."""
+        return self._batch_runs.waiting
 
-        `overwrite_by_block` and `what` are `plan_batch`'s; see it for what they
-        decide.
+    @property
+    def upcoming_result_sets(self) -> tuple[UpcomingResultSet, ...]:
+        """The result sets the running and waiting Batch runs will write -- for the Overwrite question (#967)."""
+        return self._batch_runs.upcoming_result_sets
+
+    def cancel_waiting(self, key: int) -> bool:
+        """Drop one waiting Batch run; its runs report "not started", the others keep their place."""
+        return self._batch_runs.cancel_waiting(key)
+
+    def run_when_idle(self, name: str, action: Callable[[], None]) -> None:
+        """Run `action` once no Batch run computes or waits -- Wait on New / Open / Save As / close (#968)."""
+        self._batch_runs.run_when_idle(name, action)
+
+    def interrupt(self) -> None:
+        """Stop the running Batch run and drop the waiting ones -- Interrupt on New / Open / Save As / close (#968)."""
+        self._batch_runs.interrupt()
+
+    def connect_waiting_changed(self, listener: Callable[[], None]) -> None:
+        """`listener` hears every change of `waiting`."""
+        self._waiting_listeners.append(listener)
+
+    def start_chains(self, chains: tuple[WorkflowChainBatch, ...], *, wait: bool = False,
+                     on_started: Optional[Callable[[], None]] = None,
+                     on_finished: Optional[Callable[[str, bool], None]] = None) -> None:
         """
-        # The plan comes after superseding, not before: pressing Run ends the
-        # live batch even when this run turns out to be refused (that is what
-        # it always did).
-        self.start_runs(((workflow, selection, label, overwrite_by_block),), what=what)
+        Start a planned Batch run -- a series of runs, one after another. Every
+        run reports `run_finished` once, a refused one included
+        (`run_chain_batches`, §1.238).
+
+        `wait` puts it behind the Batch runs that compute or wait; otherwise it
+        interrupts them. A series with nothing runnable reports its runs and
+        leaves them all alone (§1.264, §1.266). `on_started` hears the moment
+        it is submitted -- now, or when its turn comes; `on_finished` hears
+        `(label, written)` for each of this series' own runs only, a dropped
+        one included.
+        """
+        context = self.app_context
+        self._batch_runs.start(
+            chains, context.project_session, wait=wait,
+            compression=getattr(context, "result_cache_compression", None), on_started=on_started,
+            on_finished=None if on_finished is None else (
+                lambda outcome: on_finished(outcome.label, outcome.written)),
+        )
+
+    def _log(self, message: str) -> None:
+        self.app_context.log(message)
+
+    def _on_waiting_changed(self) -> None:
+        for listener in list(self._waiting_listeners):
+            listener()
 
     def _on_finished(self, outcome: BatchOutcome) -> None:
         for message in outcome.messages:

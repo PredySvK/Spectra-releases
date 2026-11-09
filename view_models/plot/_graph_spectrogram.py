@@ -45,13 +45,14 @@ class GraphSpectrogram:
 
     def show_block(self, block: Any, settings: DisplaySettings = DisplaySettings()) -> None:
         """Show ``block`` instead of whatever was held, in ``settings`` (its
-        spectrum format, amplitude, dB and colour scale)."""
+        spectrum format, amplitude, dB, colour scale and global units)."""
         self._replace(build_spectrogram_model(
             block,
             color_scale=settings.color_scale,
             spectrum_format=settings.spectrum_format,
             amplitude_mode=settings.spectrum_amplitude_mode,
             decibel_scale=settings.decibel_scale,
+            prefs=settings.prefs,
         ))
 
     def rebuild_display(self, settings: DisplaySettings) -> None:

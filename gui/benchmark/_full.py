@@ -4,7 +4,6 @@ import dataclasses
 import os
 import contextlib
 import shutil
-import sys
 import tempfile
 import time
 import traceback
@@ -16,6 +15,7 @@ from core.jobs import JobState
 from core.block_kinds import KIND_ORDER_CUT, KIND_OVERALL_LEVEL, KIND_SPECTROGRAM, KIND_SPECTRUM
 from io_modules.benchmark import (read_benchmark_plan, read_machine_info, read_process_rss_mb,
                                   write_benchmark_report)
+from io_modules.hard_exit import exit_hard
 from io_modules.measurement_files import discard_reader_caches, open_measurement_reader
 from orchestration.benchmark import (build_benchmark_report, build_benchmark_run,
                                      plan_benchmark_cases, resolve_benchmark_channels, resolve_benchmark_config,
@@ -57,11 +57,8 @@ def run_full_benchmark(app, build_window, plan_path, out_dir, *, quick=False, ba
     except Exception:
         traceback.print_exc()
         code = 1
-    # Qt teardown of a window that never closed is not worth waiting on;
-    # without the flush the paths above would be lost.
-    sys.stdout.flush()
-    sys.stderr.flush()
-    os._exit(code)
+    # Qt teardown of a window that never closed is not worth waiting on.
+    exit_hard(code)
 
 
 def _run(app, build_window, plan, baseline, settings_folder):
@@ -114,8 +111,7 @@ def _run_case(app, ribbon, workspace, context, jobs, case, indexes, runs_per_cas
     if path not in indexes:
         # ponytail: a read hung inside the scan blocks the GUI thread; only a later wait sees the deadline
         reader = open_measurement_reader(path)
-        indexes[path] = reader.scan_file_structure()
-        reader.load_channels_on_demand(indexes[path])
+        indexes[path] = reader.read_run_index()
     run_index = indexes[path]
     tacho = find_tacho_channel(run_index)
     reason = resolve_benchmark_skip(case, tacho is not None)
@@ -186,17 +182,11 @@ def _failed_computes(workspace):
     """The messages of every compute the workspace reported as failed meanwhile.
     A live compute returns its failure instead of raising: its job ends DONE."""
     messages = []
-    report = workspace.report_computation_failure
-
-    def recorded(widget_tag, message, **kwargs):
-        messages.append(message)
-        report(widget_tag, message, **kwargs)
-
-    workspace.report_computation_failure = recorded
+    stop_watching = workspace.base_curve_compute.watch_failures(messages.append)
     try:
         yield messages
     finally:
-        del workspace.report_computation_failure
+        stop_watching()
 
 
 def _settle(app, jobs, deadline) -> bool:

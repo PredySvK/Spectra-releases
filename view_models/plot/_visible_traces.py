@@ -1,6 +1,7 @@
 """
-Which traces of a ``PlotModel`` are visible -- the mask, X-domain and
-third-secondary-axis decision a graph draws through (issue #70, ADR §1.50).
+Which traces of a ``PlotModel`` are visible -- the mask, X-domain, Format and
+third-secondary-axis decision a graph draws through (issue #70, ADR §1.50,
+§1.283).
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ class HiddenReason(enum.Enum):
     NONE = "none"
     MASK = "mask"          # the user's filter hid them
     X_DOMAIN = "x_domain"  # nothing survives the X projection
+    FORMAT = "format"      # a block has no view in the Format shown: Linear average is Linear only (§1.283)
     THIRD_AXIS = "third_axis"  # a third incompatible secondary unit, no ViewBox for it
 
 
@@ -58,6 +60,14 @@ def trace_fits_x_domain(trace: Trace, domain: str) -> bool:
     if not domain or not trace.x_quantity:
         return True
     return can_project(trace.x_quantity, domain, trace.compute_spec or {})
+
+
+def trace_has_format_view(trace: Trace) -> bool:
+    """Whether the block of ``trace`` has a view in the Format the trace is
+    shown in (``NVHDataBlock.can_show``); a trace without a block, or not
+    shown in a Format, always has."""
+    can_show = getattr(trace.block, "can_show", None)
+    return can_show is None or not trace.spectrum_format or can_show(trace.spectrum_format)
 
 
 def drop_third_axis_unit(traces: List[Trace]) -> Tuple[List[Trace], int, Optional[str]]:
@@ -90,18 +100,19 @@ class VisibleTraces:
     hidden_reason: HiddenReason = HiddenReason.NONE
     total: int = 0
     mask_passed: int = 0
+    format_dropped: int = 0
     third_axis_dropped: int = 0
     established_secondary_unit: Optional[str] = None
 
     def accepts(self, trace: Trace, mask: Mask, x_domain: str) -> AcceptOutcome:
         """Would this one newly appended ``trace`` survive, given what is
         already drawn? Same checks as ``resolve_visible_traces``, in the same
-        order (mask -> X domain -> third secondary unit). On ``DRAWN`` the
+        order (mask -> X domain -> Format -> third secondary unit). On ``DRAWN`` the
         trace is appended to ``draw`` and may claim the secondary axis, so a
         second overlay curve sees it."""
         if mask is not None and not mask(trace):
             return AcceptOutcome.HIDDEN_MASK if self.draw else AcceptOutcome.NEEDS_RENDER
-        if not trace_fits_x_domain(trace, x_domain):
+        if not trace_fits_x_domain(trace, x_domain) or not trace_has_format_view(trace):
             return AcceptOutcome.NEEDS_RENDER
         if trace.axis == "secondary" and self.established_secondary_unit is not None:
             if not check_units_compatibility(trace.unit, self.established_secondary_unit):
@@ -114,24 +125,34 @@ class VisibleTraces:
 
 
 def resolve_visible_traces(model: PlotModel, mask: Mask, x_domain: str) -> VisibleTraces:
-    """The full-pass visibility decision: mask -> X-domain fit -> drop a
-    third secondary unit, then classify why anything is missing.
+    """The full-pass visibility decision: mask -> X-domain fit -> a view in
+    the Format shown -> drop a third secondary unit, then classify why
+    anything is missing.
 
     ``mask`` hiding *some but not all* traces is not a hidden reason -- the
     curves that remain are shown and that is the normal filtered state. Only
-    an empty draw list, or a dropped third axis, gets reported. When the
-    draw list is empty and the mask hid *any* trace at all, that reads as
-    MASK (matching the pre-existing "Filter hid N of N" wording); otherwise
-    the X domain is the cause."""
+    an empty draw list, a curve without a view in the Format, or a dropped
+    third axis gets reported. When the draw list is empty and the mask hid
+    *any* trace at all, that reads as MASK (matching the pre-existing "Filter
+    hid N of N" wording); then the X domain, then the Format is the cause."""
     total = len(model.traces)
     passed = list(model.traces) if mask is None else [t for t in model.traces if mask(t)]
     mask_passed = len(passed)
 
     fitting = [t for t in passed if trace_fits_x_domain(t, x_domain)]
-    kept, dropped, established = drop_third_axis_unit(fitting)
+    shown = [t for t in fitting if trace_has_format_view(t)]
+    format_dropped = len(fitting) - len(shown)
+    kept, dropped, established = drop_third_axis_unit(shown)
 
     if total and not kept:
-        reason = HiddenReason.MASK if mask_passed < total else HiddenReason.X_DOMAIN
+        if mask_passed < total:
+            reason = HiddenReason.MASK
+        elif not fitting:
+            reason = HiddenReason.X_DOMAIN
+        else:
+            reason = HiddenReason.FORMAT
+    elif format_dropped:
+        reason = HiddenReason.FORMAT
     elif dropped:
         reason = HiddenReason.THIRD_AXIS
     else:
@@ -142,6 +163,7 @@ def resolve_visible_traces(model: PlotModel, mask: Mask, x_domain: str) -> Visib
         hidden_reason=reason,
         total=total,
         mask_passed=mask_passed,
+        format_dropped=format_dropped,
         third_axis_dropped=dropped,
         established_secondary_unit=established,
     )

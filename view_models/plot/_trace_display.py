@@ -10,10 +10,11 @@ of global-unit conversion, dB-last and primary/secondary axis routing.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Optional, Tuple
+from typing import Any, Mapping, Optional, Tuple
 
 import numpy as np
 
+from core.legend_config import LegendConfig
 from core.channel_types import (
     CHANNEL_TYPE_ACCELEROMETER, CHANNEL_TYPE_MICROPHONE, CHANNEL_TYPE_TACHO, CHANNEL_TYPE_VOLTAGE,
 )
@@ -22,7 +23,7 @@ from core.units import (
     check_units_compatibility,
     convert_numeric_array,
     convert_signal_to_global_unit,
-    format_order_unit,
+    resolve_db_reference,
     sanitize_unit_string,
 )
 
@@ -47,21 +48,6 @@ def y_axis_label(channel_type: str) -> str:
 def base_trace_index(model: PlotModel) -> int:
     """Index of the base curve in ``model``, falling back to 0 if none has is_base (#356)."""
     return next((i for i, t in enumerate(model.traces) if t.is_base), 0 if model.traces else -1)
-
-
-def linear_amplitude_display(values: np.ndarray, value_unit: str, amplitude_mode: str):
-    """
-    The shared RMS<->Peak display rule for an order cut or an Overall Level
-    block: Peak = sqrt(2) * RMS, unit suffixed via
-    ``format_order_unit``. RMS passes ``values``/``value_unit`` through
-    untouched -- the unit is whatever the block/trace already carries, not
-    forced into a canonical "unit RMS" spelling, so a caller comparing against
-    an un-suffixed stored unit (e.g. a legacy "g") does not see it change.
-    An Imported result takes the same rule: it is RMS once read.
-    """
-    if amplitude_mode == "peak":
-        return values * np.sqrt(2.0), format_order_unit(value_unit, "linear", amplitude_mode)
-    return values, value_unit
 
 
 def resolve_overlay_axis(
@@ -116,6 +102,7 @@ def build_trace_in_display_settings(
     *,
     db_squared: Optional[bool] = None,
     against: Optional[BaseCurve] = None,
+    legend_config: LegendConfig = LegendConfig(),
 ) -> Trace:
     """
     ``trace`` (its identity: names, channel type, block, pen, ...) with the
@@ -126,9 +113,10 @@ def build_trace_in_display_settings(
        otherwise a curve in a unit compatible with the base's shares the primary
        axis and is converted onto the base unit, anything else goes to the
        secondary axis (#355);
-    3. dB last, from the converted values (``db_squared`` not None: the 10*log10
-       formula for a squared format, else 20*log10; issue #354);
-    4. the legend for the resulting unit.
+    3. dB last, from the converted values against the dB reference of ``prefs``
+       (``db_squared`` not None: the 10*log10 formula for a squared format, else
+       20*log10; issues #354, #947);
+    4. the Curve name for the resulting unit, assembled by ``legend_config``.
 
     ``linear_y`` / ``linear_unit`` become ``y_raw`` / ``source_unit``.
     """
@@ -144,13 +132,23 @@ def build_trace_in_display_settings(
             render_y = convert_numeric_array(render_y, from_unit=unit, to_unit=against.unit)
             unit = against.unit
     if is_db:
-        render_y, unit = to_decibels(render_y, db_squared), "dB"
+        reference = resolve_db_reference(unit, trace.channel_type, prefs)
+        render_y, unit = to_decibels(render_y, db_squared, reference), "dB"
 
-    label = build_legend_text(trace.file_name, trace.channel_name, unit, trace.meta_ref, trace.block)
+    label = build_trace_legend(trace, unit, legend_config)
     return replace(
         trace, y=render_y, unit=unit, label=label, axis=axis, is_base=against is None,
         y_raw=linear_y, source_unit=linear_unit,
     )
+
+
+def build_trace_legend(trace: Trace, unit: str, legend_config: LegendConfig,
+                       curve_metadata: Optional[Mapping[str, Any]] = None) -> str:
+    """The Curve name of ``trace`` shown in ``unit``: what every caller of the
+    one legend rule (``build_legend_text``) hands it from a trace, with its
+    Curve metadata record when the graph has one."""
+    return build_legend_text(trace.file_name, trace.channel_name, unit, trace.meta_ref, trace.block,
+                             legend_config, curve_metadata)
 
 
 def resolve_ordinate_quantity(trace: Trace) -> str:

@@ -39,17 +39,18 @@ from core.curve_recipe import (
 from core.data_block import NVHDataBlock, Provenance, SpectralProcessing
 from core.dsp_configs import (
     SpectrumConfig, SpectrogramConfig, OrderTrackingConfig, OverallLevelConfig,
-    VALID_TRACKING_MODES, normalize_dsp_choice, resolve_tracking_sweep,
+    VALID_TRACKING_MODES, normalize_dsp_choice, resolve_tracking_sweep, resolve_tracking_sweep_fields,
 )
-from core.tacho_cleaning import TACHO_CLEANING_PARAMS
-from core.units import convert_numeric_array, format_spectral_unit, format_order_unit
+from core.tacho_cleaning import TachoCleaning
+from core.unit_label import build_unit_label
+from core.units import convert_numeric_array, format_order_unit
 from signal_processing.dsp.levels import compute_tracked_overall_level
 from signal_processing.dsp.spectrum import compute_averaged_spectrum
 from signal_processing.dsp.order_cut import (
     compute_tracked_order_cuts, compute_tracked_order_cuts_with_overall_level,
 )
 from signal_processing.dsp.tracking import (
-    TrackingPlan, build_tracking_plan, require_tracking_triggers,
+    TrackingPlan, build_tracking_plan, clean_rpm_profile, require_tracking_triggers,
 )
 from signal_processing.dsp.spectrogram import compute_tracked_spectrogram_with_window
 from signal_processing.dsp.dc_offset import remove_dc_offset
@@ -150,6 +151,7 @@ def _interpolate_tacho(vib_block: NVHDataBlock, tacho_block: NVHDataBlock, fs: f
     """
     Tacho interpolation: the speed at each sample instant of the channel, linear
     between the tacho's samples, so everything downstream sees one rpm per sample.
+    `tacho_rpm` is already through Tacho cleaning, so finite.
 
     The start is checked first, or the message would blame the rate. Past the
     tacho's last sample its value holds for one tacho step, the usual end of a
@@ -186,18 +188,10 @@ def _average_tacho(vib_times: np.ndarray, tacho_times: np.ndarray, tacho_rpm: np
     the frequencies next to a multiple of `fs`. Hence the difference of the running
     integral rather than a count of tacho samples: a count would miss that width at
     a fractional ratio, and at a ratio under 1.5 would not average at all. A window
-    is clipped at the ends of the tacho; past its end the last value holds. A window
-    touching a non-finite sample is NaN, left to Tacho cleaning like an interpolated
-    one; a running integral would otherwise carry it to the end of the record.
+    is clipped at the ends of the tacho; past its end the last value holds.
     """
-    steps = np.diff(tacho_times)
-    finite = np.isfinite(tacho_rpm)
-    broken = ~(finite[:-1] & finite[1:])
-    known_rpm = np.where(finite, tacho_rpm, 0.0)
-    areas = 0.5 * (known_rpm[1:] + known_rpm[:-1]) * steps
-    areas[broken] = 0.0
+    areas = 0.5 * (tacho_rpm[1:] + tacho_rpm[:-1]) * np.diff(tacho_times)
     integral = np.concatenate(([0.0], np.cumsum(areas)))
-    broken_time = np.concatenate(([0.0], np.cumsum(broken * steps)))
 
     window_start = np.clip(vib_times - 0.5 / fs, tacho_times[0], tacho_times[-1])
     window_end = np.clip(vib_times + 0.5 / fs, tacho_times[0], tacho_times[-1])
@@ -206,8 +200,6 @@ def _average_tacho(vib_times: np.ndarray, tacho_times: np.ndarray, tacho_rpm: np
     averaged = np.full(len(vib_times), float(tacho_rpm[-1]))
     averaged[inside] = (np.interp(window_end[inside], tacho_times, integral)
                         - np.interp(window_start[inside], tacho_times, integral)) / width[inside]
-    averaged[inside & (np.interp(window_end, tacho_times, broken_time)
-                       > np.interp(window_start, tacho_times, broken_time))] = np.nan
     return averaged
 
 
@@ -219,15 +211,33 @@ def _channel_grid(fs: float, n_samples: int, start_time: float) -> Tuple[float, 
     return float(fs), n_samples, start_time
 
 
+def _cleaned_tacho(scratch: Optional[MutableMapping[str, Any]], tacho_rpm: np.ndarray, tacho_fs: float,
+                   tacho_cleaning: TachoCleaning) -> np.ndarray:
+    """The tacho through Tacho cleaning on its own rate, once per bag and cleaning (read-only)."""
+    key = _TACHO_KEY + (tacho_cleaning,)
+    cleaned = scratch.get(key) if scratch is not None else None
+    if cleaned is None:
+        cleaned = clean_rpm_profile(tacho_rpm, tacho_fs, tacho_cleaning)
+        cleaned.setflags(write=False)
+        if scratch is not None:
+            scratch[key] = cleaned
+    return cleaned
+
+
 def resolve_and_convert_tacho(vib_block: NVHDataBlock, tacho_block: NVHDataBlock,
-                              scratch: Optional[MutableMapping[str, Any]] = None) -> tuple:
+                              scratch: Optional[MutableMapping[str, Any]] = None, *,
+                              tacho_cleaning: TachoCleaning) -> tuple:
     """
-    The vibration sampling frequency, and the tacho channel converted to rpm
-    with one value per sample of the channel. A tacho of the channel's rate
-    (within the tolerance) must share its grid and comes through unchanged,
-    bit for bit; one of another rate goes through Tacho interpolation, and with
-    a bag its read-only result is kept per grid (rate, sample count, start)
-    beside the native rpm, so channels alternating in one bag each keep theirs.
+    The vibration sampling frequency, and the speed the triggers are placed on:
+    the tacho converted to rpm, through Tacho cleaning with `tacho_cleaning` on
+    its own rate, then with one value per sample of the channel.
+    The order matters: the Hampel filter judges the samples as they were
+    recorded, before an interpolation spreads one bad sample over many. A tacho
+    of the channel's rate (within the tolerance) must share its grid and is
+    only cleaned; one of another rate goes through Tacho interpolation after
+    the cleaning. With a bag the cleaned tacho is kept once per cleaning, and
+    its interpolation per cleaning and grid (rate, sample count, start), so
+    channels alternating in one bag each keep theirs.
 
     This exact sequence -- resolve both fs, cross-check them, then convert
     tacho to rpm -- used to be written out independently at every call site
@@ -241,7 +251,7 @@ def resolve_and_convert_tacho(vib_block: NVHDataBlock, tacho_block: NVHDataBlock
     its time axis that made up most of the per-channel cost. The grid checks
     still run for every channel.
 
-    Returns (fs, tacho_rpm).
+    Returns (fs, speed_rpm), the speed read-only.
     """
     cached = scratch.get(_TACHO_KEY) if scratch is not None else None
     if cached is None:
@@ -259,16 +269,18 @@ def resolve_and_convert_tacho(vib_block: NVHDataBlock, tacho_block: NVHDataBlock
     else:
         fs = resolve_sampling_frequency(vib_block)
     if not _share_sampling_rate(fs, tacho_fs):
-        grid_key = _TACHO_KEY + _channel_grid(fs, len(vib_times), _resolve_start_time(vib_block))
+        grid_key = (_TACHO_KEY + (tacho_cleaning,)
+                    + _channel_grid(fs, len(vib_times), _resolve_start_time(vib_block)))
         interpolated = scratch.get(grid_key) if scratch is not None else None
         if interpolated is None:
-            interpolated = _interpolate_tacho(vib_block, tacho_block, fs, tacho_fs, tacho_rpm)
+            interpolated = _interpolate_tacho(vib_block, tacho_block, fs, tacho_fs,
+                                              _cleaned_tacho(scratch, tacho_rpm, tacho_fs, tacho_cleaning))
             interpolated.setflags(write=False)
             if scratch is not None:
                 scratch[grid_key] = interpolated
         return fs, interpolated
     require_matching_sample_grid(vib_block, tacho_block, fs)
-    return fs, tacho_rpm
+    return fs, _cleaned_tacho(scratch, tacho_rpm, tacho_fs, tacho_cleaning)
 
 
 def with_dc_removed(block: NVHDataBlock) -> NVHDataBlock:
@@ -312,25 +324,25 @@ def build_spectrum_block(source_block: NVHDataBlock, frequencies, amplitudes, *,
                          acf: float, ecf_linear: float, enbw_hz: Optional[float],
                          fft_size: Optional[int] = None,
                          averaging_type: Optional[str] = None,
-                         exponential_alpha: Optional[float] = None,
+                         exponential_parameter: Optional[float] = None,
                          curve_recipe: Optional[Mapping[str, Any]] = None) -> NVHDataBlock:
     """A computed single-sided canonical spectrum plus the settings it was computed with."""
     return NVHDataBlock.spectrum(
         name=f"1D Spectrum({source_block.name})",
         values=amplitudes, frequencies=frequencies,
-        value_unit=format_spectral_unit(source_block.value_unit, "canonical", "rms"),
+        value_unit=build_unit_label(source_block.value_unit, "canonical", "rms"),
         processing=SpectralProcessing(
             window_type=window_type, amplitude_mode="rms",
             spectrum_format="canonical", acf=acf, ecf_linear=ecf_linear,
             enbw_hz=enbw_hz, fft_size=fft_size, averaging_type=averaging_type,
-            exponential_alpha=exponential_alpha,
+            exponential_parameter=exponential_parameter,
         ),
         provenance=_provenance("compute_spectrum", source_block, curve_recipe),
         **source_block.inherited_context(),
     )
 
 
-def build_spectrogram_block(source_block: NVHDataBlock, frequencies, z_values, magnitude_matrix, *,
+def build_spectrogram_block(source_block: NVHDataBlock, frequencies, tracking_values, magnitude_matrix, *,
                             tracked_against_speed: bool, window_type: str,
                             fft_size: Optional[int] = None,
                             acf: float = 1.0, ecf_linear: float = 1.0,
@@ -338,15 +350,15 @@ def build_spectrogram_block(source_block: NVHDataBlock, frequencies, z_values, m
                             curve_recipe: Optional[Mapping[str, Any]] = None) -> NVHDataBlock:
     """
     A tracked waterfall in canonical bin energy: one spectrum column per rpm step or time slice, so
-    `magnitude_matrix` is (frequency, z) and the two axes describe it in that
+    `magnitude_matrix` is (frequency, tracking) and the two axes describe it in that
     order.
     """
     return NVHDataBlock.spectrogram(
         name=f"Waterfall({source_block.name})",
-        values=magnitude_matrix, frequencies=frequencies, z_values=z_values,
-        z_unit="RPM" if tracked_against_speed else "s",
-        z_quantity="rpm" if tracked_against_speed else "time",
-        value_unit=format_spectral_unit(source_block.value_unit, "canonical", "rms"),
+        values=magnitude_matrix, frequencies=frequencies, tracking_values=tracking_values,
+        tracking_unit="RPM" if tracked_against_speed else "s",
+        tracking_quantity="rpm" if tracked_against_speed else "time",
+        value_unit=build_unit_label(source_block.value_unit, "canonical", "rms"),
         processing=SpectralProcessing(
             window_type=window_type, amplitude_mode="rms",
             spectrum_format="canonical", fft_size=fft_size,
@@ -373,10 +385,10 @@ def require_uniform_rpm_axis(block: NVHDataBlock) -> None:
     dropped or averaged. A time axis is not checked -- its slices sit on whole
     samples and are even within one sample by construction.
     """
-    z_axis = block.axes[1]
-    if z_axis.quantity != "rpm" or len(z_axis.values) < 2:
+    tracking_axis = block.axes[1]
+    if tracking_axis.quantity != "rpm" or len(tracking_axis.values) < 2:
         return
-    steps = np.diff(np.asarray(z_axis.values, dtype=np.float64))
+    steps = np.diff(np.asarray(tracking_axis.values, dtype=np.float64))
     if steps[0] > 0 and np.allclose(steps, steps[0], rtol=1e-6, atol=0.0):
         return
     raise UnevenRpmAxisError(
@@ -512,7 +524,7 @@ def compute_spectrum(time_block: NVHDataBlock, config: SpectrumConfig) -> NVHDat
         time_data=values, fs=fs, fft_size=config.fft_size, overlap_pct=50.0,
         window_type=config.window_type,
         averaging_type=config.averaging_type,
-        exponential_alpha=config.exponential_alpha,
+        exponential_parameter=config.exponential_parameter,
     )
 
     block = _timed("result_blocks", build_spectrum_block,
@@ -520,7 +532,7 @@ def compute_spectrum(time_block: NVHDataBlock, config: SpectrumConfig) -> NVHDat
         window_type=config.window_type,
         acf=meta["acf"], ecf_linear=meta["ecf_linear"], enbw_hz=meta["enbw_hz"],
         fft_size=config.fft_size, averaging_type=config.averaging_type,
-        exponential_alpha=config.exponential_alpha,
+        exponential_parameter=config.exponential_parameter,
         curve_recipe=build_curve_recipe(KIND_SPECTRUM, asdict(config)),
     )
     loss = {}
@@ -647,7 +659,7 @@ class TrackingScratch:
     def _resolve(self, tacho_block, config):
         """The bag for this tacho and sweep, the lock its plans are built under, and their grids."""
         sweep = resolve_tracking_sweep(config)
-        identity = (sweep.step, sweep.direction, sweep.tacho_cleaning) + sweep.bounds
+        identity = (sweep,)
         if tacho_block is not None:
             identity += (tacho_block.value_unit, tacho_block.acquisition.dt, len(tacho_block.values))
         with self._lock:
@@ -713,7 +725,8 @@ def compute_order_cuts(vib_block: NVHDataBlock, tacho_block: NVHDataBlock,
     its Nyquist) leaves the orders alone and both blocks out
     (`build_overall_level_missing_line`).
     """
-    fs, tacho_rpm = _timed("tacho_to_rpm", resolve_and_convert_tacho, vib_block, tacho_block, scratch)
+    fs, tacho_rpm = _timed("tacho_to_rpm", resolve_and_convert_tacho, vib_block, tacho_block, scratch,
+                               tacho_cleaning=resolve_tracking_sweep(config).tacho_cleaning)
 
     values = vib_block.values
     if config.remove_dc:
@@ -768,10 +781,7 @@ def _order_tracking_overall_level_config(config: OrderTrackingConfig) -> Overall
     and Tacho cleaning."""
     return OverallLevelConfig(
         fft_size=config.fft_size, window_type=config.window_type, tracking_mode="rpm",
-        step=config.step, direction=config.direction,
-        rpm_min=config.rpm_min, rpm_max=config.rpm_max,
-        remove_dc=config.remove_dc,
-        **{name: getattr(config, name) for name in TACHO_CLEANING_PARAMS},
+        remove_dc=config.remove_dc, **resolve_tracking_sweep_fields(config),
     )
 
 
@@ -851,12 +861,13 @@ def compute_spectrogram(vib_block: NVHDataBlock, tacho_block: Optional[NVHDataBl
         fs = resolve_sampling_frequency(vib_block)
         tacho_rpm = None
     else:
-        fs, tacho_rpm = _timed("tacho_to_rpm", resolve_and_convert_tacho, vib_block, tacho_block, scratch)
+        fs, tacho_rpm = _timed("tacho_to_rpm", resolve_and_convert_tacho, vib_block, tacho_block, scratch,
+                               tacho_cleaning=resolve_tracking_sweep(config).tacho_cleaning)
 
     plan = _tracking_plan_for(scratch, config, tacho_rpm, len(values), fs, vib_block)
     loss = _resolve_tracked_loss(values, plan, config.fft_size)
 
-    frequencies, z_values, magnitude_matrix, window = compute_tracked_spectrogram_with_window(
+    frequencies, tracking_values, magnitude_matrix, window = compute_tracked_spectrogram_with_window(
         vib_data=values, fs=fs, fft_size=config.fft_size,
         window_type=config.window_type, plan=plan,
     )
@@ -865,7 +876,7 @@ def compute_spectrogram(vib_block: NVHDataBlock, tacho_block: Optional[NVHDataBl
     enbw_hz = window.enbw_factor * (fs / config.fft_size)
 
     block = _timed("result_blocks", build_spectrogram_block,
-        vib_block, frequencies, z_values, magnitude_matrix,
+        vib_block, frequencies, tracking_values, magnitude_matrix,
         tracked_against_speed=not against_time, window_type=config.window_type,
         fft_size=config.fft_size, acf=acf, ecf_linear=ecf_linear, enbw_hz=enbw_hz,
         curve_recipe=build_curve_recipe(KIND_SPECTROGRAM, asdict(config)),
@@ -926,7 +937,8 @@ def compute_overall_level(vib_block: NVHDataBlock, tacho_block: Optional[NVHData
         fs = resolve_sampling_frequency(vib_block)
         tacho_rpm = None
     else:
-        fs, tacho_rpm = _timed("tacho_to_rpm", resolve_and_convert_tacho, vib_block, tacho_block, scratch)
+        fs, tacho_rpm = _timed("tacho_to_rpm", resolve_and_convert_tacho, vib_block, tacho_block, scratch,
+                               tacho_cleaning=resolve_tracking_sweep(config).tacho_cleaning)
 
     band = _effective_overall_level_band(config, fs)
 

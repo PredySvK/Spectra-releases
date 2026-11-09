@@ -13,6 +13,7 @@ from core.units import strip_channel_name_prefix
 from view_models.analysis_kinds import resolve_analysis_kind
 
 MAX_TAB_LABEL_LENGTH: int = 25
+COMPUTE_FAILED_TOOLTIP: str = "Computation failed - change the settings and Refresh"
 
 
 @dataclass(frozen=True)
@@ -87,14 +88,17 @@ def build_tab_label(
     sources: Sequence[Union[TabSource, Mapping[str, Any]]] = (),
     *,
     dead_link: Optional[Any] = None,
+    compute_failed: bool = False,
     custom_label: Optional[str] = None,
     max_label_length: int = MAX_TAB_LABEL_LENGTH,
 ) -> TabLabel:
     """
     Builds the display label, tooltip and full source name for a workspace graph tab.
 
-    - Dead link: ⚠ <channel> with 'Missing' and reason in tooltip.
+    - Dead link: ⚠ Missing: <channel>, with the reason in the tooltip.
+    - Failed compute: ⚠ Failed: <automatic label>, said in the tooltip too.
     - Custom label: overrides the automatic label; tooltip retains source details.
+      On a Dead link or a failed compute it reads ⚠ <custom label>.
     - Single source: <icon> <channel> (no ×N).
     - Comparison (N > 1):
         - common channel -> <icon> <channel> ×N
@@ -102,15 +106,19 @@ def build_tab_label(
         - otherwise -> <icon> Compare ×N
     - Label width is capped at max_label_length (~25 chars) with an ellipsis.
     """
+    trimmed_custom = custom_label.strip() if custom_label else ""
+
     # 1. Missing file / Dead link
     if dead_link is not None:
         raw_channel = getattr(dead_link, "channel_name", "") or str(dead_link)
         clean_channel = strip_channel_name_prefix(raw_channel) if raw_channel else "Missing"
         reason = getattr(dead_link, "reason", "")
         reason_text = f" ({reason})" if reason else ""
-        raw_label = f"⚠ {clean_channel}"
-        tooltip = f"Missing: {clean_channel}{reason_text}"
         full_source = f"Missing: {clean_channel}"
+        raw_label = f"⚠ {trimmed_custom}" if trimmed_custom else f"⚠ {full_source}"
+        tooltip = f"{full_source}{reason_text}"
+        if trimmed_custom:
+            tooltip = f"{trimmed_custom}\n{tooltip}"
         return TabLabel(
             label=_elide(raw_label, max_label_length),
             tooltip=tooltip,
@@ -126,7 +134,10 @@ def build_tab_label(
         icon = ""
         display_name = analysis_kind
 
-    prefix = f"{icon} " if icon else ""
+    if compute_failed:
+        prefix = "⚠ Failed: "
+    else:
+        prefix = f"{icon} " if icon else ""
 
     # 2. Deduplicated sources
     deduped = _deduplicate_sources(sources)
@@ -147,12 +158,11 @@ def build_tab_label(
     full_source_text = ", ".join(source_lines) if source_lines else display_name
 
     # 3. Custom label
-    if custom_label is not None and custom_label.strip():
-        trimmed_custom = custom_label.strip()
+    if trimmed_custom:
         tooltip = f"{trimmed_custom}\n{sources_summary}" if sources_summary else trimmed_custom
         return TabLabel(
-            label=_elide(trimmed_custom, max_label_length),
-            tooltip=tooltip,
+            label=_elide(f"⚠ {trimmed_custom}" if compute_failed else trimmed_custom, max_label_length),
+            tooltip=f"{COMPUTE_FAILED_TOOLTIP}\n{tooltip}" if compute_failed else tooltip,
             full_source_name=trimmed_custom,
         )
 
@@ -183,6 +193,6 @@ def build_tab_label(
 
     return TabLabel(
         label=_elide(raw_label, max_label_length),
-        tooltip=tooltip,
+        tooltip=f"{COMPUTE_FAILED_TOOLTIP}\n{tooltip}" if compute_failed else tooltip,
         full_source_name=full_source_text,
     )

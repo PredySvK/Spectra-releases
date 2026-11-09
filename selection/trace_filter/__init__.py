@@ -8,7 +8,7 @@ Architecture:
 - OfferedFacets & trace_matches implement the §1.29 gating rules.
 - Filter card configuration, defaults, and cardinalities (_filter_card.py).
 - Panel facets resolution (ResolvedFacets) and render plan (PanelRender).
-- The selection read as a Data Pool query (PoolQuery, _pool_query.py).
+- The selection read as a Data Pool Column rule (resolve_pool_query, _pool_query.py).
 - Every edit to one FilterSelection -- a value checked, a range bound moved,
   checks taken over (_selection_edit.py, ADR §1.172).
 
@@ -62,7 +62,6 @@ from ._panel_facets import (
     resolve_panel_render,
 )
 from ._pool_query import (
-    PoolQuery,
     resolve_pool_query,
 )
 from ._selection_edit import (
@@ -115,8 +114,7 @@ __all__ = [
     "ResolvedFacets",
     "resolve_panel_facets",
     "resolve_panel_render",
-    # Data Pool query
-    "PoolQuery",
+    # Data Pool Column rule
     "resolve_pool_query",
     # Edits to one Filter selection
     "resolve_value_checked",

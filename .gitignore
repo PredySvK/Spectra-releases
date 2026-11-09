@@ -52,3 +52,4 @@ dist/
 
 # Local MCP config (PyCharm port is machine-specific)
 .mcp.json
+docs/perf/probes/*.npz

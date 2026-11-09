@@ -50,6 +50,7 @@ from selection.trace_filter import (
 )
 from session.trace_filter import build_filter_state_snapshot, read_filter_state_snapshot
 from gui.workspace.graph_dock import GraphDock
+from gui.workspace.workspace_dock import WorkspaceDock
 from view_models.trace_filter import identity_for_trace
 from selection.source_facets import all_pool_sources
 
@@ -64,8 +65,7 @@ def _identities_for(traces, session) -> list:
 def _curves_traces(widget) -> list:
     """The traces held on `widget.curves` (ticket #277) -- [] for a widget with
     no `curves` (not a GraphDock) or one whose model has not landed yet."""
-    curves = getattr(widget, "curves", None)
-    model = curves.model if curves is not None else None
+    model = widget.curves.model if isinstance(widget, GraphDock) else None
     return list(model.traces) if model is not None else []
 
 
@@ -358,7 +358,7 @@ class FilterRoutingHandler:
         panel = self.filter_panel
         if panel is None:
             return
-        panel.set_current_dock_id(getattr(dock, "dock_id", None))
+        panel.set_current_dock_id(dock.dock_id if isinstance(dock, WorkspaceDock) else None)
 
         explorer = self.explorer_panel
         result_pool = getattr(explorer, "result_pool_panel", None) if explorer is not None else None

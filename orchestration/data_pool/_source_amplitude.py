@@ -10,14 +10,8 @@ decides the questions; showing them is the shell's business (gui/).
 from dataclasses import dataclass
 from typing import Callable, Dict, Mapping, Optional, Tuple
 
-from io_modules.measurement_files import resolve_default_source_amplitude
-
-# How the user knows each reader: the Pairing tab's words, not class names.
-_READER_LABELS = {
-    "AccReaderMasta": "MASTA",
-    "AccReaderProcessedMeasurement": "Processed measurement",
-    "AccReaderAnsys": "ANSYS",
-}
+from core.source_amplitude import SOURCE_AMPLITUDE_RMS
+from io_modules.measurement_files import resolve_named_reader_description
 
 
 @dataclass(frozen=True)
@@ -37,13 +31,19 @@ SourceAmplitudeAsker = Callable[[Tuple[SourceAmplitudeQuestion, ...]], Optional[
 def plan_source_amplitude_questions(imported_files: Mapping[str, Tuple[str, ...]]
                                     ) -> Tuple[SourceAmplitudeQuestion, ...]:
     """One question for each reader that has files, in a stable (label) order."""
-    questions = [
-        SourceAmplitudeQuestion(
-            reader=reader, label=_READER_LABELS.get(reader, reader),
-            default=resolve_default_source_amplitude(reader), file_count=len(paths))
-        for reader, paths in imported_files.items() if paths
-    ]
+    questions = [_build_question(reader, len(paths)) for reader, paths in imported_files.items() if paths]
     return tuple(sorted(questions, key=lambda question: question.label))
+
+
+def _build_question(reader: str, file_count: int) -> SourceAmplitudeQuestion:
+    """The question for one reader, worded as the user knows it (the Pairing tab's words, not class names)."""
+    description = resolve_named_reader_description(reader)
+    if description is None:
+        return SourceAmplitudeQuestion(reader=reader, label=reader, default=SOURCE_AMPLITUDE_RMS,
+                                       file_count=file_count)
+    return SourceAmplitudeQuestion(reader=reader, label=description.label or reader,
+                                   default=description.default_source_amplitude or SOURCE_AMPLITUDE_RMS,
+                                   file_count=file_count)
 
 
 def resolve_file_amplitudes(imported_files: Mapping[str, Tuple[str, ...]],

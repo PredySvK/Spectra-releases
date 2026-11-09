@@ -3,7 +3,10 @@
 from html import escape
 from typing import Any, Callable
 
+import math
+
 from PySide6.QtCore import QSettings, Qt, Slot
+from PySide6.QtGui import QDoubleValidator
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -29,17 +32,19 @@ from io_modules.changelog import read_changelog
 from view_models.display_prefix import (
     resolve_display_prefix_for_unit_change,
     resolve_display_prefix_setting_choices,
-    resolve_units_preview,
 )
 from view_models.settings import (
     SETTINGS_IMMEDIATE_KEYS,
     SETTINGS_PAGES,
     SettingsDraft,
     SettingsField,
+    SettingsPage,
+    UnitsRow,
     build_about_lines,
     build_settings_breadcrumb,
     build_settings_search_results,
     resolve_settings_page,
+    resolve_units_row_preview,
 )
 from gui.appearance import APP_TOKENS
 
@@ -49,6 +54,11 @@ _PAGE_ROLE = Qt.ItemDataRole.UserRole
 _PREVIEW_WIDTH = 130
 _NUMBER_DECIMALS = 1
 _NUMBER_MAXIMUM = 1e9
+
+
+def _format_db_reference(value: float) -> str:
+    """``1e-06``, ``2e-05``, ``1``: short, and read back by float() unchanged."""
+    return f"{float(value):.12g}"
 
 
 def _build_highlighted_text(parts: tuple[tuple[str, bool], ...]) -> str:
@@ -91,8 +101,7 @@ class SettingsWindow(QDialog):
         self.editors: dict[str, QWidget] = {}
         self._labels: dict[str, QWidget] = {}
         self._match_labels: dict[str, QLabel] = {}
-        # (preview label, Units row, unit key or fixed unit, prefix key, decimals key)
-        self._unit_previews: list[tuple[QLabel, str, str, str, str]] = []
+        self._unit_previews: list[tuple[QLabel, UnitsRow]] = []
         self._page_items: dict[str, QTreeWidgetItem] = {}
         self._page_index: dict[str, int] = {}
         self._search_results = {result.page_id: result for result in build_settings_search_results("")}
@@ -121,7 +130,7 @@ class SettingsWindow(QDialog):
             item = QTreeWidgetItem(parent_item, [page.path[-1]])
             item.setData(0, _PAGE_ROLE, page.page_id)
             self._page_items[page.page_id] = item
-            self._page_index[page.page_id] = self.pages.addWidget(self._build_page(page.page_id, page.fields))
+            self._page_index[page.page_id] = self.pages.addWidget(self._build_page(page))
         self.tree.expandAll()
         self._section_items = sections
         self.tree.currentItemChanged.connect(self._on_tree_changed)
@@ -209,209 +218,23 @@ class SettingsWindow(QDialog):
 
     # ---- building ----------------------------------------------------------
 
-    def _build_page(self, page_id: str, fields: tuple[SettingsField, ...]) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
+    def _build_page(self, page: SettingsPage) -> QWidget:
+        page_id, fields, rows = page.page_id, page.fields, page.rows
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 8, 0, 0)
 
-        if page_id == "units":
-            unit_fields = {f.key: f for f in fields}
-            domain_triplets = [
-                ("Acceleration", "global_unit_acceleration", "prefix_acceleration", "decimals_acceleration"),
-                ("Pressure", "global_unit_pressure", "prefix_pressure", "decimals_pressure"),
-                ("Voltage", "global_unit_voltage", "prefix_voltage", "decimals_voltage"),
-                ("Speed", "global_unit_speed", "prefix_speed", "decimals_speed"),
-            ]
-            heading = QLabel("Application")
+        group = ""
+        if rows:
+            group = "Application"
+            heading = QLabel(group)
             heading.setStyleSheet("font-weight: bold; margin-top: 8px;")
             layout.addWidget(heading)
-
-            header_row = QHBoxLayout()
-            quantity_header = QLabel("Quantity")
-            quantity_header.setFixedWidth(110)
-            quantity_header.setStyleSheet("font-weight: bold;")
-            header_row.addWidget(quantity_header)
-            preview_header = QLabel("Preview")
-            preview_header.setFixedWidth(_PREVIEW_WIDTH)
-            preview_header.setStyleSheet("font-weight: bold;")
-            header_row.addWidget(preview_header)
-            for column_title in ("Unit", "Prefix", "Decimals"):
-                column_header = QLabel(column_title)
-                column_header.setStyleSheet("font-weight: bold;")
-                header_row.addWidget(column_header, 1)
-            layout.addLayout(header_row)
-
-            for row_label, unit_key, prefix_key, decimals_key in domain_triplets:
-                unit_f = unit_fields[unit_key]
-                prefix_f = unit_fields[prefix_key]
-                decimals_f = unit_fields[decimals_key]
-
-                row = QHBoxLayout()
-                label = QLabel(row_label)
-                label.setFixedWidth(110)
-
-                u_editor = QComboBox()
-                for text, val in unit_f.choices:
-                    u_editor.addItem(text, val)
-                u_editor.currentIndexChanged.connect(
-                    lambda _i, key=unit_key, box=u_editor: self._on_edited(key, box.currentData()))
-                u_editor.setObjectName(f"Settings_{unit_key}")
-
-                p_editor = QComboBox()
-                for text, val in prefix_f.choices:
-                    p_editor.addItem(text, val)
-                p_editor.currentIndexChanged.connect(
-                    lambda _i, key=prefix_key, box=p_editor: self._on_edited(key, box.currentData()))
-                p_editor.setObjectName(f"Settings_{prefix_key}")
-
-                d_editor = QComboBox()
-                for text, val in decimals_f.choices:
-                    d_editor.addItem(text, val)
-                d_editor.currentIndexChanged.connect(
-                    lambda _i, key=decimals_key, box=d_editor: self._on_edited(key, box.currentData()))
-                d_editor.setObjectName(f"Settings_{decimals_key}")
-
-                preview = QLabel()
-                preview.setFixedWidth(_PREVIEW_WIDTH)
-                preview.setObjectName(f"Settings_preview_{unit_key}")
-                self._unit_previews.append((preview, row_label.lower(), unit_key, prefix_key, decimals_key))
-
-                row.addWidget(label)
-                row.addWidget(preview)
-                row.addWidget(u_editor, 1)
-                row.addWidget(p_editor, 1)
-                row.addWidget(d_editor, 1)
-                layout.addLayout(row)
-
-                self.editors[unit_key] = u_editor
-                self.editors[prefix_key] = p_editor
-                self.editors[decimals_key] = d_editor
-                self._labels[unit_key] = label
-                self._labels[prefix_key] = label
-                self._labels[decimals_key] = label
-
-                match_u = QLabel()
-                match_u.setTextFormat(Qt.TextFormat.RichText)
-                match_u.setWordWrap(True)
-                match_u.hide()
-                layout.addWidget(match_u)
-                self._match_labels[unit_key] = match_u
-
-                match_p = QLabel()
-                match_p.setTextFormat(Qt.TextFormat.RichText)
-                match_p.setWordWrap(True)
-                match_p.hide()
-                layout.addWidget(match_p)
-                self._match_labels[prefix_key] = match_p
-
-                match_d = QLabel()
-                match_d.setTextFormat(Qt.TextFormat.RichText)
-                match_d.setWordWrap(True)
-                match_d.hide()
-                layout.addWidget(match_d)
-                self._match_labels[decimals_key] = match_d
-
-            prefix_decimals_rows = [
-                ("Frequency", "prefix_frequency", "decimals_frequency"),
-                ("Time", "prefix_time", "decimals_time"),
-            ]
-            for row_label, prefix_key, decimals_key in prefix_decimals_rows:
-                prefix_f = unit_fields[prefix_key]
-                decimals_f = unit_fields[decimals_key]
-
-                row = QHBoxLayout()
-                label = QLabel(row_label)
-                label.setFixedWidth(110)
-
-                placeholder = QWidget()
-
-                p_editor = QComboBox()
-                for text, val in prefix_f.choices:
-                    p_editor.addItem(text, val)
-                p_editor.currentIndexChanged.connect(
-                    lambda _i, key=prefix_key, box=p_editor: self._on_edited(key, box.currentData()))
-                p_editor.setObjectName(f"Settings_{prefix_key}")
-
-                d_editor = QComboBox()
-                for text, val in decimals_f.choices:
-                    d_editor.addItem(text, val)
-                d_editor.currentIndexChanged.connect(
-                    lambda _i, key=decimals_key, box=d_editor: self._on_edited(key, box.currentData()))
-                d_editor.setObjectName(f"Settings_{decimals_key}")
-
-                preview = QLabel()
-                preview.setFixedWidth(_PREVIEW_WIDTH)
-                preview.setObjectName(f"Settings_preview_{prefix_key}")
-                self._unit_previews.append(
-                    (preview, row_label.lower(), "Hz" if row_label == "Frequency" else "s", prefix_key, decimals_key))
-
-                row.addWidget(label)
-                row.addWidget(preview)
-                row.addWidget(placeholder, 1)
-                row.addWidget(p_editor, 1)
-                row.addWidget(d_editor, 1)
-                layout.addLayout(row)
-
-                self.editors[prefix_key] = p_editor
-                self.editors[decimals_key] = d_editor
-                self._labels[prefix_key] = label
-                self._labels[decimals_key] = label
-
-                match_p = QLabel()
-                match_p.setTextFormat(Qt.TextFormat.RichText)
-                match_p.setWordWrap(True)
-                match_p.hide()
-                layout.addWidget(match_p)
-                self._match_labels[prefix_key] = match_p
-
-                match_d = QLabel()
-                match_d.setTextFormat(Qt.TextFormat.RichText)
-                match_d.setWordWrap(True)
-                match_d.hide()
-                layout.addWidget(match_d)
-                self._match_labels[decimals_key] = match_d
-
-            handled_keys = {
-                k for triplet in domain_triplets for k in (triplet[1], triplet[2], triplet[3])
-            } | {
-                k for pair in prefix_decimals_rows for k in (pair[1], pair[2])
-            }
-            remaining = [f for f in fields if f.key not in handled_keys]
-            group = "Application"
-            for field in remaining:
-                if field.group != group:
-                    group = field.group
-                    heading = QLabel(group)
-                    heading.setStyleSheet("font-weight: bold; margin-top: 8px;")
-                    layout.addWidget(heading)
-                if field.kind == "choice":
-                    label = QLabel(field.label)
-                    editor = QComboBox()
-                    for text, value in field.choices:
-                        editor.addItem(text, value)
-                    editor.currentIndexChanged.connect(
-                        lambda _i, key=field.key, box=editor: self._on_edited(key, box.currentData()))
-                    layout.addWidget(label)
-                editor.setObjectName(f"Settings_{field.key}")
-                editor.setToolTip(field.description)
-                layout.addWidget(editor)
-                match_label = QLabel()
-                match_label.setTextFormat(Qt.TextFormat.RichText)
-                match_label.setWordWrap(True)
-                match_label.hide()
-                layout.addWidget(match_label)
-                self._match_labels[field.key] = match_label
-                if field.note:
-                    note = QLabel(field.note)
-                    note.setEnabled(False)
-                    layout.addWidget(note)
-                self.editors[field.key] = editor
-                self._labels[field.key] = label
-            layout.addStretch()
-            return page
-
-        group = ""
+            self._build_units_rows(layout, rows, {f.key: f for f in fields})
+        handled_keys = {key for row in rows for key in row.keys}
         for field in fields:
+            if field.key in handled_keys:
+                continue
             if field.group != group:
                 group = field.group
                 heading = QLabel(group)
@@ -432,12 +255,13 @@ class SettingsWindow(QDialog):
                 editor.setSuffix(field.suffix)
                 editor.valueChanged.connect(lambda value, key=field.key: self._on_edited(key, value))
                 layout.addWidget(label)
-            elif field.kind == "number":
+            elif field.kind in ("number", "positive"):
                 label = QLabel(field.label)
                 editor = QDoubleSpinBox()
                 editor.setDecimals(_NUMBER_DECIMALS)
-                # Non-negative with no upper limit of its own; a spin box needs one.
-                editor.setRange(0.0, _NUMBER_MAXIMUM)
+                # No upper limit of its own; a spin box needs one. A positive
+                # number starts at the smallest step the box can show, so 0 cannot be typed.
+                editor.setRange(0.0 if field.kind == "number" else 10.0 ** -_NUMBER_DECIMALS, _NUMBER_MAXIMUM)
                 editor.setSuffix(field.suffix)
                 editor.valueChanged.connect(lambda value, key=field.key: self._on_edited(key, value))
                 layout.addWidget(label)
@@ -492,9 +316,97 @@ class SettingsWindow(QDialog):
                 + "\n".join(f"• {change.text}" for change in entry.changes)
                 for entry in read_changelog()) or "No changelog available.")
             layout.addWidget(self.changelog, 1)
-            return page
+            return widget
         layout.addStretch()
-        return page
+        return widget
+
+    def _build_units_rows(
+        self, layout: QVBoxLayout, rows: tuple[UnitsRow, ...], fields: dict[str, SettingsField],
+    ) -> None:
+        """Header, then per row: label, preview, unit, prefix, decimals, dB reference editors."""
+        header_row = QHBoxLayout()
+        quantity_header = QLabel("Quantity")
+        quantity_header.setFixedWidth(110)
+        quantity_header.setStyleSheet("font-weight: bold;")
+        header_row.addWidget(quantity_header)
+        preview_header = QLabel("Preview")
+        preview_header.setFixedWidth(_PREVIEW_WIDTH)
+        preview_header.setStyleSheet("font-weight: bold;")
+        header_row.addWidget(preview_header)
+        for column_title in ("Unit", "Prefix", "Decimals", "dB reference"):
+            column_header = QLabel(column_title)
+            column_header.setStyleSheet("font-weight: bold;")
+            header_row.addWidget(column_header, 1)
+        layout.addLayout(header_row)
+
+        for units_row in rows:
+            row = QHBoxLayout()
+            label = QLabel(units_row.label)
+            label.setFixedWidth(110)
+            preview = QLabel()
+            preview.setFixedWidth(_PREVIEW_WIDTH)
+            preview.setObjectName(f"Settings_preview_{units_row.unit_key or units_row.prefix_key}")
+            self._unit_previews.append((preview, units_row))
+            row.addWidget(label)
+            row.addWidget(preview)
+            for key in (units_row.unit_key, units_row.prefix_key, units_row.decimals_key):
+                if key is None:
+                    row.addWidget(QWidget(), 1)  # empty cell keeps the columns aligned
+                    continue
+                editor = QComboBox()
+                for text, val in fields[key].choices:
+                    editor.addItem(text, val)
+                editor.currentIndexChanged.connect(
+                    lambda _i, key=key, box=editor: self._on_edited(key, box.currentData()))
+                editor.setObjectName(f"Settings_{key}")
+                row.addWidget(editor, 1)
+                self.editors[key] = editor
+            reference_cell = QWidget()
+            if units_row.reference_key:
+                self.editors[units_row.reference_key] = self._build_db_reference_editor(
+                    fields[units_row.reference_key], reference_cell)
+            row.addWidget(reference_cell, 1)
+            layout.addLayout(row)
+            for key in units_row.keys:
+                self._labels[key] = label
+            for key in units_row.keys:
+                match_label = QLabel()
+                match_label.setTextFormat(Qt.TextFormat.RichText)
+                match_label.setWordWrap(True)
+                match_label.hide()
+                layout.addWidget(match_label)
+                self._match_labels[key] = match_label
+
+    def _build_db_reference_editor(self, field: SettingsField, cell: QWidget) -> QLineEdit:
+        """A positive number typed in any notation (``1e-6``), its fixed unit beside it."""
+        cell_layout = QHBoxLayout(cell)
+        cell_layout.setContentsMargins(0, 0, 0, 0)
+        editor = QLineEdit()
+        validator = QDoubleValidator(editor)
+        validator.setNotation(QDoubleValidator.Notation.ScientificNotation)
+        validator.setBottom(0.0)
+        editor.setValidator(validator)
+        editor.setObjectName(f"Settings_{field.key}")
+        editor.setToolTip(field.description)
+        editor.editingFinished.connect(lambda key=field.key, box=editor: self._on_reference_edited(key, box))
+        cell_layout.addWidget(editor, 1)
+        cell_layout.addWidget(QLabel(field.suffix))
+        return editor
+
+    def _on_reference_edited(self, key: str, editor: QLineEdit) -> None:
+        """Take a valid positive number; anything else puts the draft value back.
+        Leaving the field without typing changes nothing."""
+        if not editor.isModified():
+            return
+        editor.setModified(False)
+        try:
+            value = float(editor.text())
+        except ValueError:
+            value = math.nan
+        if math.isfinite(value) and value > 0:
+            self._on_edited(key, value)
+        else:
+            editor.setText(_format_db_reference(self._draft.value(key)))
 
     def _ask_apply_changes(self) -> QMessageBox.StandardButton:
         box = QMessageBox(self)
@@ -527,16 +439,16 @@ class SettingsWindow(QDialog):
                 editor.setCurrentIndex(max(0, editor.findData(self._draft.value(key))))
             elif isinstance(editor, (QSpinBox, QDoubleSpinBox)):
                 editor.setValue(self._draft.value(key))
+            elif isinstance(editor, QLineEdit):
+                editor.setText(_format_db_reference(self._draft.value(key)))
             else:
                 editor.setChecked(bool(self._draft.value(key)))
             editor.blockSignals(False)
         self._refresh_marks()
 
     def _refresh_units_previews(self) -> None:
-        for preview, row, unit_or_key, prefix_key, decimals_key in self._unit_previews:
-            unit = self._draft.value(unit_or_key) if unit_or_key.startswith("global_unit_") else unit_or_key
-            preview.setText(resolve_units_preview(
-                unit, row, self._draft.value(prefix_key), self._draft.value(decimals_key)))
+        for preview, row in self._unit_previews:
+            preview.setText(resolve_units_row_preview(row, self._draft))
 
     def _refresh_marks(self) -> None:
         self._refresh_units_previews()

@@ -13,7 +13,7 @@ from dataclasses import replace
 from core.benchmark import benchmark_step
 from core.data_block import Acquisition, NVHDataBlock, build_source_ref
 from core.models import MeasurementRunIndex, ChannelMetadata
-from core.source_amplitude import resolve_rms_factor
+from core.source_amplitude import SOURCE_AMPLITUDE_RMS, resolve_rms_factor
 
 
 class DataAccessor:
@@ -38,16 +38,17 @@ class DataAccessor:
         """
         try:
             # Same dispatch the folder scan uses -- see open_measurement_reader.
-            from io_modules.measurement_files import open_measurement_reader
+            from io_modules.measurement_files import open_measurement_reader, resolve_reader_description
             with benchmark_step("read"):
-                reader = open_measurement_reader(run_index.file_path, channel_meta.import_template)
-                raw = reader.read_single_channel_data(channel_meta.index)
+                description = resolve_reader_description(run_index.file_path, channel_meta.import_template)
+                raw = open_measurement_reader(run_index.file_path, channel_meta.import_template
+                                              ).read_single_channel_data(channel_meta.index)
 
-            if isinstance(raw, NVHDataBlock):
+            if description is not None and description.imported_result:
                 # An Imported result arrives as a finished block of its kind in
                 # the file's own amplitude; the classification, the source and
                 # the conversion to RMS are decided here -- the one place.
-                return replace(raw, values=raw.values * DataAccessor._resolve_rms_factor(reader, channel_meta),
+                return replace(raw, values=raw.values * DataAccessor._resolve_rms_factor(description, channel_meta),
                                value_unit=channel_meta.unit, channel_type=channel_meta.type,
                                source=build_source_ref(run_index, channel_meta))
 
@@ -65,12 +66,11 @@ class DataAccessor:
             raise IOError(f"DATA_ACCESS_FAILURE: Failed to read file structure: {str(e)}") from e
 
     @staticmethod
-    def _resolve_rms_factor(reader, channel_meta: ChannelMetadata) -> float:
+    def _resolve_rms_factor(description, channel_meta: ChannelMetadata) -> float:
         """The project's answer for this file, else the template's or the reader's default (Source amplitude)."""
-        from io_modules.measurement_files import resolve_default_source_amplitude
         source_amplitude = (getattr(channel_meta, "source_amplitude", "")
-                            or getattr(reader, "default_source_amplitude", "")
-                            or resolve_default_source_amplitude(type(reader).__name__))
+                            or description.default_source_amplitude
+                            or SOURCE_AMPLITUDE_RMS)
         return resolve_rms_factor(source_amplitude)
 
     @staticmethod

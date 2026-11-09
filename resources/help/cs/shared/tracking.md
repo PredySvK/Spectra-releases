@@ -73,19 +73,31 @@ Dva rozjezdy s plató na 300 ot/min, Step = 50 rpm. Vlevo otáčky kolísají ko
 
 ## Čištění tacha
 
-Tacho se nejdřív vyčistí: vzorky strmější než 200 000 RPM/s a nekonečné či chybějící hodnoty se nahradí interpolací, poté se použije 50ms klouzavý průměr. Tacho se zápornými hodnotami se převrátí a záporné otáčky se ořežou na 0.
+Tacho se před umístěním triggerů čistí v těchto krocích, v tomto pořadí a na vlastní vzorkovací frekvenci tacha. Obrázky ukazují každý krok zvlášť: šedě stav před ním, modře po něm.
 
-Průměr otáčky vyhladí, takže otáčky čtené v triggeru jsou vyhlazené; změna rychlejší než 50 ms se rozmaže.
+**1. Doplnění.** Chybějící a nekonečné vzorky (NaN, inf) se nahradí lineární interpolací z okolních platných vzorků.
 
-Délka průměru se nastavuje v **Settings › Computation › DSP**, v poli **Tacho smoothing window [ms]**. Výchozí hodnota je 50 ms; 0 znamená bez vyhlazení. Výsledky spočtené s různým oknem jsou různé [Parameter Sety](topic:filtering/intro). Obrázek a čísla níže platí pro 50 ms.
+![Krok 1: doplnění chybějících vzorků](tracking_cleaning_fill.png)
 
-![Co udělá klouzavý průměr 50 ms s krátkým poklesem a se skokem](tracking_cleaning.png)
+**2. Hampelův filtr.** Vzorek, který leží dál než *Hampel threshold* (výchozí 8) sigma šumu od mediánu svých 11 sousedů, je špička a nahradí se interpolací. Sigma šumu se odhaduje jednou z celého tacha, takže běžný šum tacha se neoznačí. Pomalá změna není špička, ať je jakkoli strmá: filtr posuzuje vzorek proti sousedům, ne skok mezi nimi. Na reálném tachu rozjezdu (obrázek níže) nenahradí ani jeden vzorek.
 
-Dvě rychlé události v surovém tachu (šedě) a vyčištěné otáčky, které triggery používají (modře). Průměrování odstraní šum, ale změnu také rozprostře přes okno 50 ms. Skok o 200 ot/min za 5 ms se změní na rampu dlouhou 50 ms. Pokles dlouhý 30 ms a hluboký 200 ot/min se stane mělčím (tady asi 140 ot/min) a širším. Pomalý rozjezd nebo dojezd to neovlivní: průměr přímé rampy je tatáž rampa.
+![Krok 2: Hampelův filtr odstraní špatný vzorek](tracking_cleaning_hampel.png)
+
+**3. Vyhlazení.** Otáčky vyhladí klouzavý průměr o délce *smoothing window* (výchozí 50 ms). Obrázek je reálné tacho rozjezdu (25,6 kHz) s oknem 10, 50 a 100 ms: čím delší okno, tím hladší otáčky, a rampa zůstane, protože průměr přímé rampy je tatáž rampa. Rychlá změna se ale rozprostře přes okno: skok o 200 ot/min za 5 ms se změní na rampu dlouhou jako okno a krátký pokles se stane mělčím a širším. Hampelův filtr krátký pokles neovlivní, je širší než jeho okolí.
+
+![Krok 3: klouzavý průměr 10, 50 a 100 ms na reálném tachu](tracking_cleaning_smoothing.png)
+
+**4. Znaménko a nula.** Běh, který loguje záporné otáčky až k nejvyšším otáčkám (opačný směr otáčení), se převrátí a záporné otáčky se ořežou na 0. Šum kolem nuly při stání tak nevytvoří otáčky pod nulou.
+
+![Krok 4: převrácení opačného směru a ořezání záporných otáček](tracking_cleaning_sign.png)
+
+Otáčky čtené v triggeru jsou vyčištěné; změna rychlejší než okno se rozmaže. Samotné tacho je kanál [surového signálu](topic:raw_data/intro), který se nikdy nekoriguje o DC.
+
+Tři hodnoty se nastavují v **Settings › Computation › DSP**: **Hampel filter** (zapnuto/vypnuto, výchozí zapnuto), **Hampel threshold [σ]** (výchozí 8, šedé při vypnutém filtru) a **Tacho smoothing window [ms]** (výchozí 50, 0 = bez vyhlazení). Vypnutý filtr i vyhlazení nechají surové tacho, jen s doplněnými NaN a inf. Platí jen pro RPM Tracked a změna sama nic nepřepočítá. Výsledky spočtené s různými hodnotami jsou různé [Parameter Sety](topic:filtering/intro).
 
 ## Tacho s jinou vzorkovací frekvencí
 
-Tacho nemusí být zaznamenáno se stejnou frekvencí jako vibrační kanál. Pokud se obě liší o více než 1 %, program otáčky před umístěním triggerů lineárně interpoluje na časovou osu analyzovaného kanálu. Rychlejší tacho se nejprve zprůměruje přes jeden vzorek kanálu, aby šum tacha nad polovinou frekvence kanálu nevytvořil falešné pomalé změny otáček; pomalejší se neprůměruje. Interpolace nepřidává informaci: pomalé tacho zůstane stejně hrubé, jen na jemnější časové ose. Běží vždy sama, nic se nezapíná, a System Log ji zmíní jednou pro soubor a frekvenci. Soubor s tachem na frekvenci kanálu se počítá přesně jako dřív.
+Tacho nemusí být zaznamenáno se stejnou frekvencí jako vibrační kanál. Pokud se obě liší o více než 1 %, program otáčky před umístěním triggerů lineárně interpoluje na časovou osu analyzovaného kanálu. Čištění výše běží dřív, na vlastní frekvenci tacha, takže špatný vzorek rychlého tacha se odstraní dřív, než ho interpolace stihne rozprostřít přes mnoho vzorků kanálu. Rychlejší tacho se nejprve zprůměruje přes jeden vzorek kanálu, aby šum tacha nad polovinou frekvence kanálu nevytvořil falešné pomalé změny otáček; pomalejší se neprůměruje. Interpolace nepřidává informaci: pomalé tacho zůstane stejně hrubé, jen na jemnější časové ose. Běží vždy sama, nic se nezapíná, a System Log ji zmíní jednou pro soubor a frekvenci. Soubor s tachem na frekvenci kanálu se počítá přesně jako dřív.
 
 Tacho, které začíná v jiném čase než kanál nebo končí o více než jeden krok tacha dříve, se odmítne zprávou se jmény obou kanálů a oběma časy.
 

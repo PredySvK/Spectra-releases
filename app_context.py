@@ -12,16 +12,17 @@ import json
 import os
 from dataclasses import replace
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from PySide6.QtCore import QObject, QSettings, Signal
 
 from session.project import ProjectSession
 from io_modules.project_store import prune_untitled_scan_cache
 from io_modules.scan_cache import ScannedDirectory
-from session.data_pool import DataPool, IntegrateResult
+from session.data_pool import Admission, DataPool, IntegrateResult
 from session.settings import SettingsStore
 from core.app_metadata import SETTINGS_ORGANIZATION, SETTINGS_ROOT, SETTINGS_SHARED
-from core.cursor_config import CursorConfig
+from core.legend_config import LegendConfig
+from core.cursor_config import DEFAULT_CURSOR_FIELDS, DEFAULT_TRACK_TABLE_FIELDS, CursorConfig
 from core.units import UnitPreferences
 from core.dsp_configs import SpectrumConfig, SpectrogramConfig, OrderTrackingConfig, OverallLevelConfig
 from core.tacho_cleaning import TACHO_CLEANING_PARAMS, TachoCleaning, resolve_tacho_cleaning
@@ -37,6 +38,10 @@ from core.recent_projects import (
 STARTUP_DIRECTORY_KEY = "primary_startup_data_directory"
 _RESULT_CONTENT_CURVE_LIMIT_KEY = "result_content_curve_limit"
 _DEFAULT_RESULT_CONTENT_CURVE_LIMIT = 500
+# QSettings keys (shared_settings) of each tool's field list: one per tool, so the choices never mix.
+_CURSOR_CONFIG_KEY = "cursor_config"
+_TRACK_CURSOR_CONFIG_KEY = "track_cursor_config"
+_LEGEND_DEFAULT_KEY = "legend_default_config"
 
 
 class _QSettingsStorage:
@@ -103,9 +108,20 @@ class AppContext(QObject):
     decimals_speed = _setting("decimals_speed")
     decimals_frequency = _setting("decimals_frequency")
     decimals_time = _setting("decimals_time")
+    db_reference_acceleration = _setting("db_reference_acceleration")
+    db_reference_pressure = _setting("db_reference_pressure")
+    db_reference_voltage = _setting("db_reference_voltage")
     highlight_other_opacity = _setting("highlight_other_opacity")
+    track_table_opacity = _setting("track_table_opacity")
     theme = _setting("theme")
     graph_theme = _setting("graph_theme")
+    # The Tools tab switches: one for every graph, not project state.
+    cursor_enabled = _setting("cursor_enabled")
+    cursor_pinned = _setting("cursor_pinned")
+    highlight_enabled = _setting("highlight_enabled")
+    track_cursor_enabled = _setting("track_cursor_enabled")
+    track_cursor_pinned = _setting("track_cursor_pinned")
+    track_cursor_highlight_enabled = _setting("track_cursor_highlight_enabled")
     spectrogram_settings = _tracked_config("spectrogram_settings")
     order_tracking_settings = _tracked_config("order_tracking_settings")
     overall_level_settings = _tracked_config("overall_level_settings")
@@ -166,12 +182,12 @@ class AppContext(QObject):
         # config is an order cut's cache identity.
         self.order_tracking_overall_level: bool = False
         self.band_rms_cursors_enabled: bool = False
-        # The hover Cursor (Tools tab, `C`): one switch for every graph, not project state.
-        # Remembered across starts (shared_settings); the Cursor defaults to on.
-        self.cursor_enabled: bool = self._load_tool_flag("cursor_enabled", True)
-        self.highlight_enabled: bool = self._load_tool_flag("highlight_enabled", False)
-        self.cursor_pinned: bool = self._load_tool_flag("cursor_pinned", False)
         self.cursor_config: CursorConfig = self._load_cursor_config()
+        # The Track table's own columns (Track cursor Settings), apart from the Cursor Box's.
+        self.track_cursor_config: CursorConfig = self._load_cursor_config(
+            _TRACK_CURSOR_CONFIG_KEY, DEFAULT_TRACK_TABLE_FIELDS)
+        # The legend every new graph starts with (Legend Settings' Default column, plot §1.296).
+        self.legend_default_config: LegendConfig = self._load_legend_default()
         # Default False = current behaviour: a dropped comparison curve is
         # computed with the ribbon's current SpectrumConfig. True = it instead
         # inherits compute_spec off the dock's base trace, so a dropped curve
@@ -206,6 +222,9 @@ class AppContext(QObject):
             decimals_speed=self.decimals_speed,
             decimals_frequency=self.decimals_frequency,
             decimals_time=self.decimals_time,
+            db_reference_acceleration=self.db_reference_acceleration,
+            db_reference_pressure=self.db_reference_pressure,
+            db_reference_voltage=self.db_reference_voltage,
         )
 
     # ---- recent projects ----------------------------------------------
@@ -239,24 +258,49 @@ class AppContext(QObject):
         updated = _promote_recent(self.recent_projects_detailed(), project_path, now)
         self.shared_settings.setValue("recent_projects", serialize_recent(updated))
 
-    def _load_tool_flag(self, key: str, default: bool) -> bool:
-        return bool(self.shared_settings.value(key, default, type=bool))
-
-    def remember_tool_flag(self, key: str, value: bool) -> None:
-        """Keeps a Tools tab switch (Cursor / Highlight / Pin) for every later start."""
-        self.shared_settings.setValue(key, bool(value))
-
-    def _load_cursor_config(self) -> CursorConfig:
-        """Cursor Box fields from shared settings; defaults if absent or unreadable."""
+    def _load_config(self, key: str, from_dict, default):
+        """A tool's saved choice from shared settings; `default` if absent or unreadable."""
         try:
-            return CursorConfig.from_dict(json.loads(str(self.shared_settings.value("cursor_config", ""))))
+            return from_dict(json.loads(str(self.shared_settings.value(key, ""))))
         except (ValueError, AttributeError):
-            return CursorConfig()
+            return default
+
+    def _remember_config(self, key: str, config) -> None:
+        """Keeps a tool's choice under `key` for every project and every later start."""
+        self.shared_settings.setValue(key, json.dumps(config.to_dict()))
+
+    def _load_cursor_config(self, key: str = _CURSOR_CONFIG_KEY,
+                            default_fields: Tuple[str, ...] = DEFAULT_CURSOR_FIELDS) -> CursorConfig:
+        """A tool's field list from shared settings; `default_fields` if absent or unreadable.
+
+        One path for every tool that keeps a config (`_load_config`): each has its own `key`,
+        so their choices never mix. The Cursor Box's is `cursor_config`.
+        """
+        return self._load_config(key, lambda data: CursorConfig.from_dict(data, default_fields),
+                                 CursorConfig(default_fields))
+
+    def _load_legend_default(self) -> LegendConfig:
+        """The Default legend from shared settings; the factory legend if absent or unreadable."""
+        return self._load_config(_LEGEND_DEFAULT_KEY, LegendConfig.from_dict, LegendConfig())
+
+    def set_legend_default_config(self, config: LegendConfig) -> None:
+        """Keeps the legend every new graph starts with, for every project and every later start."""
+        self.legend_default_config = config
+        self._remember_config(_LEGEND_DEFAULT_KEY, config)
+
+    def remember_cursor_config(self, key: str, config: CursorConfig) -> None:
+        """Keeps a tool's field list under `key` for every project and every later start."""
+        self._remember_config(key, config)
 
     def set_cursor_config(self, config: CursorConfig) -> None:
         """Keeps the Cursor Box fields for every project and every later start."""
         self.cursor_config = config
-        self.shared_settings.setValue("cursor_config", json.dumps(config.to_dict()))
+        self.remember_cursor_config(_CURSOR_CONFIG_KEY, config)
+
+    def set_track_cursor_config(self, config: CursorConfig) -> None:
+        """Keeps the Track table columns for every project and every later start."""
+        self.track_cursor_config = config
+        self.remember_cursor_config(_TRACK_CURSOR_CONFIG_KEY, config)
 
     @property
     def result_content_curve_limit(self) -> int:
@@ -310,7 +354,7 @@ class AppContext(QObject):
             self.settings.setValue(STARTUP_DIRECTORY_KEY, result.stored_path)
 
     def integrate_scanned_directory(self, directory_path: str, scanned: ScannedDirectory, *,
-                                    only_files=None, admit_unknown: bool = False) -> int:
+                                    admission: Admission = Admission.folder()) -> int:
         """
         Folds a scanned folder into the pool and applies the shell-only effects.
 
@@ -328,7 +372,7 @@ class AppContext(QObject):
         a job -- and the seam the §1.24 rules above are tested against.
         """
         result = self.pool.integrate_scanned_directory(
-            directory_path, scanned, only_files=only_files, admit_unknown=admit_unknown)
+            directory_path, scanned, admission=admission)
         self.apply_integrate_effects(result)
         return result.gained
 

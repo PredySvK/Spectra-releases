@@ -415,15 +415,13 @@ class AccReaderLdsf:
         except LdsfFormatError as exc:
             raise LdsfFormatError(f"{os.path.basename(self.file_path)}: {exc}") from None
 
-    def scan_file_structure(self) -> MeasurementRunIndex:
-        """Registers the file envelope inside the workspace."""
-        file_name = os.path.basename(self.file_path)
-        return MeasurementRunIndex(file_name, self.file_path)
+    def read_run_index(self) -> MeasurementRunIndex:
+        """The file's channels and Lost parts, read from its header (MeasurementReader)."""
+        run_index = MeasurementRunIndex(os.path.basename(self.file_path), self.file_path)
+        self._read_channels(run_index)
+        return run_index
 
-    def load_channels_on_demand(self, run_index: MeasurementRunIndex):
-        if run_index.available_channels:
-            return
-
+    def _read_channels(self, run_index: MeasurementRunIndex) -> None:
         layout = self._layout()
         dofs = _response_dofs(layout.channels)
         for position, channel in enumerate(layout.channels):

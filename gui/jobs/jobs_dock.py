@@ -15,6 +15,13 @@ Rows are updated in place, not rebuilt: progress moves on every step of every
 job, and re-populating a hundred-row table at that rate would spend more time
 drawing the queue than working through it.
 
+A Batch run waiting its turn is not a job yet -- the job runner does not know
+it -- but the user looks for it here (#966, ADR batch §1.267). The window's
+batch-run handle lists the waiting ones; they sit on top, above the jobs,
+newest first like them, so the one to start next sits right above the job
+computing now. "Cancel Selected" drops just that one; "Clear List" leaves
+them, they are not finished.
+
 All internal documentation strings and variable labels are standardly written
 in English.
 """
@@ -37,6 +44,10 @@ STATE_TEXT = {
     JobState.CANCELLED: "Cancelled",
     JobState.SUPERSEDED: "Superseded",
 }
+WAITING_TEXT = "Waiting"
+# Where a waiting row keeps the key it is cancelled by; a job row keeps its
+# job id under Qt.UserRole.
+WAITING_KEY_ROLE = Qt.UserRole + 1
 
 # The widest text each narrow column can show. The columns are sized for these
 # up front: sized to their contents they jumped wider and narrower as rows went
@@ -51,12 +62,17 @@ CELL_PADDING = 24   # px, room for the cell margins and header sort arrow
 
 
 class JobsDockWidget(QWidget):
-    """Every job the runner remembers, newest on top."""
+    """
+    Every job the runner remembers, newest on top, under the waiting Batch
+    runs of `waiting_batch_runs` (the window's `WorkflowRunBridge`) when given.
+    """
 
-    def __init__(self, job_runner, parent=None):
+    def __init__(self, job_runner, parent=None, *, waiting_batch_runs=None):
         super().__init__(parent)
         self.job_runner = job_runner
+        self.waiting_batch_runs = waiting_batch_runs
         self._rows = {}      # job_id -> row index
+        self._waiting_rows = 0   # rows 0..n-1 are the waiting Batch runs
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -95,7 +111,7 @@ class JobsDockWidget(QWidget):
         layout.addLayout(buttons)
 
         self.btn_cancel.clicked.connect(self._cancel_selected)
-        self.btn_cancel_all.clicked.connect(job_runner.cancel_all)
+        self.btn_cancel_all.clicked.connect(self._cancel_all)
         self.btn_clear.clicked.connect(self._clear_history)
 
         job_runner.job_added.connect(self._on_job_added)
@@ -106,6 +122,9 @@ class JobsDockWidget(QWidget):
         # whatever the manager remembers rather than from empty.
         for record in job_runner.all_records():
             self._on_job_added(record.job_id)
+        if waiting_batch_runs is not None:
+            waiting_batch_runs.connect_waiting_changed(self._on_waiting_changed)
+            self._on_waiting_changed()
 
     # ---- table maintenance --------------------------------------------
 
@@ -113,16 +132,12 @@ class JobsDockWidget(QWidget):
         if job_id in self._rows:
             return
         # Newest on top: the job the user just started is the one they look
-        # for, and it should not sit below a hundred rows of history.
-        row = 0
+        # for, and it should not sit below a hundred rows of history. Only
+        # the waiting Batch runs, still to come, sit above it.
+        row = self._waiting_rows
         for other in self._rows:
             self._rows[other] += 1
-        self.table.insertRow(row)
-        for column in range(len(COLUMNS)):
-            item = QTableWidgetItem("")
-            if column in WIDEST_TEXT:
-                item.setTextAlignment(Qt.AlignCenter)
-            self.table.setItem(row, column, item)
+        self._insert_row(row)
         self._rows[job_id] = row
         self._on_job_changed(job_id)
         self._drop_trimmed_rows()
@@ -155,6 +170,31 @@ class JobsDockWidget(QWidget):
 
         self.table.item(row, 0).setData(Qt.UserRole, job_id)
 
+    def _insert_row(self, row: int) -> None:
+        self.table.insertRow(row)
+        for column in range(len(COLUMNS)):
+            item = QTableWidgetItem("")
+            if column in WIDEST_TEXT:
+                item.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(row, column, item)
+
+    def _on_waiting_changed(self):
+        """Rebuild the waiting rows: a handful at most, and they change only on a click or a turn."""
+        waiting = tuple(reversed(self.waiting_batch_runs.waiting))
+        for _ in range(self._waiting_rows):
+            self.table.removeRow(0)
+        for row, run in enumerate(waiting):
+            self._insert_row(row)
+            self.table.item(row, 0).setText(run.job_label)
+            self.table.item(row, 2).setText(WAITING_TEXT)
+            self.table.item(row, 0).setData(WAITING_KEY_ROLE, run.key)
+            for column in range(len(COLUMNS)):
+                self.table.item(row, column).setToolTip("Starts once the Batch runs before it finish.")
+        shift = len(waiting) - self._waiting_rows
+        self._waiting_rows = len(waiting)
+        for job_id in self._rows:
+            self._rows[job_id] += shift
+
     def _drop_trimmed_rows(self):
         """Keeps the table in step with the manager's bounded history."""
         known = {record.job_id for record in self.job_runner.all_records()}
@@ -176,6 +216,20 @@ class JobsDockWidget(QWidget):
         if row < 0:
             return
         item = self.table.item(row, 0)
-        job_id = item.data(Qt.UserRole) if item is not None else None
+        if item is None:
+            return
+        key = item.data(WAITING_KEY_ROLE)
+        if key is not None:
+            self.waiting_batch_runs.cancel_waiting(key)
+            return
+        job_id = item.data(Qt.UserRole)
         if job_id is not None:
             self.job_runner.cancel(int(job_id))
+
+    def _cancel_all(self):
+        # The waiting ones first: cancelling the running job ends its Batch
+        # run, and the next waiting one would take the slot.
+        if self.waiting_batch_runs is not None:
+            for run in self.waiting_batch_runs.waiting:
+                self.waiting_batch_runs.cancel_waiting(run.key)
+        self.job_runner.cancel_all()

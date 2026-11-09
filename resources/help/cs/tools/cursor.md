@@ -49,6 +49,10 @@ Při najetí myší na spektrogram se zobrazí nitkový kříž (crosshair) a Cu
 
 Všechny křivky se vrátí do normálu, když myš opustí graf, vzdálí se od všech křivek, stiskne se tlačítko myši, graf se překreslí nebo se Highlight vypne.
 
+## Track cursor
+
+Box **Track** ve skupině **Cursors** zapíná druhý nástroj, [Track cursor](topic:tools/track_cursor): svislou čáru, která čte všechny křivky při jednom X.
+
 ## Pin
 
 **Pin** (tlačítko ve skupině **Cursors**, nebo klávesa **P**, když má graf fokus) ukotví Cursor Box na místě: přestane sledovat myš, ale jeho obsah se dál aktualizuje podle polohy myši. Box přesunete tažením za něj samotný; tažení kdekoli jinde v grafu dál posouvá graf nebo přetahuje křivku do jiného grafu. Po odepnutí box zmizí, dokud se myš znovu nepohne.
@@ -57,6 +61,8 @@ Všechny křivky se vrátí do normálu, když myš opustí graf, vzdálí se od
 
 Tlačítkem **Cursor Settings…** ve skupině **Cursors** vyberete, co box zobrazuje. Zaškrtněte pole, které se má zobrazit; jeho **Priority** (šipky nebo zadané číslo) je jeho řádek, 1 je nahoře. Sekce **Values** obsahuje X, Y, Z, název křivky a RMS / Peak; sekce metadat nabízejí pole se zaškrtnutým **Active Status** v [Metadata and Filter Settings](topic:import/metadata), s hodnotami dané křivky (například Direction, File name nebo pole z Excelu).
 
-Jeden seznam platí pro křivkové grafy i spektrogramy; pole, které se nehodí (Z na křivkovém grafu, metadata na spektrogramu), se přeskočí. Volba se ukládá pro **všechny projekty** a přežije restart. Metadatové pole, které otevřený projekt nemá, se v boxu jednoduše vynechá.
+Jeden seznam platí pro křivkové grafy i spektrogramy; pole, které se nehodí (Z na křivkovém grafu, metadata na spektrogramu), se přeskočí. Dokud nic nezvolíte, box ukazuje Channel, X, Y a Z: na křivkovém grafu Channel, X a Y, na spektrogramu X, Y a Z. Volba se ukládá pro **všechny projekty** a přežije restart. Metadatové pole, které otevřený projekt nemá, se v boxu jednoduše vynechá.
 
-Vlevo dole nastavuje **Other curves opacity (Highlight)**, jak viditelné zůstanou ostatní křivky, když je zapnutý Highlight: 0 % je neviditelné, 100 % bez ztlumení (výchozí 25 %). Táhněte posuvník nebo hodnotu napište; ukládá se stejně jako seznam polí.
+Vlevo dole nastavuje **Other curves opacity**, jak viditelné zůstanou ostatní křivky, když je zapnutý Highlight: 0 % je neviditelné, 100 % bez ztlumení (výchozí 25 %). Táhněte posuvník nebo hodnotu napište; ukládá se stejně jako seznam polí. Track cursor Settings má stejný posuvník na stejném místě a vpravo od něj **Table background opacity**; je to jedno nastavení, takže změna v jednom okně platí v obou, a se zapnutým **Auto apply** se grafy ztlumí už při posunu.
+
+**Restore Defaults** vrátí celé okno na výchozí hodnoty: výchozí pole v jejich pořadí a průhlednost 25 %. Nic se neuloží, dokud nestisknete **OK**; **Cancel** ponechá vaše současné nastavení. Track cursor Settings má stejné tlačítko pro sloupce Track table (výchozí Channel a Y) a oba své posuvníky (25 % a 90 %).

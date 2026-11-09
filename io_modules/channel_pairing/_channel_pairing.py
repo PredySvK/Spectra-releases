@@ -1,8 +1,10 @@
-"""Read and write the channel pairing workbook."""
+"""Read and write the channel pairing workbook, alone or beside a project."""
 
 import os
 
 from openpyxl import Workbook, load_workbook
+
+from io_modules.project_store import PAIRING_FILE_NAME, project_folder
 
 from selection.channel_identity import split_channel_base_and_direction
 from selection.channel_pairing import resolve_channel_pair_rejection
@@ -74,3 +76,27 @@ def write_channel_pairing(path: str, pairs) -> None:
         if os.path.exists(temp_path):
             os.remove(temp_path)
         raise
+
+
+def resolve_channel_pairing_path(project_path: str) -> str:
+    return os.path.join(project_folder(project_path), PAIRING_FILE_NAME)
+
+
+def read_project_channel_pairing(project_path: str):
+    """Return (pairs, warnings); a missing workbook is created empty.
+
+    An OSError creating it (read-only folder) is not fatal: no pairs.
+    """
+    path = resolve_channel_pairing_path(project_path)
+    if not os.path.isfile(path):
+        try:
+            write_channel_pairing(path, [])
+        except OSError:
+            pass
+        return [], []
+    return read_channel_pairing(path)
+
+
+def write_project_channel_pairing(project_path: str, pairs) -> None:
+    """Store `pairs`; raises PermissionError while Excel holds the file open."""
+    write_channel_pairing(resolve_channel_pairing_path(project_path), pairs)

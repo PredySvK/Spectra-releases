@@ -12,9 +12,24 @@ import codecs
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple, Union
 
+from core.import_template._text_source import ChipRef, MetadataField, TextSource
 from core.source_amplitude import VALID_SOURCE_AMPLITUDES
 
-FORMAT_VERSION = 1
+# The texts around a channel are sources, chips and roles (_text_source.py).
+FORMAT_VERSION = 2
+
+# The one answer for the amplitude in the file: a Source amplitude, or
+# "from the header", where a header that says only "Amplitude" does not fit.
+AMPLITUDE_FROM_HEADER = "from_header"
+FILE_AMPLITUDES = tuple(VALID_SOURCE_AMPLITUDES) + (AMPLITUDE_FROM_HEADER,)
+
+# The roles a chip can have.
+ROLE_NAME = "name"
+ROLE_AXIS = "axis"
+ROLE_ORDER = "order"
+ROLE_SAMPLE_RATE = "sample_rate"
+ROLE_FIELDS = "fields"
+ROLES = (ROLE_NAME, ROLE_AXIS, ROLE_ORDER, ROLE_SAMPLE_RATE, ROLE_FIELDS)
 
 # Column layout. xy_pairs: every channel is a pair of columns (X, amplitude) with
 # its own X. shared_x: the first column is the X of every following column.
@@ -51,129 +66,8 @@ DATA_KINDS = (DATA_KIND_ORDER_CUT, DATA_KIND_SPECTRUM, DATA_KIND_OVERALL_LEVEL, 
 DECIMAL_SEPARATORS = (".", ",")
 COLUMN_DELIMITERS = ("\t", ";", ",", "|", " ")
 
-# Where a TextPick takes its text from.
-PICK_HEADER = "header"
-PICK_SHEET = "sheet"
-PICK_FILE_NAME = "file_name"
-PICK_FOLDER = "folder"
-PICK_SOURCES = (PICK_HEADER, PICK_SHEET, PICK_FILE_NAME, PICK_FOLDER)
-
-
-@dataclass(frozen=True)
-class TextPick:
-    """
-    A piece of text around a channel.
-
-    `source` is where the text is: a header cell of the channel's column
-    (`header`; `row_above` counts rows up from the heading row, 0 = the heading
-    row itself), the sheet name, the file name without its extension, or the
-    name of the file's folder. The text is then optionally split (`split`,
-    taking piece number `piece`), cut to what follows `after` and to what
-    precedes `before`, and stripped -- in that order.
-    """
-
-    row_above: int = 0
-    split: str = ""
-    piece: int = 0
-    after: str = ""
-    before: str = ""
-    source: str = PICK_HEADER
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {"source": self.source, "row_above": self.row_above, "split": self.split,
-                "piece": self.piece, "after": self.after, "before": self.before}
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "TextPick":
-        source = data.get("source", PICK_HEADER)
-        if source not in PICK_SOURCES:
-            raise ValueError(f"Unknown text source {source!r}; expected one of {PICK_SOURCES}.")
-        return cls(row_above=int(data.get("row_above", 0)), split=data.get("split", ""),
-                   piece=int(data.get("piece", 0)), after=data.get("after", ""),
-                   before=data.get("before", ""), source=source)
-
-
-# A channel name is these parts joined: a literal string or a pick.
-NamePart = Union[str, TextPick]
-
-# The characters a metadata source text is split at, unless the template says others.
-DEFAULT_DELIMITERS = "_,:\\-;"
-# The kinds a metadata field can be; a template piece's blank kind is
-# detected from its values, as for any Raw metadata field.
-FIELD_KINDS = ("str", "int", "float", "date")
-
-
-@dataclass(frozen=True)
-class MetadataPiece:
-    """
-    What one piece of a metadata source text becomes.
-
-    `position` counts the pieces from 0, or from the end when negative (-1 =
-    the last), so -- in a source that drops the pieces no rule names -- a text
-    with one piece more in the middle still finds them.
-    A blank `field` drops the piece: it is never stored. `key`, when set, is
-    the key of a "key = value" or "key value" piece; the field then takes the
-    value, and a piece with another key does not fit. `split_unit` reads the
-    value as a number followed by `unit` ("-70Nm"); another unit does not fit.
-    `kind` overrides the field kind detected from the values.
-    """
-
-    position: int
-    field: str = ""
-    key: str = ""
-    split_unit: bool = False
-    unit: str = ""
-    kind: str = ""
-
-    @property
-    def is_dropped(self) -> bool:
-        return not self.field.strip()
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {"position": self.position, "field": self.field, "key": self.key,
-                "split_unit": self.split_unit, "unit": self.unit, "kind": self.kind}
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "MetadataPiece":
-        kind = data.get("kind", "")
-        if kind and kind not in FIELD_KINDS:
-            raise ValueError(f"Unknown field kind {kind!r}; expected one of {FIELD_KINDS}.")
-        return cls(position=int(data["position"]), field=str(data.get("field", "")),
-                   key=str(data.get("key", "")), split_unit=bool(data.get("split_unit", False)),
-                   unit=str(data.get("unit", "")), kind=kind)
-
-
-@dataclass(frozen=True)
-class MetadataSource:
-    """
-    A text around a channel that metadata is taken from: the file name, the
-    folder, the sheet name or a column header row (`row_above` as in
-    TextPick). The text is split at every character of `delimiters` into
-    pieces (blank pieces left out; a "-" that is a number's sign, "-70Nm",
-    does not split), and each piece is what one of `pieces`
-    says. A piece no rule names does not fit the template -- unless
-    `drop_unknown`, when it is dropped like a named one.
-    """
-
-    source: str
-    row_above: int = 0
-    delimiters: str = DEFAULT_DELIMITERS
-    pieces: Tuple[MetadataPiece, ...] = ()
-    drop_unknown: bool = False
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {"source": self.source, "row_above": self.row_above, "delimiters": self.delimiters,
-                "pieces": [piece.to_dict() for piece in self.pieces], "drop_unknown": self.drop_unknown}
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "MetadataSource":
-        source = data.get("source")
-        if source not in PICK_SOURCES:
-            raise ValueError(f"Unknown text source {source!r}; expected one of {PICK_SOURCES}.")
-        return cls(source=source, row_above=int(data.get("row_above", 0)),
-                   delimiters=str(data.get("delimiters", DEFAULT_DELIMITERS)),
-                   pieces=tuple(MetadataPiece.from_dict(piece) for piece in data.get("pieces", ())),
-                   drop_unknown=bool(data.get("drop_unknown", False)))
+# A text the template takes a number from: a fixed number or a chip.
+StatedNumber = Union[float, ChipRef]
 
 
 @dataclass(frozen=True)
@@ -192,7 +86,7 @@ class ImportTemplate:
     heading cells unless set here; `channel_type` blank is decided from the
     unit and name as for any reader. `axis`, when set, is appended to the
     channel name as ":X" so the channel's identity carries it. `order` is a
-    fixed number or a pick, and only an order cut has one: the other data kinds
+    fixed number or a text, and only an order cut has one: the other data kinds
     ignore it. `source_amplitude` is what a bare "Amplitude"
     header means (the header text "RMS Amplitude", "Peak Amplitude" or
     "Peak-to-Peak Amplitude" is recognised first); `fixed_source_amplitude`,
@@ -203,22 +97,29 @@ class ImportTemplate:
     the reader turns it into linear amplitude. A time signal is read in the
     file's own amplitude (no Source amplitude): `time_column` says the first
     column is time (else every column is a signal and `sample_rate`, a number
-    in Hz or a pick of a header text such as "Sample rate: 25.6 kHz", gives the
+    in Hz or a text such as "Sample rate: 25.6 kHz", gives the
     rate); `speed_channel`, when set, is the name of the channel that is the
-    speed (rpm, or the tacho's own unit), read as a tacho. `metadata` are the texts metadata fields are taken from; a
-    field has one source only. `skipped_columns` are the channels of the read
+    speed (rpm, or the tacho's own unit), read as a tacho. `skipped_columns` are the channels of the read
     sheets that are not read, each as (sheet name, amplitude column number from
     0): what the wizard's duplicate check writes when the user keeps one copy,
     so later files are not checked again. `decimal_separator`, `delimiter` and
     `encoding` are how a text file (.txt, .csv) is parsed; blank is detected
     from each file and a value here wins over the detection.
+
+    The texts around a channel are `texts`, the TextSources split into chips,
+    and every role names a chip by a ChipRef -- `channel_name` its chips in
+    order (no literal text), `axis`, `order` and `sample_rate` one chip each
+    (the last two or a fixed number), `metadata_fields` the fields. Its one
+    amplitude answer is a Source amplitude (`fixed_source_amplitude` and
+    `source_amplitude` both hold it) or "from the header" (both blank): a
+    header that says only "Amplitude" then does not fit.
     """
 
     name: str
     file_pattern: str
     anchor_text: str
-    channel_name: Tuple[NamePart, ...]
-    order: Union[float, TextPick]
+    channel_name: Tuple[ChipRef, ...]
+    order: StatedNumber
     layout: str = LAYOUT_XY_PAIRS
     data_kind: str = DATA_KIND_ORDER_CUT
     simulated: bool = True
@@ -227,7 +128,7 @@ class ImportTemplate:
     values_in_db: bool = False
     db_reference: float = 0.0
     time_column: bool = True
-    sample_rate: Union[float, TextPick] = 0.0
+    sample_rate: StatedNumber = 0.0
     speed_channel: str = ""
     sheets: Tuple[str, ...] = ()
     sheet_rule: str = SHEETS_LISTED
@@ -237,8 +138,9 @@ class ImportTemplate:
     x_unit: str = ""
     amplitude_unit: str = ""
     channel_type: str = ""
-    axis: Optional[TextPick] = None
-    metadata: Tuple[MetadataSource, ...] = ()
+    axis: Optional[ChipRef] = None
+    texts: Tuple[TextSource, ...] = ()
+    metadata_fields: Tuple[MetadataField, ...] = ()
     skipped_columns: Tuple[Tuple[str, int], ...] = ()
     decimal_separator: str = ""
     delimiter: str = ""
@@ -246,7 +148,7 @@ class ImportTemplate:
     format_version: int = FORMAT_VERSION
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        data = {
             "format_version": self.format_version,
             "name": self.name,
             "file_pattern": self.file_pattern,
@@ -261,24 +163,28 @@ class ImportTemplate:
             "x_unit": self.x_unit,
             "amplitude_unit": self.amplitude_unit,
             "channel_type": self.channel_type,
-            "channel_name": [part.to_dict() if isinstance(part, TextPick) else part
-                             for part in self.channel_name],
-            "axis": self.axis.to_dict() if self.axis is not None else None,
-            "order": self.order.to_dict() if isinstance(self.order, TextPick) else self.order,
             "simulated": self.simulated,
-            "source_amplitude": self.source_amplitude,
-            "fixed_source_amplitude": self.fixed_source_amplitude,
             "values_in_db": self.values_in_db,
             "db_reference": self.db_reference,
             "time_column": self.time_column,
-            "sample_rate": self.sample_rate.to_dict() if isinstance(self.sample_rate, TextPick) else self.sample_rate,
             "speed_channel": self.speed_channel,
-            "metadata": [source.to_dict() for source in self.metadata],
             "skipped_columns": [[sheet, column] for sheet, column in self.skipped_columns],
             "decimal_separator": self.decimal_separator,
             "delimiter": self.delimiter,
             "encoding": self.encoding,
         }
+        data.update({
+            "amplitude": self.fixed_source_amplitude or AMPLITUDE_FROM_HEADER,
+            "texts": [source.to_dict() for source in self.texts],
+            "roles": {
+                ROLE_NAME: [part.to_dict() for part in self.channel_name],
+                ROLE_AXIS: self.axis.to_dict() if self.axis is not None else None,
+                ROLE_ORDER: _stated_to_dict(self.order),
+                ROLE_SAMPLE_RATE: _stated_to_dict(self.sample_rate),
+                ROLE_FIELDS: [field.to_dict() for field in self.metadata_fields],
+            },
+        })
+        return data
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ImportTemplate":
@@ -286,73 +192,130 @@ class ImportTemplate:
         version = data.get("format_version")
         if version != FORMAT_VERSION:
             raise ValueError(f"Import template format version {version!r} is not readable; "
-                             f"this build reads version {FORMAT_VERSION}.")
-        layout, data_kind = data.get("layout"), data.get("data_kind")
-        if layout not in LAYOUTS:
-            raise ValueError(f"Unknown column layout {layout!r}; expected one of {LAYOUTS}.")
-        if data_kind not in DATA_KINDS:
-            raise ValueError(f"Unknown data kind {data_kind!r}; expected one of {DATA_KINDS}.")
-        source_amplitude = data.get("source_amplitude")
-        if source_amplitude not in VALID_SOURCE_AMPLITUDES:
-            raise ValueError(f"Unknown source amplitude {source_amplitude!r}.")
-        fixed = data.get("fixed_source_amplitude", "")
-        if fixed and fixed not in VALID_SOURCE_AMPLITUDES:
-            raise ValueError(f"Unknown source amplitude {fixed!r}.")
-        sheet_rule, sheet_count = data.get("sheet_rule", SHEETS_LISTED), int(data.get("sheet_count", 1))
-        if sheet_rule not in SHEET_RULES:
-            raise ValueError(f"Unknown sheet rule {sheet_rule!r}; expected one of {SHEET_RULES}.")
-        if sheet_count < 1:
-            raise ValueError(f"A sheet count cannot be {sheet_count}.")
-        db_reference = float(data.get("db_reference", 0.0))
-        if db_reference < 0:
-            raise ValueError(f"A dB reference cannot be {db_reference}.")
-        anchor_text, heading_row = data["anchor_text"], int(data.get("heading_row", 0))
-        if not anchor_text.strip() and heading_row < 1:
-            raise ValueError("An Import template needs an anchor text or a heading row number.")
-        data_offset = int(data.get("data_offset", 1))
-        if data_offset < 1:
-            raise ValueError(f"Data cannot start {data_offset} rows below the heading row.")
-        time_column = bool(data.get("time_column", True))
-        sample_rate = data.get("sample_rate", 0.0)
-        sample_rate = TextPick.from_dict(sample_rate) if isinstance(sample_rate, dict) else float(sample_rate)
-        if not isinstance(sample_rate, TextPick) and sample_rate < 0:
-            raise ValueError(f"A sample rate cannot be {sample_rate}.")
-        if data_kind == DATA_KIND_TIME_SIGNAL and not time_column:
-            if layout == LAYOUT_XY_PAIRS:
-                raise ValueError("A time signal without a time column has one column per signal, "
-                                 "not pairs of columns.")
-            if not isinstance(sample_rate, TextPick) and sample_rate <= 0:
-                raise ValueError("A time signal without a time column needs its sample rate.")
-        order, axis = data["order"], data.get("axis")
-        decimal, delimiter = data.get("decimal_separator", ""), data.get("delimiter", "")
-        encoding = data.get("encoding", "")
-        if decimal and decimal not in DECIMAL_SEPARATORS:
-            raise ValueError(f"Unknown decimal separator {decimal!r}; expected one of {DECIMAL_SEPARATORS}.")
-        if delimiter and delimiter not in COLUMN_DELIMITERS:
-            raise ValueError(f"Unknown column delimiter {delimiter!r}; expected one of {COLUMN_DELIMITERS}.")
-        if encoding:
-            try:
-                codecs.lookup(encoding)
-            except LookupError:
-                raise ValueError(f"Unknown text encoding {encoding!r}.") from None
-        return cls(
-            name=data["name"], file_pattern=data["file_pattern"], anchor_text=anchor_text,
-            sheets=tuple(str(sheet) for sheet in data.get("sheets", ())),
-            sheet_rule=sheet_rule, sheet_count=sheet_count,
-            heading_row=heading_row, data_offset=data_offset,
-            layout=layout, data_kind=data_kind,
-            x_unit=data.get("x_unit", ""), amplitude_unit=data.get("amplitude_unit", ""),
-            channel_type=data.get("channel_type", ""),
-            channel_name=tuple(TextPick.from_dict(part) if isinstance(part, dict) else str(part)
-                               for part in data["channel_name"]),
-            axis=TextPick.from_dict(axis) if isinstance(axis, dict) else None,
-            order=TextPick.from_dict(order) if isinstance(order, dict) else float(order),
-            simulated=bool(data.get("simulated", True)), source_amplitude=source_amplitude,
-            fixed_source_amplitude=fixed, values_in_db=bool(data.get("values_in_db", False)),
-            db_reference=db_reference, time_column=time_column, sample_rate=sample_rate,
-            speed_channel=str(data.get("speed_channel", "")),
-            metadata=tuple(MetadataSource.from_dict(source) for source in data.get("metadata", ())),
-            skipped_columns=tuple((str(sheet), int(column))
-                                  for sheet, column in data.get("skipped_columns", ())),
-            decimal_separator=decimal, delimiter=delimiter, encoding=encoding,
-        )
+                             f"this build reads format {FORMAT_VERSION}.")
+        shared = _parse_shared_fields(data)
+        template = cls(format_version=version, **shared, **_parse_chip_texts(data, shared["data_kind"]))
+        _check_time_signal(template)
+        return template
+
+
+def _stated_to_dict(stated: StatedNumber) -> Any:
+    return stated if isinstance(stated, (int, float)) else stated.to_dict()
+
+
+def _parse_shared_fields(data: Dict[str, Any]) -> Dict[str, Any]:
+    """The fields that are not texts, checked."""
+    layout, data_kind = data.get("layout"), data.get("data_kind")
+    if layout not in LAYOUTS:
+        raise ValueError(f"Unknown column layout {layout!r}; expected one of {LAYOUTS}.")
+    if data_kind not in DATA_KINDS:
+        raise ValueError(f"Unknown data kind {data_kind!r}; expected one of {DATA_KINDS}.")
+    sheet_rule, sheet_count = data.get("sheet_rule", SHEETS_LISTED), int(data.get("sheet_count", 1))
+    if sheet_rule not in SHEET_RULES:
+        raise ValueError(f"Unknown sheet rule {sheet_rule!r}; expected one of {SHEET_RULES}.")
+    if sheet_count < 1:
+        raise ValueError(f"A sheet count cannot be {sheet_count}.")
+    db_reference = float(data.get("db_reference", 0.0))
+    if db_reference < 0:
+        raise ValueError(f"A dB reference cannot be {db_reference}.")
+    anchor_text, heading_row = data["anchor_text"], int(data.get("heading_row", 0))
+    if not anchor_text.strip() and heading_row < 1:
+        raise ValueError("An Import template needs an anchor text or a heading row number.")
+    data_offset = int(data.get("data_offset", 1))
+    if data_offset < 1:
+        raise ValueError(f"Data cannot start {data_offset} rows below the heading row.")
+    decimal, delimiter = data.get("decimal_separator", ""), data.get("delimiter", "")
+    encoding = data.get("encoding", "")
+    if decimal and decimal not in DECIMAL_SEPARATORS:
+        raise ValueError(f"Unknown decimal separator {decimal!r}; expected one of {DECIMAL_SEPARATORS}.")
+    if delimiter and delimiter not in COLUMN_DELIMITERS:
+        raise ValueError(f"Unknown column delimiter {delimiter!r}; expected one of {COLUMN_DELIMITERS}.")
+    if encoding:
+        try:
+            codecs.lookup(encoding)
+        except LookupError:
+            raise ValueError(f"Unknown text encoding {encoding!r}.") from None
+    return dict(
+        name=data["name"], file_pattern=data["file_pattern"], anchor_text=anchor_text,
+        sheets=tuple(str(sheet) for sheet in data.get("sheets", ())),
+        sheet_rule=sheet_rule, sheet_count=sheet_count,
+        heading_row=heading_row, data_offset=data_offset,
+        layout=layout, data_kind=data_kind,
+        x_unit=data.get("x_unit", ""), amplitude_unit=data.get("amplitude_unit", ""),
+        channel_type=data.get("channel_type", ""),
+        simulated=bool(data.get("simulated", True)), values_in_db=bool(data.get("values_in_db", False)),
+        db_reference=db_reference, time_column=bool(data.get("time_column", True)),
+        speed_channel=str(data.get("speed_channel", "")),
+        skipped_columns=tuple((str(sheet), int(column)) for sheet, column in data.get("skipped_columns", ())),
+        decimal_separator=decimal, delimiter=delimiter, encoding=encoding,
+    )
+
+
+def _parse_chip_texts(data: Dict[str, Any], data_kind: str) -> Dict[str, Any]:
+    """The texts of a template: sources, and the chips its roles take."""
+    amplitude = data.get("amplitude")
+    if amplitude not in FILE_AMPLITUDES:
+        raise ValueError(f"Unknown amplitude in the file {amplitude!r}; expected one of {FILE_AMPLITUDES}.")
+    texts = tuple(TextSource.from_dict(source) for source in data.get("texts", ()))
+    keys = [source.key for source in texts]
+    if len(set(keys)) != len(keys):
+        raise ValueError("An Import template lists one text source twice.")
+    roles = data.get("roles", {})
+    unknown = sorted(set(roles) - set(ROLES))
+    if unknown:
+        raise ValueError(f"Unknown role {unknown[0]!r}; expected one of {ROLES}.")
+    by_key = dict(zip(keys, texts))
+
+    def chip(ref_data: Any, role: str) -> ChipRef:
+        if not isinstance(ref_data, dict):
+            raise ValueError(f"The role {role!r} takes a chip, not {ref_data!r}.")
+        return checked(ChipRef.from_dict(ref_data), role)
+
+    def checked(ref: ChipRef, role: str) -> ChipRef:
+        source = by_key.get(ref.source_key)
+        if source is None:
+            raise ValueError(f"The role {role!r} takes a chip of the text source {ref.source!r} "
+                             f"(row {ref.row_above} above the heading row), which the template does not list.")
+        if ref.piece and all(cuts.chip != ref.chip for cuts in source.cut_chips):
+            raise ValueError(f"The role {role!r} takes piece {ref.piece} of chip {ref.chip}, which has no own cuts.")
+        return ref
+
+    def stated(value: Any, role: str) -> StatedNumber:
+        if isinstance(value, dict):
+            return chip(value, role)
+        number = float(value)
+        if number < 0:
+            raise ValueError(f"The {role.replace('_', ' ')} cannot be {number}.")
+        return number
+
+    name = tuple(chip(part, ROLE_NAME) for part in roles.get(ROLE_NAME, ()))
+    if not name:
+        raise ValueError("An Import template takes no chip for the channel name.")
+    axis = roles.get(ROLE_AXIS)
+    order = stated(roles.get(ROLE_ORDER, 0.0), ROLE_ORDER)
+    if data_kind == DATA_KIND_ORDER_CUT and not isinstance(order, ChipRef) and order <= 0:
+        raise ValueError("An order cut needs its order: a chip or a fixed number.")
+    fields = tuple(MetadataField.from_dict(field) for field in roles.get(ROLE_FIELDS, ()))
+    names = [field.field.casefold() for field in fields]
+    if len(set(names)) != len(names):
+        raise ValueError("A metadata field is taken from two chips; a field has one source only.")
+    if data_kind == DATA_KIND_ORDER_CUT and "order" in names:
+        raise ValueError("An order cut takes its order from the order role, not from a metadata field 'Order'.")
+    for field in fields:
+        checked(field.chip, ROLE_FIELDS)
+    explicit = "" if amplitude == AMPLITUDE_FROM_HEADER else amplitude
+    return dict(
+        texts=texts, channel_name=name, axis=chip(axis, ROLE_AXIS) if axis is not None else None,
+        order=order, sample_rate=stated(roles.get(ROLE_SAMPLE_RATE, 0.0), ROLE_SAMPLE_RATE),
+        metadata_fields=fields, source_amplitude=explicit, fixed_source_amplitude=explicit,
+    )
+
+
+def _check_time_signal(template: ImportTemplate) -> None:
+    if template.data_kind != DATA_KIND_TIME_SIGNAL or template.time_column:
+        return
+    if template.layout == LAYOUT_XY_PAIRS:
+        raise ValueError("A time signal without a time column has one column per signal, not pairs of columns.")
+    if isinstance(template.sample_rate, (int, float)) and template.sample_rate <= 0:
+        raise ValueError("A time signal without a time column needs its sample rate.")
+

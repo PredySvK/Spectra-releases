@@ -24,11 +24,9 @@ from core.project_model import SourceEntry
 from core.workflow_graph import SaveSpec
 from selection.channel_identity import split_channel_base_and_direction
 from selection.source_facets import (
+    ColumnRule,
     apply_column_facets,
-    apply_channel_facet,
     POOL_IDENTITY_COLUMNS,
-    apply_metadata_facets,
-    apply_range_facets,
     field_kind,
     resolve_channel_type,
 )
@@ -43,9 +41,9 @@ def _bounds_are_text(bounds: Tuple[Any, Any]) -> bool:
     return all(isinstance(bound, str) for bound in bounds)
 
 
-def _saved_facet_plan(metadata_values: Mapping[str, Any],
+def _saved_facet_plan(column_values: Mapping[str, Any],
                       ranges: Mapping[str, Tuple[Any, Any]],
-                      schema: Mapping[str, Any], *, column_rule: bool = False
+                      schema: Mapping[str, Any],
                       ) -> Tuple[Dict[str, List[str]], Dict[str, Tuple[Any, Any]], Tuple[str, ...]]:
     """
     Split a saved query into constraints that can still be evaluated and ones
@@ -60,11 +58,9 @@ def _saved_facet_plan(metadata_values: Mapping[str, Any],
     ranged: Dict[str, Tuple[Any, Any]] = {}
     notes: List[str] = []
 
-    for key, values in (metadata_values or {}).items():
-        if column_rule and key in POOL_IDENTITY_COLUMNS:
+    for key, values in (column_values or {}).items():
+        if key in POOL_IDENTITY_COLUMNS:
             categorical[key] = list(values)
-            continue
-        if not values and not column_rule:
             continue
         config = schema.get(key)
         if not isinstance(config, dict):
@@ -99,21 +95,6 @@ def _saved_facet_plan(metadata_values: Mapping[str, Any],
         ranged[key] = bounds
 
     return categorical, ranged, tuple(notes)
-
-
-def _apply_saved_facets(sources: Iterable[SourceEntry],
-                        schema: Optional[Mapping[str, Any]],
-                        metadata_values: Mapping[str, Any],
-                        ranges: Mapping[str, Tuple[Any, Any]]
-                        ) -> Tuple[List[SourceEntry], Tuple[str, ...]]:
-    schema = schema or {}
-    categorical, ranged, notes = _saved_facet_plan(metadata_values, ranges, schema)
-    kept = list(sources)
-    if categorical:
-        kept = apply_metadata_facets(kept, schema, categorical, fields=categorical)
-    if ranged:
-        kept = apply_range_facets(kept, schema, ranged, fields=ranged)
-    return kept, notes
 
 
 def whole_pool_selection() -> MeasurementSelection:
@@ -186,7 +167,7 @@ def resolve(selection: MeasurementSelection,
     missing file is worse than running it over the rest. The count difference is
     visible in the resolution.
 
-    `channel_types` additionally narrows the column rule by the save nodes'
+    `channel_types` additionally narrows the result by the save nodes'
     type scope. None means every readable channel, including Imported results.
     Computation callers set `time_responses_only` to exclude non-waveforms.
     """
@@ -199,21 +180,13 @@ def resolve(selection: MeasurementSelection,
         matched = [source for source in candidates if source.id in wanted_ids]
     else:
         matched = candidates
-        if selection.setup_labels:
-            allowed = set(selection.setup_labels)
-            matched = [source for source in matched if source.setup_label in allowed]
-    # An explicit selection carries no column constraints (§1.215): only its
-    # source ids and exact channel pairs narrow it.
+    # An explicit selection carries no column constraints or ranges (§1.215):
+    # only its source ids and exact channel pairs narrow it.
     columns, ranges, unevaluable = _saved_facet_plan(
-        selection.column_values, selection.ranges, schema, column_rule=True)
-    if ranges:
-        matched = apply_range_facets(matched, schema, ranges, fields=ranges)
-    picked = apply_column_facets(matched, schema, columns, ranges=ranges)
+        selection.column_values, selection.ranges, schema)
+    picked = apply_column_facets(matched, schema, ColumnRule(
+        columns, ranges, selection.channel_identities))
     matched = [source for source in matched if source.id in picked]
-    if selection.mode == MODE_EXPLICIT and selection.channel_identities is not None:
-        exact = apply_channel_facet(matched, selection.channel_identities)
-        picked = {source_id: labels & set(exact.get(source_id, ()))
-                  for source_id, labels in picked.items()}
     channels_by_source = _channels_for(matched, picked, channel_types,
                                       time_responses_only=time_responses_only)
     skipped = tuple(
@@ -239,34 +212,6 @@ def resolve(selection: MeasurementSelection,
         unevaluable_constraints=unevaluable,
         skipped_non_time_sources=skipped,
     )
-
-
-@dataclass(frozen=True)
-class SaveSourceResolution:
-    """
-    Which measurements a `SaveSpec` keeps, and which of its saved constraints
-    the schema can no longer evaluate.
-    """
-    sources: List[SourceEntry]
-    unevaluable_constraints: Tuple[str, ...] = ()
-
-
-def resolve_save_sources(save: SaveSpec, sources: Iterable[SourceEntry],
-                         schema: Optional[Dict[str, Dict[str, Any]]] = None) -> SaveSourceResolution:
-    """
-    The measurements a `SaveSpec` keeps: `sources` narrowed by its metadata and
-    range facets.
-
-    Same functions as `resolve()`'s query branch and the same reason -- the batch
-    and the Compare tab must agree on what \"these measurements\" means. An empty
-    or absent facet imposes no constraint; a range facet naming a field a source
-    lacks drops that source, because a range is a positive assertion. A constraint
-    whose field is gone or has changed kind is not applied and is named on the
-    result, the same rule `resolve` uses.
-    """
-    kept, notes = _apply_saved_facets(
-        sources, schema, save.metadata_values, save.ranges)
-    return SaveSourceResolution(sources=kept, unevaluable_constraints=notes)
 
 
 def save_spec_allows_channel(save: SaveSpec, channel_name: str, channel_type: str) -> bool:
@@ -295,8 +240,7 @@ def _channels_for(sources: List[SourceEntry], picked: Mapping[str, Iterable[str]
     # The stored channel snapshot is ChannelMetadata.to_dict(), so the type sits
     # under \"type\" (compare gui/handlers/filter_routing.py, which reads it the
     # same way). With a type constraint, a channel with no stored type is dropped: a type
-    # constraint is a positive assertion, the same rule resolve_save_sources
-    # applies to range facets.
+    # constraint is a positive assertion, the same rule a range follows (§1.182).
     wanted = set(channel_types) if channel_types is not None else None
     by_id = {source.id: source for source in sources}
     narrowed = {}
@@ -358,31 +302,6 @@ def channel_identities_by_type(runs: Iterable[MeasurementRunIndex],
         base: sorted(directions, key=lambda d: (d is None, d))
         for base, directions in grouped.items()
     }
-
-
-def count_channels_by_type(runs: Iterable[MeasurementRunIndex],
-                           channel_types: Set[str],
-                           entries_by_path: Optional[Mapping[str, SourceEntry]] = None,
-                           ) -> Tuple[int, int]:
-    """
-    (measurements, channels) of `runs` that have a channel of `channel_types`:
-    how many runs contribute at least one, and how many channels in all. Judged
-    by `resolve_run_channel_type`, like `channel_identities_by_type`, so the
-    number shown is the number a typed SaveSpec goes on to keep.
-    """
-    entries_by_path = entries_by_path or {}
-    measurements = 0
-    channels = 0
-    for run in runs:
-        source = entries_by_path.get(os.path.normcase(os.path.abspath(run.file_path)))
-        matching = sum(
-            1 for channel_meta in run.computable_channels()
-            if resolve_run_channel_type(source, channel_meta) in channel_types
-        )
-        if matching:
-            measurements += 1
-            channels += matching
-    return measurements, channels
 
 
 def select_channels_for_run(run: MeasurementRunIndex,

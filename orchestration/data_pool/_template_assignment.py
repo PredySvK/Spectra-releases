@@ -56,14 +56,16 @@ class TemplateAssignment:
     misfits: Tuple[Misfit, ...]
 
 
-def plan_template_assignment(paths: Iterable[str], templates: Sequence[ImportTemplate]) -> TemplateAssignment:
+def plan_template_assignment(paths: Iterable[str], templates: Sequence[ImportTemplate],
+                             recognising: Optional[Tuple[ImportTemplate, ...]] = None) -> TemplateAssignment:
     """
     Sorts `paths` by what `templates` make of them. Reads each candidate's
     header, so it runs on a worker.
 
     A file no template's name pattern names is left alone. One whose name fits
     but whose content fits no template is a misfit -- unless a built-in reader
-    recognises it, in which case the suffix decides as before.
+    recognises it, in which case the suffix decides as before. `recognising`
+    are the templates that may recognise it (`is_measurement_file`).
     """
     assigned: Dict[str, str] = {}
     ambiguous: Dict[str, Tuple[str, ...]] = {}
@@ -78,7 +80,7 @@ def plan_template_assignment(paths: Iterable[str], templates: Sequence[ImportTem
             assigned[path] = fitting[0]
         elif fitting:
             ambiguous[path] = fitting
-        elif not is_measurement_file(path):
+        elif not is_measurement_file(path, recognising):
             misfits.append(Misfit(
                 path, ", ".join(reasons), "; ".join(f"{name}: {reason}" for name, reason in reasons.items()),
                 tuple(reasons)))

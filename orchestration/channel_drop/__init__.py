@@ -3,7 +3,7 @@ Channel-drop orchestration: route drop descriptors using dock facts as data.
 
 This component decides which processing path a drop belongs to, removes
 duplicate channels, resolves drop descriptors against the Data Pool (and
-back), the FFT settings of a Spectrum drop and the settings of a drop onto a
+back) -- one way for every lane and every tab a drop opens --, the FFT settings of a Spectrum drop and the settings of a drop onto a
 dock holding result sets, and runs the drop: the order of
 its lanes, the claim-run-release skeleton, the landing of every result (its
 cache-hit lines, draw and keep, and the pairing of a spectrogram's channels)
@@ -36,12 +36,12 @@ from orchestration.channel_drop._spectrum_drop_config import resolve_spectrum_dr
 from orchestration.channel_drop._result_content_drop_config import resolve_result_content_drop_config
 from orchestration.channel_drop._pending_drops import PendingDrops
 from orchestration.channel_drop._dropped_channels import (
+    DroppedChannel,
     build_channel_descriptors,
-    resolve_dropped_channel,
     resolve_dropped_channels,
+    resolve_tacho_per_file,
 )
 from orchestration.channel_drop._plotted_keys import read_plotted_keys
-from orchestration.channel_drop._tacho_plan import plan_tacho_per_file
 from orchestration.channel_drop._spectrogram_routing import decide_spectrogram_drop
 
 __all__ = [
@@ -60,10 +60,10 @@ __all__ = [
     "drop_keys",
     "filter_duplicate_descriptors",
     "PendingDrops",
-    "resolve_dropped_channel",
+    "DroppedChannel",
     "resolve_dropped_channels",
+    "resolve_tacho_per_file",
     "build_channel_descriptors",
     "read_plotted_keys",
-    "plan_tacho_per_file",
     "decide_spectrogram_drop",
 ]

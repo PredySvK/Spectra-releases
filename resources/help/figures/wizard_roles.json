@@ -1,0 +1,30 @@
+{
+  "scenario": "wizard_roles",
+  "size": [1500, 1000],
+  "elements": [
+    {"kind": "marker", "target": "WizardSlotName", "text": {
+      "en": "Channel name: name chips in text order; drag to reorder, ✕ takes one out, right click splits.",
+      "cs": "Channel name: čipy jména v pořadí textu; tažením změníte pořadí, ✕ čip odebere, pravé tlačítko ho rozdělí."}},
+    {"kind": "marker", "target": "WizardSlotAxis", "text": {
+      "en": "Axis: the chip that says X, Y or Z. + Pick arms the slot.",
+      "cs": "Axis: čip, který říká X, Y nebo Z. + Pick slot aktivuje."}},
+    {"kind": "marker", "target": "WizardSlotOrder", "text": {
+      "en": "Order: a chip with the order number, or one number typed for all.",
+      "cs": "Order: čip s číslem řádu, nebo jedno číslo zadané pro všechny."}},
+    {"kind": "marker", "target": "WizardSlotMetadata", "text": {
+      "en": "Metadata: a text turned into a field of the channel, e.g. Damping = 0.02.",
+      "cs": "Metadata: text převedený na pole kanálu, např. Damping = 0.02."}},
+    {"kind": "marker", "target": "WizardRolesHint", "text": {
+      "en": "Hint: which channel the slots show and what a click in the preview does (Esc stops picking).",
+      "cs": "Nápověda: který kanál sloty ukazují a co dělá klik v náhledu (Esc zastaví výběr)."}},
+    {"kind": "marker", "target": "WizardPreview", "text": {
+      "en": "Click a header cell, or the Sheet / File / Folder text above, to offer its chips; each role has its colour band.",
+      "cs": "Klik na buňku záhlaví, nebo na text Sheet / File / Folder nad ní, nabídne její čipy; každá role má svůj barevný pruh."}},
+    {"kind": "marker", "target": "WizardRoleLegend", "text": {
+      "en": "Colours of the roles; the selected channel is marked blue.",
+      "cs": "Barvy rolí; vybraný kanál je označen modře."}},
+    {"kind": "marker", "target": "WizardRoleResults", "text": {
+      "en": "What the roles make of every channel; click a row to select that channel. Problem shows what fails.",
+      "cs": "Co z rolí vyjde u každého kanálu; klik na řádek vybere kanál. Sloupec Problem ukáže, co selhává."}}
+  ]
+}

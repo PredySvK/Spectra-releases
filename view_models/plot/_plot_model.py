@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from core.channel_types import CHANNEL_TYPE_GENERAL_DYNAMIC
+from core.legend_config import LegendConfig
 
 from view_models.analysis_kinds import ANALYSIS_TIME
 
@@ -94,15 +95,16 @@ class Trace:
     # a saved tab read the recipe alone.
     compute_spec: Optional[Dict[str, Any]] = None
     # The Spectrum format and Amplitude the curve's values are shown in
-    # -- "" when it says neither. A cursor readout names the
-    # amplitude, a dropped spectrum can take both over (channel_drop).
+    # -- "" for what it is not in; recorded only by
+    # build_trace_shown_as, whichever way the curve arrived (§1.258). A cursor
+    # readout names the amplitude, a dropped spectrum can take both over
+    # (channel_drop).
     spectrum_format: str = ""
     amplitude_mode: str = ""
     # Underlying NVHDataBlock (canonical FFT or order cut) if available.
     # Enables instant on-the-fly re-scaling (Linear/Power/PSD, RMS/Peak, dB)
     # without re-running FFT or background jobs.
     block: Optional[Any] = None
-    data_block: Optional[Any] = None
 
     @property
     def is_set_only(self) -> bool:
@@ -134,22 +136,6 @@ class ViewSpec:
 
 
 @dataclass
-class BandRmsCursor:
-    """A Band RMS cursor over the graph.
-
-    Only ``kind="band_rms"`` exists today. ``band`` is the (lo, hi)
-    frequency span the user dragged; ``processing`` carries the window
-    corrections the Band RMS calculation needs (amplitude mode, spectrum
-    format, ACF, linear ECF), which are known only for a frequency-domain plot.
-    """
-
-    kind: str = "band_rms"
-    enabled: bool = False
-    band: Optional[Tuple[float, float]] = None
-    processing: Optional[Dict[str, Any]] = None
-
-
-@dataclass
 class Annotation:
     """User-authored mark on the graph.
 
@@ -169,13 +155,15 @@ class PlotModel:
 
     traces: List[Trace] = field(default_factory=list)
     view: ViewSpec = field(default_factory=ViewSpec)
-    band_rms_cursors: List[BandRmsCursor] = field(default_factory=list)
     annotations: List[Annotation] = field(default_factory=list)
     analysis_kind: str = ANALYSIS_TIME  # a view_models.analysis_kinds name
     # The dock's one X quantity (core.axis_projections). "" means "not
     # decided" -- every trace draws regardless of its own x_quantity, which is
     # also what an empty model defaults to before its first trace lands.
     x_domain: str = ""
+    # Which parts every trace's Curve name (Trace.label) is made of; GraphCurves
+    # stamps its graph's own on every model it holds (plot §1.296).
+    legend_config: LegendConfig = LegendConfig()
 
 
 @dataclass
@@ -185,23 +173,25 @@ class SpectrogramModel:
     A spectrogram is one ``ImageItem`` plus a LUT -- no curves, no overlays, no
     legend -- so it gets its own model rather than being forced into
     ``PlotModel.traces``.
-    ``image`` is the magnitude matrix as the renderer needs it; ``color_scale``
-    is a display-only parameter (§1.21) read from ``app_context`` at build time.
+    Axis letters follow CONTEXT.md "Spectrogram axes": ``x`` is the bottom
+    (tracking) axis, ``y`` the frequency, ``z`` the colour matrix in
+    ``(y, x)`` order with its unit ``z_unit``. Values stay native; the drawn
+    form is ``build_drawn_spectrogram``'s (§1.130, #893). ``color_scale`` is a
+    display-only parameter (§1.21) read from ``app_context`` at build time.
     """
 
-    image: np.ndarray
-    freqs: np.ndarray
-    zvals: np.ndarray  # bottom-axis values: time (s) or rpm, per z_label/z_unit
-    z_label: str = "Time"
-    z_unit: str = "s"
+    x: np.ndarray  # bottom-axis values: time (s) or rpm, per x_label/x_unit
+    y: np.ndarray  # frequency (Hz)
+    z: np.ndarray  # colour values, (y, x)
+    x_label: str = "Time"
+    x_unit: str = "s"
     # The bottom axis's quantity ("time" or "rpm"), so the global X axis unit
     # (issue #459) knows whether it rescales; the left axis is always frequency.
-    z_quantity: str = "time"
+    x_quantity: str = "time"
     color_scale: str = "linear"
     title: str = ""
-    value_unit: str = ""
+    z_unit: str = ""
     block: Optional[Any] = None
-    data_block: Optional[Any] = None
     # The recipe the waterfall was computed and shown with -- what a saved tab
     # recomputes it with, as ``Trace.compute_spec`` is for a curve.
     compute_spec: Optional[Dict[str, Any]] = None

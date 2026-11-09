@@ -125,14 +125,14 @@ class AccReaderImportTemplate:
     def __init__(self, file_path: str, template: ImportTemplate):
         self.file_path = file_path
         self.template = template
-        self.default_source_amplitude = template.source_amplitude
 
-    def scan_file_structure(self) -> MeasurementRunIndex:
-        return MeasurementRunIndex(os.path.basename(self.file_path), self.file_path)
+    def read_run_index(self) -> MeasurementRunIndex:
+        """The file's channels and Lost parts, read from its header (MeasurementReader)."""
+        run_index = MeasurementRunIndex(os.path.basename(self.file_path), self.file_path)
+        self._read_channels(run_index)
+        return run_index
 
-    def load_channels_on_demand(self, run_index: MeasurementRunIndex):
-        if run_index.available_channels:
-            return
+    def _read_channels(self, run_index: MeasurementRunIndex) -> None:
         for channel in self._reading().channels:
             meta = ChannelMetadata(index=channel.index, name=channel.name,
                                    channel_type=channel.channel_type, unit=channel.unit)

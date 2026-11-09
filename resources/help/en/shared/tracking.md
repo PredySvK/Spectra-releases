@@ -73,19 +73,24 @@ Two run-ups with a plateau at 300 rpm, Step = 50 rpm. On the left the speed wobb
 
 ## Tacho cleaning
 
-The tacho is cleaned first: samples steeper than 200 000 RPM/s and non-finite samples are replaced by interpolation, then a 50 ms moving average is applied. A negative-reading tacho is flipped, and negative speeds are clamped to 0. The tacho itself is a [raw signal](topic:raw_data/intro) channel that is never DC-corrected.
+The tacho is cleaned before the triggers are placed, in these steps and on the tacho's own sampling rate:
 
-The average smooths the speed, so the speed read at a trigger is the smoothed one; a change faster than 50 ms is blurred.
+1. **Fill.** Missing and non-finite samples (NaN, inf) are replaced by interpolation.
+2. **Hampel filter.** A sample that lies further than the *Hampel threshold* (default 8) noise sigmas from the median of its 11 neighbours is a spike and is replaced by interpolation. The noise sigma is estimated once from the whole tacho, so ordinary tacho noise is never flagged. A slow change is not a spike, however steep: the filter judges a sample against its neighbours, not the step between them.
+3. **Smoothing.** A moving average of the *smoothing window* (default 50 ms) smooths the speed.
+4. **Sign and zero.** A run that logs negative rpm all the way to its top speed (a reverse rotation) is flipped, and negative speeds are clamped to 0.
 
-The length of the average is set in **Settings › Computation › DSP**, field **Tacho smoothing window [ms]**. The default is 50 ms; 0 means no smoothing. Results calculated with different windows are different [Parameter Sets](topic:filtering/intro). The figure and the numbers below are for 50 ms.
+![What the Hampel filter does to a bad sample and the 50 ms average to a step](tracking_cleaning.png)
 
-![What the 50 ms moving average does to a short dip and to a step](tracking_cleaning.png)
+A single bad sample in the raw tacho (grey, left) is removed by the Hampel filter (orange) and is gone from the cleaned speed the triggers use (blue). The averaging removes the noise, but it spreads a fast change over the window: a step of 200 rpm in 5 ms becomes a ramp 50 ms long (right). A dip 30 ms long is wider than the Hampel neighbourhood, so only the averaging touches it: it becomes shallower and wider. A slow run-up or run-down is not affected: the average of a straight ramp is the same ramp.
 
-Two fast events in the raw tacho (grey) and the cleaned speed the triggers use (blue). The averaging removes the noise, but it also spreads a change over the 50 ms window. A step of 200 rpm in 5 ms becomes a ramp 50 ms long. A dip 30 ms long, 200 rpm deep, becomes shallower (here about 140 rpm) and wider. A slow run-up or run-down is not affected: the average of a straight ramp is the same ramp.
+The speed read at a trigger is the cleaned one; a change faster than the window is blurred. The tacho itself is a [raw signal](topic:raw_data/intro) channel that is never DC-corrected.
+
+The three values are set in **Settings › Computation › DSP**: **Hampel filter** (on or off, default on), **Hampel threshold [σ]** (default 8, greyed out while the filter is off) and **Tacho smoothing window [ms]** (default 50, 0 = none). Switching both the filter and the smoothing off leaves the raw tacho, with only NaN and inf filled. They apply to RPM Tracked only, and a change recalculates nothing by itself. Results calculated with different values are different [Parameter Sets](topic:filtering/intro).
 
 ## Tacho at another sampling rate
 
-A tacho does not have to be recorded at the rate of the vibration channel. When the two differ by more than 1 %, the program interpolates the speed linearly onto the time axis of the channel being analysed, before the triggers are placed. A tacho faster than the channel is first averaged over one sample of the channel, so tacho noise above half the channel rate does not turn into false slow speed changes; a slower one is not averaged. Interpolation adds no information: a slow tacho stays as coarse as it was, only on a finer time axis. It always runs by itself, there is nothing to switch on, and the System Log notes it once per file and rate. A file with a tacho at the channel's own rate is calculated exactly as before.
+A tacho does not have to be recorded at the rate of the vibration channel. When the two differ by more than 1 %, the program interpolates the speed linearly onto the time axis of the channel being analysed, before the triggers are placed. The cleaning above runs first, on the tacho's own rate, so a bad sample of a fast tacho is removed before the interpolation could spread it over many samples of the channel. A tacho faster than the channel is first averaged over one sample of the channel, so tacho noise above half the channel rate does not turn into false slow speed changes; a slower one is not averaged. Interpolation adds no information: a slow tacho stays as coarse as it was, only on a finer time axis. It always runs by itself, there is nothing to switch on, and the System Log notes it once per file and rate. A file with a tacho at the channel's own rate is calculated exactly as before.
 
 A tacho that starts at a different time than the channel, or ends more than one tacho step before it, is refused with a message naming both channels and both times.
 

@@ -50,7 +50,7 @@ brings the old picks back (BUGS.md F1 / F2).
 
 The panel holds a list of named core.project_model.FilterProfile, shown as
 tabs above the facets (plus a "+" button to add a custom one) -- see
-plans/2026-09-05_filtre-maska-nad-kazdym-grafom.md T1. Two fixed tabs always
+the filter-mask plan T1. Two fixed tabs always
 exist -- "Global" (global scope) and "Local" (local scope) -- and custom ones
 can be added, renamed, deleted and flipped between the two scopes (tab
 right-click menu, or the cb_profile_scope checkbox next to "Filter Data
@@ -152,7 +152,8 @@ from PySide6.QtWidgets import (
 from session.trace_filter import BUILTIN_GLOBAL_ID, BUILTIN_LOCAL_ID, FilterProfileRegistry, FilterSelectionStore
 
 from core.project_model import FilterSelection
-from selection.trace_filter import OfferedFacets, PoolQuery, ResolvedFacets
+from selection.source_facets import ColumnRule
+from selection.trace_filter import OfferedFacets, ResolvedFacets
 
 from gui.filter_panel.facet_grid import FacetGrid
 from gui.filter_panel.filter_panel_profiles import ProfileTabsMixin
@@ -323,5 +324,5 @@ class FilterPanel(ProfileTabsMixin, QWidget):
         else:
             self.label_status.setText("")
 
-    def pool_query(self) -> PoolQuery:
+    def pool_query(self) -> ColumnRule:
         return self.facet_grid.pool_query()

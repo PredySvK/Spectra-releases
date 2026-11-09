@@ -24,7 +24,8 @@ the code moved 1:1 out of AppContext.
 
 import os
 from dataclasses import dataclass, field, replace
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple, Union
+from enum import Enum
+from typing import AbstractSet, Any, Dict, FrozenSet, Iterable, List, Mapping, Optional, Tuple, Union
 
 from core.models import ChannelMetadata, MeasurementRunIndex, ReadProblems, UnreadableFile
 from core.project_model import NVHProject, SourceEntry, is_channel_layer
@@ -201,6 +202,93 @@ def detect_schema_conflicts(baselines_by_root: Dict[str, Dict[str, Any]],
     return conflicts
 
 
+class AdmissionKind(Enum):
+    """What an `Admission` lets into the pool; see `resolve_admitted_files`."""
+
+    FOLDER = "folder"
+    FILES = "files"
+    REFRESH = "refresh"
+    IN_POOL = "in_pool"
+
+
+@dataclass(frozen=True)
+class Admission:
+    """
+    Which of the files a scan of one folder read may enter the Data Pool --
+    the one rule of pool membership a scan applies.
+
+    The scan always reads the whole folder; the admission is what the run
+    asked for, set by the kind of run (and by an Add's selection), never by
+    the caller combining flags. Built through `folder`, `files`, `refresh` or
+    `in_pool`; `picked` holds the canonical paths of a `files` admission.
+    """
+
+    kind: AdmissionKind
+    picked: FrozenSet[str] = frozenset()
+
+    @classmethod
+    def folder(cls) -> "Admission":
+        """An Add of the folder: everything in it, files taken out of the pool before included."""
+        return cls(AdmissionKind.FOLDER)
+
+    @classmethod
+    def files(cls, paths: Iterable[str]) -> "Admission":
+        """An Add of files: the picked ones plus those already in the pool."""
+        return cls(AdmissionKind.FILES, frozenset(canonical_path(path) for path in paths))
+
+    @classmethod
+    def refresh(cls) -> "Admission":
+        """
+        A Refresh: what is in the pool, files the project does not know, and
+        files the project records as in the pool that the pool does not hold yet.
+        """
+        return cls(AdmissionKind.REFRESH)
+
+    @classmethod
+    def in_pool(cls) -> "Admission":
+        """A Template edit's re-read: only what is in the pool already."""
+        return cls(AdmissionKind.IN_POOL)
+
+    def named(self, admitted: Iterable[str]) -> Tuple[str, ...]:
+        """
+        The `admitted` paths this admission asked for by name -- what an Add
+        may ask its Test setup about: all of a folder's, the picked files
+        that got in, none for a Refresh or a Template edit.
+        """
+        if self.kind is AdmissionKind.FOLDER:
+            return tuple(admitted)
+        if self.kind is AdmissionKind.FILES:
+            return tuple(path for path in admitted if canonical_path(path) in self.picked)
+        return ()
+
+
+def resolve_admitted_files(admission: Admission, in_pool: AbstractSet[str],
+                           recorded: Mapping[str, bool], read: AbstractSet[str]) -> FrozenSet[str]:
+    """
+    The files of one folder that enter the pool, as canonical paths: the
+    part of `read` (what the scan read -- an Unreadable file or a misfit is
+    never among it, so it never enters) that `admission` lets in.
+
+    `in_pool` is what the pool holds from the folder now; `recorded` is what
+    the project recorded before this integration, path -> its `in_pool`. A
+    file missing from `recorded` is one the project does not know yet.
+    """
+    if admission.kind is AdmissionKind.FOLDER:
+        return frozenset(read)
+    wanted = set(in_pool)
+    if admission.kind is AdmissionKind.FILES:
+        wanted |= admission.picked
+    elif admission.kind is AdmissionKind.REFRESH:
+        # Unknown files, and files recorded as pooled that the pool does not
+        # hold yet: opening a project indexes the folder first, so a
+        # measurement written into it while the project was closed is no
+        # longer unknown by the time this runs -- without the second half it
+        # was reported as new, silently excluded, and its in_pool flipped to
+        # False for good. A file the user took out stays out.
+        wanted |= {path for path in read if recorded.get(path, True)}
+    return frozenset(path for path in read if path in wanted)
+
+
 @dataclass(frozen=True)
 class IntegrateResult:
     """
@@ -224,6 +312,9 @@ class IntegrateResult:
     # spelled them: in the pool now, not before. A run already in the pool
     # and merely re-scanned is not among them.
     entered: Tuple[str, ...] = ()
+    # Every file path the admission let in from this scan, as the scan spelled
+    # them: `entered` plus the runs re-scanned in place.
+    admitted: Tuple[str, ...] = ()
 
 
 def run_from_entry(entry: SourceEntry, directory: str) -> Optional[MeasurementRunIndex]:
@@ -541,7 +632,7 @@ class DataPool:
     # ---- the data pool -------------------------------------------------
 
     def integrate_scanned_directory(self, directory_path: str, scanned: ScannedDirectory, *,
-                                    only_files=None, admit_unknown: bool = False,
+                                    admission: Admission = Admission.folder(),
                                     source_amplitudes: Optional[Mapping[str, str]] = None,
                                     import_templates: Optional[Mapping[str, str]] = None,
                                     ) -> IntegrateResult:
@@ -560,15 +651,13 @@ class DataPool:
         adds nothing and is re-scanned in place instead of duplicated), whether
         this was a folder new to the pool, and the counts the shell logs.
 
-        `only_files` narrows a whole-folder scan to the measurements the user
-        actually picked. The scan itself always covers the folder, because the
-        folder cache is written per folder and reading one file out of it costs
-        the same as reading all of them; what changes is which of the results
-        enter the pool. Files already in the pool from this folder are kept
-        regardless, so picking one file today and another next week grows the
-        same folder node rather than replacing it. None means the whole folder,
-        which is what an explicit "Add folder" asks for and what therefore
-        overrides an earlier removal.
+        `admission` is which of the scanned files enter the pool
+        (`resolve_admitted_files`). The scan itself always covers the folder,
+        because the folder cache is written per folder and reading one file out
+        of it costs the same as reading all of them; what changes is which of
+        the results enter the pool. The default is the whole folder, which is
+        what an explicit "Add folder" asks for and what therefore overrides an
+        earlier removal.
 
         `source_amplitudes` maps a file path to the Source amplitude the user
         just answered for it; it is written onto the file's source entry, over
@@ -579,11 +668,9 @@ class DataPool:
         The scan's Unreadable files replace what the folder's previous scan
         left, are never admitted to the pool and never reach the project.
 
-        `admit_unknown` is what makes a refresh useful: a measurement written
-        into the folder since the last scan joins the pool, while one the user
-        removed stays removed. "Unknown" is judged against the project as it
-        was before this call, because registering the folder below gives every
-        file an entry and would otherwise make them all look new.
+        What the project records is judged as it was before this call, because
+        registering the folder below gives every file an entry and would
+        otherwise make every file of a Refresh look new.
         """
         if not directory_path:
             return IntegrateResult(0, False, directory_path, 0, 0)
@@ -644,19 +731,10 @@ class DataPool:
         already_here = {canonical_path(run.file_path) for run in self.loaded_runs
                         if canonical_path(os.path.dirname(run.file_path)) == key}
 
-        if only_files is not None:
-            wanted = {canonical_path(path) for path in only_files} | already_here
-            if admit_unknown:
-                wanted |= {path for path in incoming if path not in known_before}
-                # A file the project already records as pooled but that is not
-                # in the in-memory pool yet. Opening a project indexes the
-                # folder first, so a measurement written into it while the
-                # project was closed is no longer "unknown" by the time this
-                # runs -- it was reported as new and then silently excluded,
-                # and its in_pool was flipped to False for good.
-                wanted |= {path for path in incoming
-                           if getattr(known_before.get(path), "in_pool", False)}
-            incoming = {path: run for path, run in incoming.items() if path in wanted}
+        admitted = resolve_admitted_files(
+            admission, already_here, {path: entry.in_pool for path, entry in known_before.items()},
+            set(incoming))
+        incoming = {path: run for path, run in incoming.items() if path in admitted}
 
         gained = len(incoming) - len(already_here)
 
@@ -723,6 +801,7 @@ class DataPool:
             read_problems_changed=read_problems_changed,
             entered=tuple(run.file_path for path, run in incoming.items()
                           if path not in already_here),
+            admitted=tuple(run.file_path for run in incoming.values()),
         )
 
     def _forget_pool_directory(self, key: str) -> None:

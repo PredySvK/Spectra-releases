@@ -62,14 +62,10 @@ class TemplateEditSummary:
         return lines or ("No metadata field disappears or is renamed.",)
 
 
-def _fields_by_piece(template: ImportTemplate) -> Dict[Tuple[str, int, int], str]:
-    """(source, header row, piece position) -> the field that piece becomes, for every kept piece."""
-    fields = {}
-    for source in template.metadata:
-        for rule in source.pieces:
-            if not rule.is_dropped:
-                fields[(source.source, source.row_above, rule.position)] = rule.field.strip()
-    return fields
+def _fields_by_chip(template: ImportTemplate) -> Dict[Tuple[str, int, int, int], str]:
+    """(source, header row, chip, piece) -> the field that chip becomes, for every metadata field."""
+    return {(field.chip.source, field.chip.row_above, field.chip.chip, field.chip.piece): field.field.strip()
+            for field in template.metadata_fields}
 
 
 def _tab_label(number: int, tab: Mapping[str, Any]) -> str:
@@ -87,7 +83,7 @@ def build_template_edit_summary(before: ImportTemplate, after: ImportTemplate, *
     are the project's Filter cards; `open_tabs` its open graphs as
     `TabSpec.to_dict()`, whose evaluation tables show metadata columns.
     """
-    old, new = _fields_by_piece(before), _fields_by_piece(after)
+    old, new = _fields_by_chip(before), _fields_by_chip(after)
     old_names, new_names = set(old.values()), set(new.values())
     names = {str(profile.get("id")): str(profile.get("name") or profile.get("id"))
              for profile in filter_profiles}

@@ -25,8 +25,9 @@ from PySide6.QtWidgets import (
 from core.jobs import job_step
 from selection.measurement_selection import resolve
 from selection.source_facets import all_pool_sources
+from view_models.measurement_selection import describe_counts
 
-from gui.dialogs.measurement_selection_dialog import MeasurementSelectionDialog, describe_counts
+from gui.dialogs.measurement_selection_dialog import MeasurementSelectionDialog
 from gui.workspace.channel_drop_target import SELECTION_DRAG_MIME
 
 _COUNT_SLOT = "measurement_selections.count"

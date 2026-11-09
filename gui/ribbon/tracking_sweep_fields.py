@@ -137,6 +137,27 @@ class TrackingSweepFields(QObject):
         """The accepted (min, max) of the shown mode; None is auto."""
         return _parse(self._accepted[0]), _parse(self._accepted[1])
 
+    def reset_to_defaults(self) -> None:
+        """
+        Every tracking mode back to its defaults -- the mode, the direction, each
+        mode's step and Tracking range (auto) -- without `sig_changed`: the tab
+        publishes its config once after its own reset.
+        """
+        for combo, name in ((self.combo_tracking_mode, "tracking_mode"),
+                            (self.combo_direction, "direction")):
+            if combo is None:
+                continue
+            label = self._dsp_choices.parameter(name).default_label
+            self._set(self._key(name), label)
+            combo.blockSignals(True)
+            combo.setCurrentText(label)
+            combo.blockSignals(False)
+        for mode in self._modes:
+            self._set(self._key(f"step_{mode}"), self._dsp_choices.step_rule(mode).default)
+            for field in _MODES[mode]["range_fields"]:
+                self._set(self._key(field), "")
+        self._show_mode()
+
     def _key(self, suffix: str) -> str:
         return f"{self._prefix}_{suffix}"
 

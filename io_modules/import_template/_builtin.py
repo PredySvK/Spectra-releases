@@ -13,10 +13,17 @@ from core.import_template import ImportTemplate
 #   row 3  scenario
 #   row 4  "Speed (rev/min)" | "Amplitude  (<unit>)"
 # A bare "Amplitude" is Peak (readers §1.220). The two sheets are the two rotor
-# variants; the Rotor field comes from the 4th piece of the sheet name.
+# variants; the Rotor field comes from the 4th chip of the sheet name. The name
+# is the location and the order (so the pairs of one sheet, which differ only in
+# the order, have different names); the axis comes after them. The texts are
+# split at the wizard's delimiters, so a built-in opened in the wizard keeps
+# its chip numbers (#1038).
+_ROW_1 = {"source": "header", "row_above": 3}
+_ROW_2 = {"source": "header", "row_above": 2}
+_SHEET = {"source": "sheet"}
 _BUILTIN = [
     {
-        "format_version": 1,
+        "format_version": 2,
         "name": "MASTA (new layout, both rotors, Excel file)",
         "file_pattern": "*.xlsx",
         "sheets": ["AccAMP,IHUS, Drive,AsymRot", "AccAMP,IHUS,Drive,SymRot"],
@@ -25,24 +32,19 @@ _BUILTIN = [
         "anchor_text": "Speed (rev/min)",
         "layout": "xy_pairs",
         "data_kind": "order_cut",
-        "channel_name": [
-            {"row_above": 2, "after": "At ", "before": ":"},
-            ":",
-            {"row_above": 2, "split": ",", "piece": 1},
-            " Order ",   # the pairs of one sheet differ only in the order (row 1), so the name must carry it
-            {"row_above": 3, "after": "Order "},
-        ],
-        "order": {"row_above": 3, "after": "Order "},
         "simulated": True,
-        "source_amplitude": "peak",
-        "metadata": [
-            {
-                "source": "sheet",
-                "delimiters": ",",
-                "pieces": [{"position": 3, "field": "Rotor"}],
-                "drop_unknown": True,
-            },
+        "amplitude": "peak",
+        "texts": [
+            {**_ROW_1, "delimiters": ",:;\\-"},
+            {**_ROW_2, "delimiters": ",:;\\-", "cuts": [{"chip": 2, "cuts": [{"cut": "after_text", "text": "At "}]}]},
+            {**_SHEET, "delimiters": "_,;- "},
         ],
+        "roles": {
+            "name": [{**_ROW_2, "chip": 2, "piece": 1}, {**_ROW_1, "chip": -1}],
+            "axis": {**_ROW_2, "chip": 1},
+            "order": {**_ROW_1, "chip": -1},
+            "fields": [{"field": "Rotor", "chip": {**_SHEET, "chip": 3}}],
+        },
     },
 ]
 

@@ -2,16 +2,23 @@
 Data pool orchestration: what an ingest reads, in what order, and what it
 means -- plus which pool directories still need registration with the project.
 
-The ingest use case (`PoolIngestUseCase`) submits one step per folder through
-a `JobRunner`, folds each folder into the pool as it lands, and reports the
-run as data: a `FolderReport` per folder and one `IngestOutcome` at the end.
-Before reading it asks the **Source amplitude** question (RMS or Peak) once per
-Imported-result reader that has files in the plan, through a callback the shell
-supplies; a file that fits several **Import templates** is asked about the same
+The ingest use case (`PoolIngestUseCase`) runs one `IngestRequest` at a time --
+an **Add**, a **Refresh** or a **Template edit** (`IngestKind`), the one concept
+every difference between runs follows from. It plans the run on a worker,
+submits one step per folder through a `JobRunner`, folds each folder into the
+pool as it lands, and reports the run as data: a `FolderReport` per folder and
+one `IngestOutcome` at the end. The project is not changed before the reading
+starts, so a cancelled question leaves it as it was.
+The questions go to the shell through `IngestAskers`. Before reading a run asks
+the **Source amplitude** question (RMS or Peak) once per Imported-result reader
+that has files in the plan; an Add with a library template that differs from
+the project's copy asks whether to replace the copy, before planning; a file that fits several **Import templates** is asked about the same
 way, and a file that fits none of the templates its name belongs to comes back
 as a **Misfit** in the run's outcome instead of being left out silently.
-`start_template_edit` confirms an edit of the project's copy of an Import
-template and re-reads only the files that copy reads. When an ingest finishes it starts the `MissingMeasurementCheck`,
+The order of an Import template edit -- the misfit report, the wizard, the
+consequence summary, the library offer -- is here too (`plan_template_edit`,
+`plan_follow_up`); it ends in one run that replaces the project's copy and
+re-reads only the files that copy reads. When an ingest finishes it starts the `MissingMeasurementCheck`,
 which also runs after a project's pool is restored and tells the pool which
 of its measurements are Missing measurements, on a worker.
 `unregistered_pool_directories` answers the separate question of which pooled
@@ -30,8 +37,15 @@ from orchestration.data_pool._ingest import (
     IngestOutcome,
     IngestPlan,
     PoolIngestUseCase,
+    plan_ingest_run,
     plan_pool_ingest,
     plan_pool_refresh,
+)
+from orchestration.data_pool._ingest_request import (
+    EditedTemplate,
+    IngestAskers,
+    IngestKind,
+    IngestRequest,
 )
 from orchestration.data_pool._missing_measurement_check import (
     MissingCheckOutcome,
@@ -56,8 +70,12 @@ from orchestration.data_pool._registration import (
 __all__ = [
     "INGEST_SLOT_KEY",
     "REGISTRATION_SLOT_KEY",
+    "EditedTemplate",
     "FolderReport",
+    "IngestAskers",
+    "IngestKind",
     "IngestOutcome",
+    "IngestRequest",
     "ImportTemplateAsker",
     "IngestPlan",
     "Misfit",
@@ -67,6 +85,7 @@ __all__ = [
     "SourceAmplitudeAsker",
     "SourceAmplitudeQuestion",
     "TemplateQuestion",
+    "plan_ingest_run",
     "plan_pool_ingest",
     "plan_pool_refresh",
     "save_metadata_schema",

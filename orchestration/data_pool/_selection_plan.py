@@ -13,7 +13,7 @@ from io_modules.measurement_files import canonical_path, is_measurement_file
 from io_modules.pool_ingest_plan import SelectionTree
 
 
-def build_ingest_folder_map(paths, tree: SelectionTree) -> dict:
+def build_ingest_folder_map(tree: SelectionTree) -> dict:
     """
     One job per folder: {directory: set of files | None}, None meaning the
     whole folder.
@@ -39,8 +39,8 @@ def build_ingest_folder_map(paths, tree: SelectionTree) -> dict:
         for folder in selected.folders:
             plan[folder_key(folder)] = None
 
-    for path in paths:
-        if not os.path.isfile(path) or not is_measurement_file(path):
+    for path in tree.selected_files:
+        if not is_measurement_file(path, tree.templates):
             continue
         directory = folder_key(os.path.dirname(path))
         if plan.get(directory, "") is None:

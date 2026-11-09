@@ -18,15 +18,19 @@ $$H=\max\bigl(1,\ \operatorname{round}(N(1-o))\bigr),\qquad M=\left\lfloor\frac{
 
 ## Averaging
 
-$P_m[k]=\lvert X_m[k]\rvert^2$ is the unscaled power of block $m$. The averaging is done on power, before scaling:
+$P_m[k]=\lvert X_m[k]\rvert^2$ is the unscaled power of block $m$. The averaging is done before scaling, on power in every mode but Linear average. The modes are named and ordered as in Simcenter Testlab:
 
 | Mode | Result | Notes |
 |---|---|---|
-| **Linear** (default) | $\bar P[k]=\frac1M\sum_m P_m[k]$ | classic block average |
-| **Peak Hold** | $\bar P[k]=\max_m P_m[k]$ | keeps a transient a mean would wash out |
-| **Exponential** | $\bar P_0=P_0,\quad \bar P_m=(1-\alpha)\,\bar P_{m-1}+\alpha\,P_m$ | later blocks weigh more; $\alpha$ is clamped to 0–1 |
+| **Energy average** (default) | $\bar P[k]=\frac1M\sum_m P_m[k]$ | classic block average of power |
+| **Linear average** | $\bar P[k]=\Bigl(\frac1M\sum_m \lvert X_m[k]\rvert\Bigr)^2$ | mean amplitude; lower than Energy average when the level changes (run-up, noise). Linear format only |
+| **Energy exponential average** | $\bar P_0=P_0,\quad \bar P_m=p\,\bar P_{m-1}+(1-p)\,P_m$ | later blocks weigh more; $p$ is the Exponential parameter |
+| **Minimum value** | $\bar P[k]=\min_m P_m[k]$ | the quietest each bin got |
+| **Maximum value** | $\bar P[k]=\max_m P_m[k]$ | keeps a transient a mean would wash out |
 
-The weight $\alpha$ (ribbon *Weight α*, range 0.01–1, default **0.1**) is used by Exponential only.
+The Exponential parameter $p$ (ribbon *Exp. parameter*, 0–99 %, default **50 %**) is used by Energy exponential average only. It is how much of the old average each new block keeps, as in Testlab, so the same percentage gives the same spectrum: 10 % is $0.1\,\bar P_{m-1}+0.9\,P_m$. A higher value smooths more; 0 % is the last block alone.
+
+Linear average shows exactly the mean amplitude $\frac1M\sum_m \lvert X_m\rvert$, RMS or Peak, linear or in dB. **It shows only the Linear format:** the square of a mean amplitude is not the mean power (Testlab's Power and PSD with Linear average are the Energy average), and a PSD of it is no density (on noise it reads about 1 dB low). The ribbon therefore offers neither Power nor PSD with Linear average, and a Linear average curve already on a graph is hidden in those views, with the reason in the plot title. For Power or PSD use Energy average.
 
 ## Scaling and view
 
@@ -39,7 +43,7 @@ $\bar P$ becomes $P_\text{canon}$ and is then shown as Linear, Power or PSD, RMS
 | FFT size | 4096 |
 | Window | Hanning |
 | Format / Amplitude / Scale | Linear / RMS / Linear |
-| Averaging | Linear, $\alpha=0.1$ |
+| Averaging | Energy average, Exponential parameter 50 % |
 | Remove DC Offset | on |
 | Overlap | 50 % (fixed) |
 

@@ -8,7 +8,9 @@ commit the save -- all or nothing.
 The order is the point. The copy can be gigabytes, so it runs first and off
 the GUI thread; only once every copy exists is the project file written and
 the session switched. A cancel, a failed copy or a failed save removes what
-was copied and leaves the session on the project it started from.
+was copied and leaves the session on the project it started from. Once the
+project file is written nothing is removed: `save_as` raises only before that
+point, and what fails after it is a warning.
 
 All internal documentation strings and variable labels are standardly written
 in English.
@@ -56,7 +58,7 @@ def run_project_folder_copy(job_runner: JobRunner, session: ProjectSession,
         if record.state is JobState.DONE and not record.errors and copied_all:
             try:
                 session.save_as(plan.project_path, folder_copy=plan)
-            except (OSError, ValueError) as error:
+            except Exception as error:      # noqa: BLE001 -- raised only before the write (§1.251)
                 remove_result_sets(created)
                 on_done(ProjectFolderCopyOutcome(saved=False, error=str(error)))
                 return

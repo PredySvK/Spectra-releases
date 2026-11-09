@@ -23,18 +23,22 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 import types
-from typing import Any, Callable, Dict, FrozenSet, Iterable, Iterator, List, Optional, Sequence, Tuple, Union
+from typing import (
+    Any, Callable, Dict, FrozenSet, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple, Union,
+)
 import weakref
 
 import numpy as np
 
-from core.block_kinds import KIND_ORDER_CUT, KIND_ORDER_RESIDUAL, KIND_TIME_RESPONSE
 from core.channel_drop import build_drop_descriptor
 from core.data_block import read_display_meta
-from core.units import UnitPreferences, strip_amplitude_suffix
+from core.legend_config import LegendConfig
+from core.units import UnitPreferences
 from selection.channel_identity import build_channel_key
+from view_models.analysis_kinds import ANALYSIS_SPECTRUM
 
 from ._display_settings import DisplaySettings
+from ._legend_settings import legend_reads_curve_metadata
 from ._graph_colours import HeldPens
 from ._plot_model import PlotModel, Trace
 from ._display_rebuild import (
@@ -43,11 +47,11 @@ from ._display_rebuild import (
     rebuild_spectrum_with_display_settings,
     rebuild_with_base,
     rebuild_with_domain,
+    rebuild_with_legend,
     rebuild_with_units,
 )
 from ._plot_model_builder import (
     build_base_model,
-    build_order_cuts_model,
     build_scaled_overlay_trace,
     traces_kept_after_unload,
 )
@@ -91,7 +95,13 @@ class CurvesCleared:
     """The graph holds no curves any more."""
 
 
-CurvesChange = Union[CurvesReplaced, CurveAppended, CurvesCleared]
+@dataclass(frozen=True)
+class BandRmsBandMoved:
+    """The user dragged the Band RMS band. The curves are untouched: a full redraw
+    would take the band's lines away from under the mouse."""
+
+
+CurvesChange = Union[CurvesReplaced, CurveAppended, CurvesCleared, BandRmsBandMoved]
 
 
 def build_trace_descriptor(trace: Trace) -> Dict[str, Any]:
@@ -114,10 +124,9 @@ def _build_channel_drop_descriptor(trace: Trace) -> Dict[str, Any]:
     """The channel-drop payload (a Data Pool drag's shape) that reads the
     channel behind ``trace`` again.
 
-    Unit and name are the channel's own, never the curve's display ones: a
-    re-drop hands ``unit`` to the reader as the unit of the raw samples, so a
-    g channel shown in m/s^2 would otherwise come back 9.81x too small, and
-    the legend "[file] channel" would gain a second file prefix (#377).
+    The name is the channel's own, never the curve's display one: the drop
+    finds the channel in the Data Pool by it, and the legend "[file] channel"
+    would otherwise gain a second file prefix (#377).
 
     A curve only a result set holds names its measurement under ``source_path``
     (§1.103); the payload still needs it as the file to read.
@@ -125,18 +134,10 @@ def _build_channel_drop_descriptor(trace: Trace) -> Dict[str, Any]:
     meta = trace.meta_ref or {}
     if not meta.get("file_path"):
         meta = {**meta, "file_path": meta.get("source_path") or ""}
-    block = trace.data_block if trace.data_block is not None else trace.block
-    if block is None:
-        channel_name = trace.channel_name
-        unit = strip_amplitude_suffix(trace.source_unit)
-    else:
-        source = getattr(block, "source", None)
-        channel_name = getattr(source, "channel_name", "") or trace.channel_name
-        # A time record carries the channel unit as read; every block derived
-        # from it only adds a " RMS" / "(...)^2" spelling around it.
-        unit = (block.value_unit if getattr(block, "kind", None) == KIND_TIME_RESPONSE
-                else strip_amplitude_suffix(block.value_unit))
-    return build_drop_descriptor(*read_display_meta(meta, channel_name, unit))
+    block = trace.block
+    source = getattr(block, "source", None)
+    channel_name = getattr(source, "channel_name", "") or trace.channel_name
+    return build_drop_descriptor(*read_display_meta(meta, channel_name))
 
 
 @dataclass(frozen=True)
@@ -156,7 +157,7 @@ class PendingRestore:
 
     * ``NOTHING_PENDING`` -- a fresh open. The graph and its title are left alone.
     * ``from_refresh`` with no ``overlays`` -- a Refresh that had no overlay
-      to re-drop: the tab title catches up.
+      to re-drop: the tab label catches up.
     * ``overlays`` / ``result_set_ids`` -- re-drop these channel drop
       descriptors and load these result sets again, whether a Refresh or a
       reopened tab asked for them. Either can be set without the other.
@@ -173,6 +174,13 @@ NOTHING_PENDING = PendingRestore()
 def _overlay_key(descriptor: Dict[str, Any]) -> tuple:
     # The same identity a channel drop dedupes on (orchestration's drop_key).
     return build_channel_key(descriptor.get("file_path", ""), descriptor.get("channel_index", 0))
+
+
+def _is_user_channel(trace: Trace) -> bool:
+    """Whether ``trace`` is the curve of a channel the user dropped or opened the
+    graph on, an Adopted curve too: not only a set's, and it names a channel a
+    drop can take again."""
+    return not trace.is_set_only and bool((trace.meta_ref or {}).get("file_path"))
 
 
 def _release_channel(trace: Trace) -> Trace:
@@ -192,8 +200,10 @@ def _same_drawing(before: Optional[VisibleTraces], after: VisibleTraces) -> bool
         before is not None
         and len(before.draw) == len(after.draw)
         and all(old is new for old, new in zip(before.draw, after.draw))
-        and (before.hidden_reason, before.total, before.mask_passed, before.third_axis_dropped)
-        == (after.hidden_reason, after.total, after.mask_passed, after.third_axis_dropped)
+        and (before.hidden_reason, before.total, before.mask_passed, before.format_dropped,
+             before.third_axis_dropped)
+        == (after.hidden_reason, after.total, after.mask_passed, after.format_dropped,
+            after.third_axis_dropped)
     )
 
 
@@ -223,6 +233,9 @@ class _Batch:
     pens: Optional[HeldPens] = None
 
 
+CurveMetadataSource = Callable[[Sequence[Trace]], Sequence[Mapping[str, Any]]]
+
+
 class GraphCurves:
     """Which curves one graph holds, and every change to them."""
 
@@ -242,6 +255,15 @@ class GraphCurves:
         # The display settings last applied, for a rebuild that is not handed
         # any (the base curve leaving with its result set, #757).
         self._applied_settings: DisplaySettings = DisplaySettings()
+        # The Band RMS band the user last dragged, in Hz: it describes the graph,
+        # so a Refresh or a new base curve finds it.
+        self._band_rms_band: Optional[Tuple[float, float]] = None
+        # Which parts the graph's Curve names are made of: it describes the graph,
+        # so it outlives its curves and is stamped on every model held (plot §1.296).
+        self._legend_config: LegendConfig = LegendConfig()
+        # Reads the Curve metadata records of a batch of traces, one per trace, for
+        # a legend with metadata parts (#1022); set by the dock, None in a bare test.
+        self._curve_metadata_source: Optional[CurveMetadataSource] = None
 
     # ------------------------------------------------------------------ reads
 
@@ -313,6 +335,24 @@ class GraphCurves:
             return None
         return self._model.traces[base_trace_index(self._model)]
 
+    @property
+    def band_rms_curve(self) -> Optional[Trace]:
+        """The curve Band RMS measures: the base curve of a spectrum graph, or
+        None when the graph holds nothing it could measure."""
+        if self.is_empty or self._model.analysis_kind != ANALYSIS_SPECTRUM:
+            return None
+        return self.base_trace
+
+    @property
+    def legend_config(self) -> LegendConfig:
+        """The legend configuration this graph's Curve names are assembled from."""
+        return self._legend_config
+
+    @property
+    def band_rms_band(self) -> Optional[Tuple[float, float]]:
+        """The (lo, hi) band the user last dragged, in Hz; None until they do."""
+        return self._band_rms_band
+
     def descriptors(self) -> List[Dict[str, Any]]:
         """``build_trace_descriptor`` for every curve held, hidden ones included."""
         if self._model is None:
@@ -349,6 +389,22 @@ class GraphCurves:
             seen.add(key)
             overlays.append(trace)
         return overlays
+
+    def user_channel_traces(self) -> List[Trace]:
+        """Every curve of a channel the user dropped or opened the graph on, once
+        per channel: the base curve first when it names a channel, then
+        ``overlay_traces``. A graph with no run of its own recomputes all of them
+        on Refresh (§1.288, #926); a base curve only a result set holds names none and
+        is only read again."""
+        if self._model is None:
+            return []
+        base = next((t for t in self._model.traces if t.is_base), None)
+        lead = [base] if base is not None and _is_user_channel(base) else []
+        return lead + self.overlay_traces()
+
+    def user_channel_drop_descriptors(self) -> List[Dict[str, Any]]:
+        """The channel-drop payload of every ``user_channel_traces`` curve."""
+        return [_build_channel_drop_descriptor(trace) for trace in self.user_channel_traces()]
 
     def overlay_drop_descriptors(self) -> List[Dict[str, Any]]:
         """The channel-drop payload of every ``overlay_traces`` curve, so a
@@ -425,11 +481,29 @@ class GraphCurves:
     # ----------------------------------------------------------------- writes
 
     def replace(self, model: PlotModel) -> None:
-        """Hold ``model`` instead of whatever was there."""
+        """Hold ``model`` instead of whatever was there, its Curve names in this graph's legend configuration."""
         first_curve = self.is_empty
+        if model.legend_config != self._legend_config and not self._reads_curve_metadata():
+            model = rebuild_with_legend(model, self._legend_config)
+        elif model.legend_config != self._legend_config:
+            model = replace(model, legend_config=self._legend_config)  # _settle names the curves
         self._model = model
-        self._resolve()
+        self._settle()
         self._notify(CurvesReplaced(first_curve=first_curve))
+
+    def set_legend_config(self, config: LegendConfig) -> None:
+        """Name every curve, held now or added later, by ``config`` (Legend Settings, plot §1.296)."""
+        self._legend_config = config
+        if self._model is not None and self._model.legend_config != config:
+            self.replace(self._model)
+
+    def set_curve_metadata_source(self, source: Optional[CurveMetadataSource]) -> None:
+        """Where a legend's metadata parts come from: ``source(traces)`` gives one
+        Curve metadata record per trace (``build_curve_metadata``), the whole graph
+        at once since Parameter sets are labelled across it. Called on every redraw
+        while the legend has a metadata part, never otherwise; it must not touch
+        the disk."""
+        self._curve_metadata_source = source
 
     def show_blocks(
         self,
@@ -438,26 +512,18 @@ class GraphCurves:
     ) -> None:
         """Show ``blocks`` as the graph's new base, dropping every curve held.
 
-        The first block's kind decides how the graph is built: a spectrum, the
-        cuts of one order-tracking run, an Overall Level curve, or otherwise a
-        time record, in ``settings``; every further block is an overlay. The
+        The first block is the base curve, built by its kind's rule as on an
+        empty graph (``add_curve``); every further block is an overlay, the
+        blocks of the first block's kind first -- the cuts of one order-tracking
+        run before its Overall Level and Residual curves. The
         overlays on screen and the result sets loaded are captured first
         (``capture_overlays_before_reset``), so a pending Refresh or saved
         restore gets them back once this lands."""
         self.capture_overlays_before_reset()
         self._applied_settings = settings
         first = blocks[0]
-        if getattr(first, "kind", None) in (KIND_ORDER_CUT, KIND_ORDER_RESIDUAL):
-            # Any other kind riding along (the Overall Level and Residual curves, ADR §1.141) is an
-            # overlay built by its own kind's rule. An Imported residual alone is the base curve of
-            # an Order tracking graph, which draws it as it draws a cut.
-            is_cut = [getattr(b, "kind", None) == first.kind for b in blocks]
-            cuts = [b for b, cut in zip(blocks, is_cut) if cut]
-            self.replace(build_order_cuts_model(cuts, settings.prefs, amplitude_mode=settings.amplitude_mode,
-                                                base_curve_color=self._base_curve_color))
-            for block in (b for b, cut in zip(blocks, is_cut) if not cut):
-                self.add_curve(block=block, settings=settings)
-            return
+        same_kind = [b for b in blocks[1:] if b.kind == first.kind]
+        others = [b for b in blocks[1:] if b.kind != first.kind]
         self.replace(build_base_model(
             first, settings, base_curve_color=self._base_curve_color,
             x=first.primary_axis.values.astype(np.float64),
@@ -466,8 +532,10 @@ class GraphCurves:
             incoming_unit=first.value_unit,
             source_meta=first.display_meta(),
         ))
-        for block in blocks[1:]:
-            self.add_curve(block=block, settings=settings)
+        # The overlays land as one change, however many cuts one run has.
+        with self.coalesce_changes():
+            for block in same_kind + others:
+                self.add_curve(block=block, settings=settings)
 
     def add_curve(
         self,
@@ -508,16 +576,7 @@ class GraphCurves:
             self.replace(model)
             return model.traces[0]
 
-        return self._add_overlay(
-            **curve,
-            prefs=settings.prefs,
-            result_set_id=result_set_id,
-            block=block,
-            spectrum_format=settings.spectrum_format,
-            spectrum_amplitude_mode=settings.spectrum_amplitude_mode,
-            spectrum_decibel_scale=settings.decibel_scale,
-            amplitude_mode=settings.amplitude_mode,
-        )
+        return self._add_overlay(**curve, result_set_id=result_set_id, block=block, settings=settings)
 
     @contextmanager
     def coalesce_changes(self) -> Iterator[None]:
@@ -538,7 +597,7 @@ class GraphCurves:
                 if self._model is None:
                     self._notify(CurvesCleared())
                 else:
-                    self._resolve()
+                    self._settle()
                     self._notify(CurvesReplaced(
                         first_curve=batch.first_curve,
                         curves_added=self._held_count() > batch.held_before,
@@ -551,6 +610,12 @@ class GraphCurves:
         self._visible = None
         self._overlay_count = 0
         self._notify(CurvesCleared())
+
+    def move_band_rms_band(self, start: float, stop: float) -> None:
+        """Remember the band the user dragged; only a drag writes it, so clamping
+        the band to a narrower spectrum never overwrites it."""
+        self._band_rms_band = (start, stop)
+        self._notify(BandRmsBandMoved())
 
     def set_trace_filter(self, mask: Mask, *, key: Optional[tuple] = None) -> None:
         """Draw through ``mask`` (None = no mask), applied under ``key``. The
@@ -589,6 +654,16 @@ class GraphCurves:
             batch.pens = pens
             batch.changed = True
             return trace
+
+        if self._reads_curve_metadata():  # outside a batch here
+            # The new curve can renumber the graph's Parameter sets, so every name is read again.
+            held = list(self._model.traces)
+            self._name_by_curve_metadata()
+            trace = self._model.traces[-1]
+            if any(new is not old for new, old in zip(self._model.traces[:-1], held)):
+                self._resolve()
+                self._notify(CurvesReplaced())
+                return trace
 
         outcome = self._visible.accepts(trace, self._mask, self._model.x_domain)
         if outcome is AcceptOutcome.NEEDS_RENDER:
@@ -646,8 +721,39 @@ class GraphCurves:
         if not changed:
             return
         self._model.traces = kept
-        self._resolve()
+        self._settle()
         self._notify(CurvesReplaced())
+
+    def remove_user_channels(self) -> bool:
+        """Drop every curve of a channel the user dropped or opened the graph on,
+        the base curve too, so a Refresh can drop them all again (#926). An
+        Adopted curve loses only the channel and stays as the curve its result
+        set holds (§1.241); every curve only a set holds stays. When the base
+        curve left, its place goes to the first curve left on the primary axis,
+        as when its set is unticked. True when that leaves the graph without a
+        curve: the curves are left as they were and the caller empties the
+        canvas."""
+        if self._model is None:
+            return False
+        kept = []
+        for trace in self._model.traces:
+            if not _is_user_channel(trace):
+                kept.append(trace)
+            elif trace.adopted:
+                kept.append(_release_channel(trace))
+        if all(a is b for a, b in zip(kept, self._model.traces)) and len(kept) == len(self._model.traces):
+            return False
+        if not kept:
+            return True
+        if any(t.is_base for t in kept):
+            self._model.traces = kept
+        else:
+            base_index = next((i for i, t in enumerate(kept) if t.axis == "primary"), 0)
+            self._model = rebuild_with_base(
+                replace(self._model, traces=kept), base_index, self._applied_settings)
+        self._settle()
+        self._notify(CurvesReplaced())
+        return False
 
     def request_result_sets(self, ids: Iterable[str]) -> None:
         """A read of ``ids`` has been queued: they count as accounted for
@@ -717,7 +823,7 @@ class GraphCurves:
             base_index = next((i for i, t in enumerate(kept) if t.axis == "primary"), 0)
             self._model = rebuild_with_base(
                 replace(self._model, traces=kept), base_index, self._applied_settings)
-        self._resolve()
+        self._settle()
         self._notify(CurvesReplaced())
         return False
 
@@ -732,7 +838,7 @@ class GraphCurves:
         adopted = replace(set_curve, adopted=True,
                           meta_ref={**(set_curve.meta_ref or {}), **(landed.meta_ref or {})})
         self._model.traces = [adopted if t is set_curve else t for t in self._model.traces if t is not landed]
-        self._resolve()
+        self._settle()
         self._notify(CurvesReplaced())
         return True
 
@@ -756,7 +862,7 @@ class GraphCurves:
         if all(new is old for new, old in zip(kept, self._model.traces)):
             return
         self._model.traces = kept
-        self._resolve()
+        self._settle()
         self._notify(CurvesReplaced())
 
     # --------------------------------------------------------------- internal
@@ -771,6 +877,24 @@ class GraphCurves:
             if t.pen is not None:
                 pens.hold(t.pen.slot)
         return pens
+
+    def _reads_curve_metadata(self) -> bool:
+        return self._curve_metadata_source is not None and legend_reads_curve_metadata(self._legend_config)
+
+    def _name_by_curve_metadata(self) -> None:
+        """Name every held curve by its Curve metadata record when the legend has a
+        metadata part, read afresh so a metadata edit in the project shows on the
+        next redraw (#1022). A curve whose name stays is kept as the same object."""
+        if self._model is None or self._batch is not None or not self._reads_curve_metadata():
+            return  # inside a batch the end of coalesce_changes names them once
+        named = rebuild_with_legend(self._model, self._legend_config, self._curve_metadata_source(self._model.traces))
+        self._model.traces = [old if old.label == new.label else new
+                              for old, new in zip(self._model.traces, named.traces)]
+
+    def _settle(self) -> None:
+        """After a change to which curves are held: their names, then what is drawn."""
+        self._name_by_curve_metadata()
+        self._resolve()
 
     def _resolve(self) -> None:
         self._visible = resolve_visible_traces(self._model, self._mask, self._model.x_domain)

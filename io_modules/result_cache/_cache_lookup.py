@@ -59,7 +59,8 @@ from typing import Any, Dict, List, Optional
 from core.block_kinds import KIND_ORDER_CUT
 from core.dsp_configs import DSP_ALGORITHM_VERSIONS
 from core.project_model import NVHProject, ResultSetRef, SourceEntry
-from core.units import sanitize_unit_string, strip_amplitude_suffix
+from core.unit_label import resolve_unit_label
+from core.units import sanitize_unit_string
 from io_modules.project_store import project_folder
 from io_modules.result_cache import _cache_index as cache_index, _cache_layout as cache_layout
 from selection.parameter_sets import shape_signature
@@ -217,14 +218,14 @@ def _unit_matches(source_entry: SourceEntry, channel_name: str,
     Only a correction can make them disagree: without one the channel still
     has the unit the file declares, which is what the set was computed from
     (and a changed file is already a miss by byte count). The stored value
-    unit carries the spectral suffix ("g RMS", "(g)^2/Hz"), so it is peeled
-    back to the physical unit before comparing.
+    unit is a Unit label ("g RMS", "(g)^2/Hz"), so only its Display unit
+    is compared.
     """
     corrected = _corrected_unit(source_entry, channel_name)
     if corrected is None:
         return True
     return all(
-        sanitize_unit_string(strip_amplitude_suffix(block.value_unit))
+        sanitize_unit_string(resolve_unit_label(block.value_unit).unit)
         == sanitize_unit_string(corrected.strip())
         for block in blocks
     )

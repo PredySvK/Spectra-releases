@@ -24,7 +24,7 @@ from core.measurement_selection import MODE_EXPLICIT, MeasurementSelection
 from core.tacho_cleaning import TachoCleaning
 from core.workflow_graph import SaveSpec, Workflow
 from selection.measurement_selection import (
-    count_channels_by_type,
+    SelectionResolution,
     resolve as resolve_selection,
     whole_pool_selection,
 )
@@ -32,6 +32,7 @@ from selection.source_facets import pool_source_entries
 from signal_processing.workflow import build_workflow_with_tacho_cleaning, workflow_from_configs
 from signal_processing.workflow_readiness import resolve_chain_readiness
 
+from orchestration.batch._in_pool_sources import resolve_in_pool_sources
 from orchestration.batch._label import (
     data_pool_channel_component,
     default_result_set_label,
@@ -76,10 +77,15 @@ class DataPoolScope:
 
 @dataclass(frozen=True)
 class SelectionScope:
-    """What one saved Selection covers in the loaded Data Pool, tacho left out."""
+    """
+    What one saved Selection covers in the loaded Data Pool, tacho left out.
+    `channel_types` is what the count was narrowed to and what the planned save
+    block keeps, so the dialog and the plan read one set of types.
+    """
     name: str
     measurement_count: int = 0
     channel_count: int = 0
+    channel_types: frozenset = MAIN_INPUT_CHANNEL_TYPES
 
 
 @dataclass(frozen=True)
@@ -128,6 +134,18 @@ def resolve_calculate_and_save_refusal(loaded_runs: Sequence[Any]) -> Tuple[str,
     return ()
 
 
+def _resolve_in_pool(selection: MeasurementSelection, loaded_runs: Sequence[Any],
+                     sources_by_path: Optional[Mapping[str, Any]],
+                     schema: Optional[Mapping[str, Any]],
+                     channel_types: frozenset) -> SelectionResolution:
+    """`selection` resolved over the pool's in-pool sources, time responses only --
+    the rule `plan_batch` applies, so a scope counts what the run will compute."""
+    return resolve_selection(
+        selection, resolve_in_pool_sources(pool_source_entries(loaded_runs, sources_by_path or {})),
+        dict(schema or {}), channel_types=channel_types, time_responses_only=True,
+    )
+
+
 def resolve_data_pool_scope(
     data_pool: DataPoolInput,
     loaded_runs: Sequence[Any],
@@ -139,9 +157,8 @@ def resolve_data_pool_scope(
     both the dialog and the run use, so the numbers cannot differ.
     """
     channel_types = frozenset(data_pool.channel_types) & MAIN_INPUT_CHANNEL_TYPES
-    measurements, channels = count_channels_by_type(
-        loaded_runs, set(channel_types), sources_by_path)
-    return DataPoolScope(channel_types, measurements, channels)
+    resolution = _resolve_in_pool(whole_pool_selection(), loaded_runs, sources_by_path, {}, channel_types)
+    return DataPoolScope(channel_types, resolution.measurement_count, resolution.channel_count)
 
 
 def resolve_selection_scope(
@@ -156,11 +173,10 @@ def resolve_selection_scope(
     a Workflow Run evaluates it (`resolve`), in memory over the pool index --
     the one count both the dialog and the run use.
     """
-    resolution = resolve_selection(
-        selection, pool_source_entries(loaded_runs, sources_by_path or {}), dict(schema or {}),
-        channel_types=MAIN_INPUT_CHANNEL_TYPES, time_responses_only=True,
-    )
-    return SelectionScope(selection.name, resolution.measurement_count, resolution.leaf_count)
+    resolution = _resolve_in_pool(selection, loaded_runs, sources_by_path, schema,
+                                  MAIN_INPUT_CHANNEL_TYPES)
+    return SelectionScope(selection.name, resolution.measurement_count, resolution.channel_count,
+                          MAIN_INPUT_CHANNEL_TYPES)
 
 
 def _plan_result_set(block_type: str, config: Any, selection: MeasurementSelection, *,
@@ -244,7 +260,7 @@ def _plan_selections(block_type: str, config: Any, selections: SelectionsInput, 
                 what, "no accelerometer or microphone channel of the loaded folder matches it.")))
             continue
         plans.append(_plan_result_set(
-            block_type, config, selection, channel_types=MAIN_INPUT_CHANNEL_TYPES,
+            block_type, config, selection, channel_types=scope.channel_types,
             label=selection_result_set_label(
                 workflow_from_configs(block_type, [(block_type, config)]), selection),
             custom_label=custom_label, tacho_cleaning=tacho_cleaning,

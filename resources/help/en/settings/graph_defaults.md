@@ -15,7 +15,7 @@ Open the **Settings** window from the gear in the title strip and select **Graph
 
 **Defaults:** Enable downsampling on, Automatic (matches monitor width) selected, Manual factor 10, and Render screen only on. The manual factor is used only when **Manual factor** is selected.
 
-**Other curves opacity** sets how visible the curves other than the highlighted one stay while [Highlight](topic:tools/cursor) is on: 0 % hides them, 100 % does not dim them (default 25 %). It is the same value as **Other curves opacity (Highlight)** in the Cursor settings dialog; changing it in either place updates the other.
+**Other curves opacity** sets how visible the curves other than the highlighted one stay while [Highlight](topic:tools/cursor) is on: 0 % hides them, 100 % does not dim them (default 25 %). It is the same value as **Other curves opacity** in Cursor Settings and Track cursor Settings; changing it in either place updates the other.
 
 ## Apply and keep your choices
 

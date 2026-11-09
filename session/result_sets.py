@@ -117,14 +117,17 @@ class ResultSetsMixin:
             )
             self._project.add_result_set(result_set)
             try:
-                self._save_with_index()
+                self._write()
             except Exception:
                 self._project.result_sets.remove(result_set)
                 undo_swap_in(draft)
                 raise
-        # After the rollback window: a failing listener must not undo a set
-        # that is already on disk and named in the project file.
-        self._notify_saved()
+        # Past the commit: the set is on disk and named in the
+        # project file, so nothing that follows may undo it.
+        after_write = [self._write_cache_index, self._remove_unreferenced_tab_cache]
+        if overwrite_result_set_id:
+            after_write.insert(0, lambda: finish_swap_in(draft))
+        self._finish_write(*after_write)
         return result_set
 
     def _commit_overwrite(self, result_set_id: str, draft, status: str,
@@ -159,15 +162,14 @@ class ResultSetsMixin:
 
         try:
             swap_in_draft(draft)
-            self._save_with_index()
+            self._write()
         except Exception:
             (existing.params, existing.params_hash, existing.status,
              existing.source_ids, existing.all_channels, existing.created_utc,
              existing.file, existing.kind) = previous
             undo_swap_in(draft)
             raise
-
-        finish_swap_in(draft)
+        # The retired set is removed by the caller, after the commit.
         return existing
 
     def abort_result_set(self, draft) -> None:
@@ -180,11 +182,6 @@ class ResultSetsMixin:
         names it).
         """
         discard_draft(draft)
-
-    def _save_with_index(self) -> None:
-        """Saves the project and refreshes the derived cache index alongside it."""
-        self._write()
-        self._write_cache_index()
 
     def _write_cache_index(self) -> None:
         from io_modules.result_cache import build_cache_index, write_cache_index

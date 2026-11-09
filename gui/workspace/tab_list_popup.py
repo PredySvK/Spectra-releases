@@ -2,7 +2,7 @@
 
 from typing import List, Optional
 
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,
@@ -18,9 +18,10 @@ from view_models.tab_label import TabSearchEntry, filter_tab_entries
 class TabListPopup(QDialog):
     """Searchable popup listing open tabs in the workspace (#848)."""
 
-    def __init__(self, workspace, parent=None):
-        super().__init__(parent or workspace.tabs, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
-        self._workspace = workspace
+    def __init__(self, tabs, placeholder):
+        super().__init__(tabs, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self._tabs = tabs
+        self._placeholder = placeholder
         self._entries: List[TabSearchEntry] = []
 
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
@@ -54,9 +55,8 @@ class TabListPopup(QDialog):
         self.search_input.setFocus()
 
     def _refresh_entries(self) -> None:
-        ws = self._workspace
-        tabs = ws.tabs
-        placeholder = ws.placeholder_graph
+        tabs = self._tabs
+        placeholder = self._placeholder
         curr_idx = tabs.currentIndex()
 
         self._entries = []
@@ -99,8 +99,8 @@ class TabListPopup(QDialog):
 
     def _on_item_activated(self, item: QListWidgetItem) -> None:
         index = item.data(Qt.ItemDataRole.UserRole)
-        if index is not None and 0 <= index < self._workspace.tabs.count():
-            self._workspace.tabs.setCurrentIndex(index)
+        if index is not None and 0 <= index < self._tabs.count():
+            self._tabs.setCurrentIndex(index)
         self.accept()
 
     def keyPressEvent(self, event):

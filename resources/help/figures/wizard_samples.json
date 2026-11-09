@@ -1,0 +1,33 @@
+{
+  "scenario": "wizard_samples",
+  "size": [1500, 560],
+  "elements": [
+    {"kind": "marker", "target": "WizardSteps", "text": {
+      "en": "The four steps (the current one in bold) and what was read: samples, sheets, channels.",
+      "cs": "Čtyři kroky (aktuální tučně) a co se přečetlo: vzorky, listy, kanály."}},
+    {"kind": "marker", "target": "WizardAddFiles", "text": {
+      "en": "Add files: more samples of the same kind; ✕ next to a sample removes it.",
+      "cs": "Add files: další vzorky stejného druhu; ✕ vedle vzorku ho odebere."}},
+    {"kind": "marker", "target": "WizardDataKind", "text": {
+      "en": "Data kind: what the curves are. The wizard guesses it from the file and says from which cell.",
+      "cs": "Data kind: co křivky jsou. Průvodce to odhadne ze souboru a řekne z které buňky."}},
+    {"kind": "marker", "target": "WizardOrigin", "text": {
+      "en": "Origin: simulation or a measurement processed elsewhere. The file cannot tell; the red star means unanswered.",
+      "cs": "Origin: simulace, nebo měření zpracované jinde. Soubor to neřekne; červená hvězdička = bez odpovědi."}},
+    {"kind": "marker", "target": "WizardValues", "text": {
+      "en": "Values: linear or in dB (then with the reference level).",
+      "cs": "Values: lineární, nebo v dB (pak s referenční hodnotou)."}},
+    {"kind": "marker", "target": "WizardAmplitude", "text": {
+      "en": "Amplitude in the file: Peak, RMS, Peak-to-Peak, or From the header when the header says it.",
+      "cs": "Amplitude in the file: Peak, RMS, Peak-to-Peak, nebo From the header, když to hlavička říká."}},
+    {"kind": "marker", "target": "WizardChannelType", "text": {
+      "en": "Channel type: Automatic follows the unit; pick one to override it.",
+      "cs": "Channel type: Automatic se řídí jednotkou; výběrem ji přepíšete."}},
+    {"kind": "marker", "target": "WizardReason", "text": {
+      "en": "Why Next is off: the answers still missing.",
+      "cs": "Proč je Next vypnuté: chybějící odpovědi."}},
+    {"kind": "marker", "target": "WizardNext", "text": {
+      "en": "Next (Alt+Right) goes on once everything is answered; Back is Alt+Left.",
+      "cs": "Next (Alt+Right) pokračuje, jakmile je vše zodpovězeno; Back je Alt+Left."}}
+  ]
+}

@@ -18,17 +18,14 @@ from PySide6.QtWidgets import (
 
 from core.workflow_graph import InputSpec, Workflow
 from selection.source_facets import all_pool_sources, build_channel_facet
-from selection.measurement_selection import WHOLE_POOL_SELECTION_NAME
 from gui.workspace.save_spec_editor import SaveSpecEditor
 from gui.workflow import WorkflowCanvasView, apply_workflow_style
-from signal_processing.workflow import spec_for
 from view_models.workflow import (
     BlockAdd, BlockDelete, BlockMove, BlockSettingsApply, InputChoice,
     WireConnect, WireDisconnect, WorkflowEdit, WorkflowEditResult,
-    build_workflow_canvas, format_workflow_status, resolve_wire_targets, resolve_workflow_edit,
+    BlockSettingsDraft, build_block_form, build_input_options, build_workflow_canvas, format_workflow_status,
+    resolve_block_form_params, resolve_block_settings_draft, resolve_wire_targets, resolve_workflow_edit,
 )
-
-_NO_SELECTION = "(none)"
 
 # `add_block`'s default `wire_to`: connect the new block to the canvas's selected
 # block. A caller passing an explicit block id (a drop target) or None (a drop on
@@ -57,6 +54,8 @@ class WorkflowView(QWidget):
         self._app_context = app_context
         self._workflow: Optional[Workflow] = None
         self._selected_block_id: Optional[str] = None
+        # Unapplied block settings carried across one canvas redraw (§1.270).
+        self._draft: Optional[BlockSettingsDraft] = None
         self._build_ui()
         QApplication.instance().focusChanged.connect(self._watch_focused_descendant)
 
@@ -271,7 +270,10 @@ class WorkflowView(QWidget):
 
     # ---- canvas ----------------------------------------------------------
 
-    def _refresh_canvas(self, keep_block_id: Optional[str] = None) -> None:
+    def _refresh_canvas(self, keep_block_id: Optional[str] = None, keep_draft: bool = False) -> None:
+        """Redraw the canvas and Properties; `keep_draft` carries the block
+        settings typed and not applied yet to the same block (§1.270)."""
+        self._draft = self._typed_draft() if keep_draft else None
         self._refresh_history_actions()
         self.lbl_edit_refusal.clear()
         self.canvas.set_description(build_workflow_canvas(
@@ -280,7 +282,15 @@ class WorkflowView(QWidget):
         block_id = keep_block_id if keep_block_id in block_ids else (block_ids[0] if block_ids else None)
         self.canvas.select_block(block_id)
         self._on_canvas_block_selected(block_id)
+        self._draft = None
         self._refresh_status()
+
+    def _typed_draft(self) -> Optional[BlockSettingsDraft]:
+        form = self.param_form.block_form
+        if form is None or self._selected_block_id is None:
+            return None
+        return BlockSettingsDraft(
+            self._selected_block_id, self.param_form.entries(), self.save_editor.current_spec())
 
     def _focus_properties(self, _block_id: str) -> None:
         if self.input_row.isVisibleTo(self):
@@ -350,7 +360,9 @@ class WorkflowView(QWidget):
         self.lbl_block_title.setText(f"{workflow_block.block_id} — {workflow_block.block_type}")
         self.input_row.setVisible(False)
         try:
-            spec = spec_for(workflow_block.block_type)
+            draft = resolve_block_settings_draft(self._draft, self._workflow, workflow_block.block_id)
+            form = build_block_form(workflow_block.block_type, workflow_block.params,
+                                    draft.entries if draft is not None else None)
         except ValueError as exc:
             self.lbl_block_title.setText(f"{workflow_block.block_id} — {exc}")
             self.param_form.setVisible(False)
@@ -362,10 +374,9 @@ class WorkflowView(QWidget):
         self.save_editor.setVisible(True)
         self.btn_apply.setVisible(True)
         self.btn_apply.setEnabled(editable)
-        self.param_form.set_config(spec.config_cls, workflow_block.params, read_only=not editable,
-                                   settings_params=spec.settings_params)
+        self.param_form.show_form(form, read_only=not editable)
         self.save_editor.set_spec(
-            workflow_block.save, channel_groups=self._channel_groups(), read_only=not editable
+            draft.save if draft is not None else workflow_block.save, channel_groups=self._channel_groups(), read_only=not editable
         )
 
     def _channel_groups(self) -> dict:
@@ -399,7 +410,7 @@ class WorkflowView(QWidget):
         if self._workflow is not None and session is not None:
             # A rename rewrote the Input blocks behind the view's back (#463).
             self._workflow = session.find_workflow(self._workflow.name) or self._workflow
-            self._refresh_canvas(self._selected_block_id)
+            self._refresh_canvas(self._selected_block_id, keep_draft=True)
         if self._workflow is None or self._selected_block_id is None:
             return
         try:
@@ -412,20 +423,12 @@ class WorkflowView(QWidget):
     def _populate_input_combo(self, spec: Optional[InputSpec]) -> None:
         session = self._session()
         names = [s.name for s in session.selections()] if session is not None else []
+        options = build_input_options(names, spec)
         self.combo_input_selection.blockSignals(True)
         self.combo_input_selection.clear()
-        # Items carry their meaning as data, not as text: a user selection may
-        # share its display text with the synthetic whole-pool item.
-        self.combo_input_selection.addItem(_NO_SELECTION, InputSpec())
-        self.combo_input_selection.addItem(WHOLE_POOL_SELECTION_NAME, InputSpec(whole_pool=True))
-        for name in names:
-            self.combo_input_selection.addItem(name, InputSpec(selection_name=name))
-        if spec is not None and spec.whole_pool:
-            self.combo_input_selection.setCurrentIndex(1)
-        elif spec is not None and spec.selection_name in names:
-            self.combo_input_selection.setCurrentIndex(2 + names.index(spec.selection_name))
-        else:
-            self.combo_input_selection.setCurrentIndex(0)
+        for label, item_spec in options.items:
+            self.combo_input_selection.addItem(label, item_spec)
+        self.combo_input_selection.setCurrentIndex(options.current_index)
         self.combo_input_selection.blockSignals(False)
 
     # ---- edits -------------------------------------------------------
@@ -461,17 +464,19 @@ class WorkflowView(QWidget):
         if result.refusal:
             self.lbl_edit_refusal.setText(result.refusal)
         elif result.workflow is not self._workflow:
+            # Applied settings are stored: the form shows the document again.
             self._save(result.workflow, keep_block_id=(
-                self._selected_block_id if result.keeps_selection else result.selected_block_id))
+                self._selected_block_id if result.keeps_selection else result.selected_block_id),
+                keep_draft=not isinstance(edit, BlockSettingsApply))
         return result
 
-    def _save(self, workflow: Workflow, keep_block_id: Optional[str]) -> None:
+    def _save(self, workflow: Workflow, keep_block_id: Optional[str], keep_draft: bool) -> None:
         session = self._session()
         if session is None:
             return
         session.save_workflow(workflow)
         self._workflow = workflow
-        self._refresh_canvas(keep_block_id)
+        self._refresh_canvas(keep_block_id, keep_draft=keep_draft)
 
     def add_block(self, block_type: str, wire_to=_USE_SELECTED) -> None:
         """
@@ -513,9 +518,10 @@ class WorkflowView(QWidget):
         """"Apply block settings" -- writes the parameter form *and* the save spec
         in one edit, so a block is one save to the project and one canvas
         redraw, not two."""
-        if self._selected_block_id is not None:
-            self._edit(BlockSettingsApply(
-                self._selected_block_id, self.param_form.values(), self.save_editor.current_spec()))
+        form = self.param_form.block_form
+        if self._selected_block_id is not None and form is not None:
+            params = resolve_block_form_params(form.block_type, self.param_form.entries())
+            self._edit(BlockSettingsApply(self._selected_block_id, params, self.save_editor.current_spec()))
 
     def _on_input_selection_changed(self, index: int) -> None:
         # The combo keeps its last items while a non-Input block is shown, and

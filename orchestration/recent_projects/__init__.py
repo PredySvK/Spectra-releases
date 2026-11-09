@@ -6,7 +6,8 @@ Which recent projects are still on disk (#773).
 ribbon's drop-down mark a missing project from one check, and an unreachable
 network share never freezes the GUI thread (#412).
 
-What does not belong here: the recent list as data (core/recent_projects),
+What does not belong here: the disk check itself (io_modules/recent_projects),
+the recent list as data (core/recent_projects),
 its storage (app_context), how a missing row looks (gui/).
 """
 

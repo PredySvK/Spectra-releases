@@ -9,8 +9,8 @@
       "en": "View: Linear, Power or PSD, RMS or Peak, Linear or dB axis; changing it redraws without recomputing.",
       "cs": "View: Linear, Power nebo PSD, RMS nebo Peak, osa Linear nebo dB; změna jen překreslí, nepřepočítává."}},
     {"kind": "marker", "target": "RibbonGroupAveraging", "text": {
-      "en": "Averaging: how the blocks are combined: Linear, Peak Hold or Exponential (Weight α).",
-      "cs": "Averaging: jak se bloky spojí: Linear, Peak Hold nebo Exponential (Weight α)."}},
+      "en": "Averaging: how the blocks are combined: Energy average, Linear average, Energy exponential average (Exp. parameter), Minimum value or Maximum value.",
+      "cs": "Averaging: jak se bloky spojí: Energy average, Linear average, Energy exponential average (Exp. parameter), Minimum value nebo Maximum value."}},
     {"kind": "marker", "target": "RibbonGroupOptions", "text": {
       "en": "Options: Remove DC Offset, curve placement and Band RMS Cursors.",
       "cs": "Options: Remove DC Offset, umístění nové křivky a Band RMS Cursors."}},

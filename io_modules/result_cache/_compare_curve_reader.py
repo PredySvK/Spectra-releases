@@ -137,7 +137,7 @@ def read_result_curves(
                             # though nothing else here derives display values
                             # from it for that kind.
                             full_block = block_from_stored(block, kind)
-                            if kind == KIND_SPECTRUM and full_block.is_canonical:
+                            if kind == KIND_SPECTRUM:
                                 display_y, display_unit = full_block.to_display_values(
                                     spectrum_format="linear", amplitude_mode="rms",
                                 )

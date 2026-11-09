@@ -60,5 +60,8 @@ exe = EXE(
     name="Spectra",
     icon=str(ROOT / "resources" / "icons" / "app_icon.ico"),
     console=False,
+    # UPX-packed executables are a common trigger of Defender ML detections
+    # (Bearfoos!ml); never pack, even if UPX happens to be on PATH.
+    upx=False,
 )
-coll = COLLECT(exe, a.binaries, a.datas, name="Spectra")
+coll = COLLECT(exe, a.binaries, a.datas, upx=False, name="Spectra")

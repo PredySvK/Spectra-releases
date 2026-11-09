@@ -3,7 +3,12 @@
 # =====================================================================
 """
 Step: combine a stream of Unscaled power batches (frame_fft) into one
-spectrum -- linear, peak hold, or exponential.
+spectrum -- Energy average, Linear average, Energy exponential average,
+Minimum value or Maximum value, as in Simcenter Testlab.
+
+Linear average is the one mode over amplitude: it averages |X| and hands on
+the square of that mean, so what follows still gets power and Linear/RMS shows
+the mean amplitude exactly (§1.283).
 
 Consumes batches one at a time so the running result is the only thing ever
 held in memory; a spectrum never needs every frame's power at once
@@ -50,17 +55,21 @@ def skip_invalid_frames(power_batches: Iterator[np.ndarray], count: FrameCount) 
 
 
 def average_batches(power_batches: Iterator[np.ndarray], averaging_type: str,
-                     exponential_alpha: float = 0.1) -> np.ndarray:
+                     exponential_parameter: float = 0.5) -> np.ndarray:
     """The averaged Unscaled power spectrum, combined according to `averaging_type`."""
     averaging_type = normalize_dsp_choice(averaging_type, VALID_AVERAGING_TYPES, "averaging_type")
-    if averaging_type == "peak_hold":
-        return _peak_hold(power_batches)
-    if averaging_type == "exponential":
-        return _exponential(power_batches, exponential_alpha)
-    return _linear(power_batches)
+    if averaging_type == "linear":
+        return _linear(power_batches)
+    if averaging_type == "minimum":
+        return _extreme(power_batches, np.min, np.minimum)
+    if averaging_type == "maximum":
+        return _extreme(power_batches, np.max, np.maximum)
+    if averaging_type == "energy_exponential":
+        return _energy_exponential(power_batches, exponential_parameter)
+    return _energy(power_batches)
 
 
-def _linear(power_batches: Iterator[np.ndarray]) -> np.ndarray:
+def _energy(power_batches: Iterator[np.ndarray]) -> np.ndarray:
     total = None
     n_frames = 0
     for batch in power_batches:
@@ -72,26 +81,32 @@ def _linear(power_batches: Iterator[np.ndarray]) -> np.ndarray:
     return total / n_frames
 
 
-def _peak_hold(power_batches: Iterator[np.ndarray]) -> np.ndarray:
+def _linear(power_batches: Iterator[np.ndarray]) -> np.ndarray:
+    return _energy(np.sqrt(batch) for batch in power_batches) ** 2
+
+
+def _extreme(power_batches: Iterator[np.ndarray], reduce, combine) -> np.ndarray:
     result = None
     for batch in power_batches:
-        batch_max = np.max(batch, axis=0)
-        result = batch_max if result is None else np.maximum(result, batch_max)
+        batch_extreme = reduce(batch, axis=0)
+        result = batch_extreme if result is None else combine(result, batch_extreme)
     if result is None:
         raise ValueError("No frames to average.")
     return result
 
 
-def _exponential(power_batches: Iterator[np.ndarray], exponential_alpha: float) -> np.ndarray:
+def _energy_exponential(power_batches: Iterator[np.ndarray], exponential_parameter: float) -> np.ndarray:
     # A recurrence over individual frames, in frame order, regardless of how
     # they were grouped into batches -- exactly the loop this replaced, just
     # fed from a batch iterator instead of a fully-materialised array, so the
     # result stays bit-identical.
-    alpha = max(0.0, min(1.0, float(exponential_alpha)))
+    # `exponential_parameter` is the weight of the old average, as Testlab's
+    # Exponential parameter: 0.1 (Testlab's 10 %) keeps a tenth of it (#956).
+    keep = max(0.0, min(1.0, float(exponential_parameter)))
     result = None
     for batch in power_batches:
         for frame_power in batch:
-            result = frame_power if result is None else (1.0 - alpha) * result + alpha * frame_power
+            result = frame_power if result is None else keep * result + (1.0 - keep) * frame_power
     if result is None:
         raise ValueError("No frames to average.")
     return result

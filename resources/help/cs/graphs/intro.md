@@ -23,3 +23,5 @@ Frekvenci lze na ose zobrazit v Hz nebo RPM a lze to přepnout ([jednotka osy X]
 Nastavení vykreslování křivek popisuje [Graph Rendering](topic:settings/graph_defaults). Načítání uložených křivek do aktivního grafu najdete v [Result Poolu](topic:results/intro).
 
 Informace při najetí myší a zvýraznění vybrané křivky popisuje [Kurzor a zvýraznění](topic:tools/cursor).
+
+Které části pojmenují každou křivku v legendě, zvolíte pravým tlačítkem v grafu přes **Legend Settings…** ([Legend Settings](topic:graphs/legend_settings)).

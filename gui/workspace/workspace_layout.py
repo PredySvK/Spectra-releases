@@ -46,11 +46,11 @@ class WorkspaceLayout:
     # is not carried by QMainWindow.saveState() (it tracks docks, not the
     # inner tab bar), so it rides its own key.
     _BOTTOM_TAB_KEYS = (("log", "log_panel"), ("jobs", "jobs_panel"),
-                        ("evaluation", "evaluation_panel"))
+                        ("evaluation", "evaluation_card"))
 
     def __init__(self, app_context, sub_area, explorer_dock, filter_dock,
                  job_status_dock, bottom_dock, bottom_panel, log_panel, jobs_panel,
-                 evaluation_panel):
+                 evaluation_card):
         self.app_context = app_context
         self.sub_area = sub_area
         self.explorer_dock = explorer_dock
@@ -60,7 +60,7 @@ class WorkspaceLayout:
         self.bottom_panel = bottom_panel
         self.log_panel = log_panel
         self.jobs_panel = jobs_panel
-        self.evaluation_panel = evaluation_panel
+        self.evaluation_card = evaluation_card
         # Guard against overwriting a persisted layout with factory/uninitialized
         # state when closing from the Welcome page before any project opens (#413).
         self.is_restored: bool = False

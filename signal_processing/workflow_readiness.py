@@ -19,7 +19,7 @@ from typing import Callable, Optional, Tuple
 
 from core.workflow_graph import Workflow, resolve_workflow_chains
 from signal_processing.workflow import (
-    NO_INPUT_BLOCK_MESSAGE, resolve_block_errors, save_block_ids,
+    EMPTY_WORKFLOW_MESSAGE, NO_INPUT_BLOCK_MESSAGE, resolve_block_errors, save_block_ids,
 )
 
 ISSUE_MULTIPLE_INPUTS = "multiple_inputs"
@@ -51,6 +51,8 @@ def resolve_chain_readiness(
 ) -> Tuple[ReadinessIssue, ...]:
     """Every reason `chain` cannot run, headline first; empty when it can."""
     everywhere = chain.block_ids
+    if not everywhere:
+        return (ReadinessIssue(ISSUE_INVALID_GRAPH, EMPTY_WORKFLOW_MESSAGE),)
     inputs = [block.block_id for block in chain.blocks if block.is_input]
     if len(inputs) > 1:
         return (ReadinessIssue(
@@ -59,16 +61,8 @@ def resolve_chain_readiness(
             everywhere,
         ),)
 
-    try:
-        block_errors = resolve_block_errors(chain)
-    except ValueError as exc:
-        # Graph-wide failure (no block, a cycle): it names blocks only
-        # inside its text, so outline those, or the whole chain if none.
-        text = str(exc)
-        named = tuple(block_id for block_id in everywhere if f"'{block_id}'" in text)
-        return (ReadinessIssue(ISSUE_INVALID_GRAPH, text, named or everywhere),)
     issues = [ReadinessIssue(ISSUE_INVALID_GRAPH, text, (block_id,))
-              for block_id, text in block_errors.items()]
+              for block_id, text in resolve_block_errors(chain).items()]
 
     if not inputs:
         # After the blocks' own errors, so those are what get outlined first.
